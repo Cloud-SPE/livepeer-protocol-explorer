@@ -28,12 +28,14 @@ Goal: every binary can load config, connect to Postgres, log structured output. 
 - [x] Smoke test: `docker compose up -d postgres && sqlx migrate run && cargo run --bin livepeer-seed-migrator -- --source-sqlite ...` — verified end-to-end against live SQLite (payout=297,105 / reward=158,448 / events=625,463) and live Postgres
 - [x] Workspace dep cleanup: dropped `rusqlite`, unified on `sqlx::sqlite` to avoid `libsqlite3-sys` link conflict
 
-### S2 — schema (next)
+### S2 — schema ✅ done (gen-schema-doc deferred to S3)
 
 Goal: all 14 migrations land. Schema verified with `psql \d`.
 
-- [ ] Migrations 002 through 014 (per `migrations/README.md`)
-- [ ] `tools/gen-schema-doc` — emit `docs/generated/db-schema.md` from migrations
+- [x] Migrations 002 through 014 (per `migrations/README.md`)
+- [x] All 14 applied clean against Postgres 15. 8 foreign keys verified, 2 check constraints verified.
+- [x] SPEC §11.5 corrected (v1.4): `COALESCE(log_index, -1)` in PK is invalid Postgres syntax — replaced with `NOT NULL DEFAULT -1` sentinel + plain PK
+- [ ] `tools/gen-schema-doc` — emit `docs/generated/db-schema.md` from migrations (defer to S3 — needs core::abi too)
 
 ### S3 — ABI registry + boot validation
 
@@ -101,3 +103,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 
 - **2026-04-27** Plan opened. Scaffold + SPEC v1.3 in place. All 10 SPEC §22 open data items resolved. Starting S1.
 - **2026-04-27** S1 complete. Foundation in place; seed-migrator smoke-tested against live Postgres and live SQLite. Switched from `rusqlite` to `sqlx::sqlite` to resolve a `libsqlite3-sys` link conflict — single SQL library across both stores.
+- **2026-04-27** S2 complete. All 14 migrations applied, schema matches SPEC §11. SPEC bumped to v1.4 — §11.5 PK corrected (Postgres rejects function calls in PRIMARY KEY). 8 FKs verified, 2 check constraints verified.

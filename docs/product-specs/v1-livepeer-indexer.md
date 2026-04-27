@@ -1,12 +1,16 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.3
+## Technical Specification v1.4
 
 **Status:** Draft, ready for implementation
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.3
+**Document version:** 1.4
+
+### Changes since v1.3 (2026-04-27)
+
+- §11.5 — `seeded_event_prices.log_index` corrected: was `INT` nullable with `PRIMARY KEY (..., COALESCE(log_index, -1), ...)`. Postgres rejects function calls in PRIMARY KEY syntax. Replaced with `INT NOT NULL DEFAULT -1` and a plain PK. Same semantics; valid SQL. Verified by applying migration 004 against Postgres 15.
 
 ### Changes since v1.2 (2026-04-27)
 
@@ -970,7 +974,7 @@ Trusted historical valuations imported from SQLite.
 CREATE TABLE seeded_event_prices (
   chain_id BIGINT NOT NULL,
   tx_hash TEXT NOT NULL,
-  log_index INT,                         -- nullable until SQLite payload structure inspected
+  log_index INT NOT NULL DEFAULT -1,     -- -1 sentinel for seed rows; concrete log_index for cross-checked imports (Q-OD-2: tx_hash is unique per seed table, so -1 collisions are correct).
   event_type_hint TEXT NOT NULL,         -- 'reward' | 'payout'
   asset TEXT NOT NULL,
   
@@ -982,7 +986,7 @@ CREATE TABLE seeded_event_prices (
   raw JSONB,
   imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   
-  PRIMARY KEY (chain_id, tx_hash, COALESCE(log_index, -1), asset)
+  PRIMARY KEY (chain_id, tx_hash, log_index, asset)
 );
 
 CREATE INDEX idx_seeded_lookup ON seeded_event_prices (chain_id, tx_hash, asset);

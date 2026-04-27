@@ -93,12 +93,20 @@ pub struct DriveSummary {
     pub final_batch_size: u64,
 }
 
-/// Resume from `indexer_checkpoints('main')` if it's past `requested_from`.
+/// Per-contract checkpoint name. Avoids cross-contract collisions when the
+/// driver runs contracts sequentially.
+pub fn checkpoint_name(contract: ContractKind) -> String {
+    format!("indexer_{}", contract.name())
+}
+
+/// Resume from `indexer_checkpoints(<per-contract-name>)` if it's past `requested_from`.
 /// Returns the actual starting block.
-pub async fn resume_from(pg: &PgPool, requested_from: u64) -> Result<u64> {
+pub async fn resume_from(pg: &PgPool, contract: ContractKind, requested_from: u64) -> Result<u64> {
+    let name = checkpoint_name(contract);
     let checkpoint: Option<i64> = sqlx::query_scalar(
-        "SELECT last_processed_block FROM indexer_checkpoints WHERE name = 'main'",
+        "SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1",
     )
+    .bind(&name)
     .fetch_optional(pg)
     .await?;
     Ok(match checkpoint {
@@ -195,7 +203,7 @@ async fn backfill_chunk(
 
     if raw_logs.is_empty() {
         let mut tx = pg.begin().await?;
-        advance_checkpoint(&mut tx, chunk_end).await?;
+        advance_checkpoint(&mut tx, contract, chunk_end).await?;
         tx.commit().await?;
         return Ok(ChunkSummary {
             logs_seen: 0,
@@ -264,7 +272,7 @@ async fn backfill_chunk(
     let mut tx = pg.begin().await?;
     let inserted = insert_events(&mut tx, &prepared, abi_hash).await?;
     let dl_inserted = insert_dead_letters(&mut tx, &dead_letters).await?;
-    advance_checkpoint(&mut tx, chunk_end).await?;
+    advance_checkpoint(&mut tx, contract, chunk_end).await?;
     tx.commit().await?;
 
     info!(
@@ -947,15 +955,21 @@ async fn eth_get_logs_multi_topic(
     Ok(p.call("eth_getLogs", &params).await?)
 }
 
-async fn advance_checkpoint(tx: &mut Transaction<'_, Postgres>, to_block: u64) -> Result<()> {
+async fn advance_checkpoint(
+    tx: &mut Transaction<'_, Postgres>,
+    contract: ContractKind,
+    to_block: u64,
+) -> Result<()> {
+    let name = checkpoint_name(contract);
     sqlx::query(
         r#"INSERT INTO indexer_checkpoints
                 (name, chain_id, last_processed_block, updated_at)
-           VALUES ('main', $1, $2, now())
+           VALUES ($1, $2, $3, now())
            ON CONFLICT (name) DO UPDATE
               SET last_processed_block = GREATEST(indexer_checkpoints.last_processed_block, EXCLUDED.last_processed_block),
                   updated_at = now()"#,
     )
+    .bind(&name)
     .bind(ARBITRUM_CHAIN_ID)
     .bind(to_block as i64)
     .execute(&mut **tx)

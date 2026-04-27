@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
             let actual_from = if no_resume {
                 from_block
             } else {
-                backfill::resume_from(&pg, from_block).await?
+                backfill::resume_from(&pg, kind, from_block).await?
             };
             if actual_from != from_block {
                 info!(

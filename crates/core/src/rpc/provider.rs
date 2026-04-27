@@ -59,9 +59,16 @@ struct JsonRpcErrorBody {
 
 impl Provider {
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Result<Self> {
+        // 60s timeout — Chainstack archive cold reads at very old blocks can take
+        // 10-30s. The dynamic-batch halving in the indexer is the secondary defense
+        // for genuine overload; this gives single-call requests room to succeed.
+        Self::with_timeout(name, url, Duration::from_secs(60))
+    }
+
+    pub fn with_timeout(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self> {
         let name = name.into();
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
+            .timeout(timeout)
             .build()
             .map_err(|e| CoreError::Http {
                 provider: name.clone(),

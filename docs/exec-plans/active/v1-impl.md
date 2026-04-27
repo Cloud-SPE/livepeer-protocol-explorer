@@ -196,10 +196,28 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [ ] EarningsClaimed reconciliation
 - [ ] `delegator_registry` derived from Bond events
 
-### S10 — API
+### S10 — API (in_progress)
 
-- [ ] Per SPEC §14.3 (events / valuations / prices / stake / aggregations / governance)
-- [ ] Cursor pagination, sort whitelist, `with_valuations=true`, ETag
+#### S10.1 — events + valuations + operational ✅ done
+- [x] Axum 0.8 service binding `0.0.0.0:8080`
+- [x] `GET /health` — liveness
+- [x] `GET /backfills/status` — checkpoints + counts (raw_events, valuations, decode_failures, reorg_events)
+- [x] `GET /events/{id}` + optional `?with_valuations=true`
+- [x] `GET /events?...` — filters: `from_block`, `to_block`, `contract`, `event_name`, `event_type` (legacy alias), `from_address`, `to_address`, `address` (any-role), `asset`, `with_valuations`, `include_tentative`, `include_reorged`, `sort` (whitelist: `block_asc` / `block_desc`), `limit` (default 100, max 1000), `cursor`
+- [x] Cursor pagination — opaque `B<block>:<log_index>` token, tuple-comparison SQL (`(block_number, log_index) > (cur_block, cur_log)`) for stable order under append
+- [x] `GET /events/{id}/valuation` — list of valuations for the event (multi-asset returns both rows)
+- [x] `GET /valuations?...` — filters: `version`, `asset`, `from_block`, `to_block`, `limit`
+- [x] All large numerics serialized as strings per SPEC §14.4
+- [x] Standard error envelope `{ "error": { "code", "message", "context" } }`
+- [x] **Live verification:** Reward 533.21 LPT × $2.191 = $1,168.28 with inline valuations ✓; cursor pagination produces stable strict-after pages ✓; multi-asset EarningsClaimed returns LPT + ETH portions ✓; 404 envelope ✓
+
+#### S10.2 — prices + stake + aggregations + governance + ETag (pending)
+- [ ] `GET /prices/{asset}/{quote}/{block,latest,range}` — backed by `token_prices_by_block`
+- [ ] `GET /stake/{delegator}/...` — needs S9 staker
+- [ ] `GET /aggregations/events?bucket=day|week|month&metric=count|sum_amount_usd&...` — replaces 4 legacy summary routes
+- [ ] `GET /governance/proposals` — convenience join over ProposalCreated/ProposalExecuted/VoteCast
+- [ ] `If-None-Match` / `ETag` / `Cache-Control` per SPEC §14.2
+- [ ] `sort=amount_usd_desc` requires the join — ship in this slice
 
 ### S11 — cross-check + determinism CI
 
@@ -230,3 +248,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S8.2.a done — on-chain Chainlink ETH/USD path. 6 ETH events priced. Sequencer + Chainlink reads cached forever per SPEC §13.5 (12 cache rows added; replay reads from cache). Sample: WithdrawFees 0.184 ETH × $2,390.62 = $439.87 ✓. Sub-microETH amount priced to 18-decimal precision. pricing_chain JSONB carries full provenance (oracle address, raw_round, checks block). Idempotent.
 - **2026-04-27** S8.2.b done — Uniswap V3 TWAP × Chainlink for LPT events. tick_math::get_sqrt_ratio_at_tick implemented as deterministic integer math (Uniswap reference algorithm), 6 unit tests pass. Sample: avg tick -69945 → sqrtPriceX96 = 2399491... → LPT/WETH = 0.0009172 × $2394.51 = $2.196 → 326.35 LPT = $716.76 ✓. 25 LPT events priced. Pricing chain provenance carries cumulative ticks, mean tick, sqrtPriceX96, oracle, raw_round. Total event_valuations coverage: 143 across 3 sources (seed 112 + Chainlink ETH 6 + Uniswap LPT 25). Idempotent.
 - **2026-04-27** S8.3 + S8.4 scaffolding done. Multi-asset: 12 EarningsClaimed → 24 rows (12 LPT priced via TWAP, 4 ETH via Chainlink, 8 ETH zero-amount). Total event_valuations coverage now: 167 across 4 sources. Determinism guard `insert_valuation_checked` + diff helper ready with 3 unit tests; verify-mode CLI integration deferred to S8.5. 9/9 unit tests pass.
+- **2026-04-27** S10.1 done — Axum API with /health, /backfills/status, /events (with cursor pagination + inline valuations), /events/{id}, /events/{id}/valuation, /valuations. Live tests pass: Reward 533.21 LPT × $2.191 = $1,168.28 returned with inline valuations; cursor pagination stable; multi-asset EarningsClaimed returns both LPT + ETH portions; 404 error envelope conforms to SPEC §14.4. Numerics serialized as strings.

@@ -1,3 +1,4 @@
+mod compare;
 mod import;
 
 use anyhow::{Context, Result};
@@ -52,6 +53,12 @@ enum Command {
     },
     /// Verify both RPC providers + cross-check + cache write. SPEC §13.2, §7.6, §16.2.
     VerifyRpc,
+    /// (S11.1 / TD-004) Cross-check SQLite events against raw_protocol_events.
+    /// Reports missing, extra, and field-mismatched logs in the indexer's window.
+    CrossCheck {
+        #[arg(long, env = "SOURCE_SQLITE")]
+        source_sqlite: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -75,6 +82,36 @@ async fn main() -> Result<()> {
         Command::Probe { source_sqlite, abi_dir } => probe(&pg, &source_sqlite, &abi_dir).await?,
         Command::Import { source_sqlite } => run_import(&pg, &source_sqlite).await?,
         Command::VerifyRpc => verify_rpc(&pg, &cfg).await?,
+        Command::CrossCheck { source_sqlite } => {
+            if !source_sqlite.exists() {
+                anyhow::bail!("source SQLite not found at {}", source_sqlite.display());
+            }
+            let sqlite = compare::open_sqlite(&source_sqlite).await?;
+            let report = compare::run_cross_check(&pg, &sqlite).await?;
+            // Emit a structured summary line plus samples for human triage.
+            info!(
+                indexer_event_count = report.indexer_event_count,
+                seed_event_count_in_window = report.seed_event_count_in_window,
+                matched = report.matched,
+                missing_in_indexer = report.missing_in_indexer,
+                missing_in_seed = report.missing_in_seed,
+                block_number_mismatches = report.block_number_mismatches,
+                block_hash_mismatches = report.block_hash_mismatches,
+                "cross-check report"
+            );
+            if !report.samples.missing_in_indexer.is_empty() {
+                info!(samples = ?report.samples.missing_in_indexer, "missing_in_indexer samples");
+            }
+            if !report.samples.missing_in_seed.is_empty() {
+                info!(samples = ?report.samples.missing_in_seed, "missing_in_seed samples");
+            }
+            if !report.samples.block_number_mismatches.is_empty() {
+                info!(samples = ?report.samples.block_number_mismatches, "block_number_mismatch samples");
+            }
+            if !report.samples.block_hash_mismatches.is_empty() {
+                info!(samples = ?report.samples.block_hash_mismatches, "block_hash_mismatch samples");
+            }
+        }
     }
     Ok(())
 }

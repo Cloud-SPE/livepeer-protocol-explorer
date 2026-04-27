@@ -49,9 +49,14 @@ const DEFAULT_BATCH_BLOCKS: u64 = 5_000;
 // Chainstack's eth_getLogs hard cap is 9,000 blocks per call. Our cap matches.
 const MAX_BATCH_BLOCKS: u64 = 9_000;
 const MIN_BATCH_BLOCKS: u64 = 100;
-// Bound retries per chunk. Each retry sleeps RETRY_BACKOFF_SECS first.
-const MAX_RETRIES_PER_CHUNK: u32 = 5;
+// Bound retries per chunk. With 50 retries and capped exponential backoff this
+// gives a chunk many minutes to ride through Chainstack throttling waves before
+// the driver gives up and forces a process exit (which the script can re-launch
+// cleanly via per-contract checkpoint).
+const MAX_RETRIES_PER_CHUNK: u32 = 50;
 const RETRY_BACKOFF_SECS: u64 = 2;
+// Exponential cap applied when we're already at MIN_BATCH and still failing.
+const MIN_BATCH_RETRY_BACKOFF_CAP_SECS: u64 = 60;
 
 /// Which contract to back-fill. Maps to the proxy address from config and the abi_hash
 /// from the registry. Each contract has a fixed list of topic0s of interest.
@@ -138,6 +143,7 @@ pub async fn drive_backfill(
     let mut current_batch = DEFAULT_BATCH_BLOCKS;
     let mut next = from_block;
     let mut retries_in_a_row: u32 = 0;
+    let mut min_batch_retries: u32 = 0;
     while next <= to_block {
         let chunk_end = (next + current_batch - 1).min(to_block);
         match backfill_chunk(
@@ -158,6 +164,7 @@ pub async fn drive_backfill(
                 summary.dead_lettered += chunk.dead_lettered;
                 next = chunk_end + 1;
                 retries_in_a_row = 0;
+                min_batch_retries = 0;
                 if current_batch < MAX_BATCH_BLOCKS {
                     current_batch = (current_batch * 2).min(MAX_BATCH_BLOCKS);
                 }
@@ -188,21 +195,27 @@ pub async fn drive_backfill(
                 continue; // retry the same `next` with smaller chunk
             }
             Err(e) if is_transient(&e) => {
-                // At MIN_BATCH already and still failing — give the provider a longer
-                // breath, count a retry, try again.
+                // At MIN_BATCH already and still failing — exponential backoff
+                // capped at MIN_BATCH_RETRY_BACKOFF_CAP_SECS so we don't hammer
+                // a throttled provider while still riding through long waves.
                 retries_in_a_row += 1;
+                min_batch_retries += 1;
                 if retries_in_a_row >= MAX_RETRIES_PER_CHUNK {
                     error!(chunk_start = next, chunk_end, error = %e, "min-batch transient retries exhausted; halting");
                     return Err(e);
                 }
+                let exp = min_batch_retries.saturating_sub(1).min(20);
+                let backoff_secs = (RETRY_BACKOFF_SECS.saturating_mul(2u64.saturating_pow(exp)))
+                    .min(MIN_BATCH_RETRY_BACKOFF_CAP_SECS);
                 warn!(
                     chunk_start = next, chunk_end,
                     retry = retries_in_a_row,
-                    backoff_secs = RETRY_BACKOFF_SECS * 2,
+                    min_batch_retry = min_batch_retries,
+                    backoff_secs,
                     error = %e,
                     "transient RPC error at MIN_BATCH — backing off and retrying"
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(RETRY_BACKOFF_SECS * 2)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 continue;
             }
             Err(e) => {

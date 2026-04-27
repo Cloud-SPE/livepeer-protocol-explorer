@@ -46,8 +46,12 @@ const BATCH_INSERT_SIZE: usize = 500;
 const LPT_DECIMALS: u32 = 18;
 const ETH_DECIMALS: u32 = 18;
 const DEFAULT_BATCH_BLOCKS: u64 = 5_000;
-const MAX_BATCH_BLOCKS: u64 = 10_000;
+// Chainstack's eth_getLogs hard cap is 9,000 blocks per call. Our cap matches.
+const MAX_BATCH_BLOCKS: u64 = 9_000;
 const MIN_BATCH_BLOCKS: u64 = 100;
+// Bound retries per chunk. Each retry sleeps RETRY_BACKOFF_SECS first.
+const MAX_RETRIES_PER_CHUNK: u32 = 5;
+const RETRY_BACKOFF_SECS: u64 = 2;
 
 /// Which contract to back-fill. Maps to the proxy address from config and the abi_hash
 /// from the registry. Each contract has a fixed list of topic0s of interest.
@@ -133,6 +137,7 @@ pub async fn drive_backfill(
     let mut summary = DriveSummary::default();
     let mut current_batch = DEFAULT_BATCH_BLOCKS;
     let mut next = from_block;
+    let mut retries_in_a_row: u32 = 0;
     while next <= to_block {
         let chunk_end = (next + current_batch - 1).min(to_block);
         match backfill_chunk(
@@ -152,22 +157,53 @@ pub async fn drive_backfill(
                 summary.events_inserted += chunk.events_inserted;
                 summary.dead_lettered += chunk.dead_lettered;
                 next = chunk_end + 1;
+                retries_in_a_row = 0;
                 if current_batch < MAX_BATCH_BLOCKS {
                     current_batch = (current_batch * 2).min(MAX_BATCH_BLOCKS);
                 }
             }
+            Err(e) if is_transient(&e) && retries_in_a_row >= MAX_RETRIES_PER_CHUNK => {
+                error!(
+                    chunk_start = next, chunk_end, retries_in_a_row,
+                    error = %e,
+                    "transient RPC error budget exhausted; halting (run can resume from checkpoint)"
+                );
+                return Err(e);
+            }
             Err(e) if is_transient(&e) && current_batch > MIN_BATCH_BLOCKS => {
                 let halved = (current_batch / 2).max(MIN_BATCH_BLOCKS);
+                retries_in_a_row += 1;
                 warn!(
                     chunk_start = next,
                     chunk_end,
                     old_batch = current_batch,
                     new_batch = halved,
+                    retry = retries_in_a_row,
+                    backoff_secs = RETRY_BACKOFF_SECS,
                     error = %e,
                     "transient RPC error — halving batch size and retrying"
                 );
                 current_batch = halved;
+                tokio::time::sleep(std::time::Duration::from_secs(RETRY_BACKOFF_SECS)).await;
                 continue; // retry the same `next` with smaller chunk
+            }
+            Err(e) if is_transient(&e) => {
+                // At MIN_BATCH already and still failing — give the provider a longer
+                // breath, count a retry, try again.
+                retries_in_a_row += 1;
+                if retries_in_a_row >= MAX_RETRIES_PER_CHUNK {
+                    error!(chunk_start = next, chunk_end, error = %e, "min-batch transient retries exhausted; halting");
+                    return Err(e);
+                }
+                warn!(
+                    chunk_start = next, chunk_end,
+                    retry = retries_in_a_row,
+                    backoff_secs = RETRY_BACKOFF_SECS * 2,
+                    error = %e,
+                    "transient RPC error at MIN_BATCH — backing off and retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(RETRY_BACKOFF_SECS * 2)).await;
+                continue;
             }
             Err(e) => {
                 error!(chunk_start = next, chunk_end, error = %e, "chunk failed; halting");

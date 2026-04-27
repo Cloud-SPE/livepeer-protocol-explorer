@@ -59,10 +59,11 @@ struct JsonRpcErrorBody {
 
 impl Provider {
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Result<Self> {
-        // 60s timeout — Chainstack archive cold reads at very old blocks can take
-        // 10-30s. The dynamic-batch halving in the indexer is the secondary defense
-        // for genuine overload; this gives single-call requests room to succeed.
-        Self::with_timeout(name, url, Duration::from_secs(60))
+        // 25s timeout — empirically Chainstack archive cold reads usually complete
+        // in <15s. 25s covers the slow tail without burning a whole minute per retry.
+        // The dynamic-batch halving + bounded retry count in the indexer is the
+        // secondary defense.
+        Self::with_timeout(name, url, Duration::from_secs(25))
     }
 
     pub fn with_timeout(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self> {

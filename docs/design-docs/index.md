@@ -2,9 +2,10 @@
 
 Each design doc captures a single architectural decision with rationale, alternatives, and verification status.
 
-| Doc | Status | Owner | Last verified |
+| Doc | Status | Resolves | Last verified |
 |---|---|---|---|
-| _none yet_ | — | — | — |
+| [sqlite-seed-mapping.md](sqlite-seed-mapping.md) | accepted | Q-OD-1, Q-OD-2, Q-OD-3, Q-OD-4 | 2026-04-27 |
+| [bonding-manager-event-fields.md](bonding-manager-event-fields.md) | accepted | Q-OD-7 | 2026-04-27 |
 
 ## Conventions
 

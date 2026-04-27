@@ -45,11 +45,20 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [ ] `core::boot` — full §16.2 checks (RPC reachable, schema-version match, Controller-resolved targets unchanged, Chainlink + sequencer feeds sane, pool cardinality sufficient). RPC-related checks need `core::rpc` (S4); ship the rest now.
 - [ ] `tools/verify-providers.sh` — shell-level version of the same checks for ops use
 
-### S4 — RPC layer
+### S4 — RPC layer ✅ done (alloy + circuit breaker → S6)
 
-- [ ] `core::rpc` — alloy provider, routing matrix per §13.2
-- [ ] `core::rpc::cache` — `rpc_call_cache` table writes + reads, raw-bytes cross-check per §7.6
-- [ ] Circuit breaker + token-bucket rate limit
+- [x] `core::rpc::provider` — thin reqwest-backed JSON-RPC client. `Provider::call(method, params)` + typed helpers (`eth_chain_id`, `eth_block_number`, `eth_get_block_header`, `eth_call`). `BlockTag` for cache-key semantics.
+- [x] `core::rpc::cache` — `compute_call_hash`, `hash_response_bytes`, `store`, `get`. Idempotent inserts on `rpc_call_cache`.
+- [x] `core::rpc::cross_check` — `cross_check_call` (raw bytes; for `eth_call`), `cross_check_block_hash` (extracts `.hash`; for `eth_getBlockByNumber`), `single_call_cached` (archive-only path with cache).
+- [x] `verify-rpc` subcommand on seed-migrator. End-to-end live test passed against Chainstack + liveinfraspe:
+  - chain_id matches expected (42161) on both
+  - block heads delta = 0–1 (within tolerance)
+  - block-hash cross-check at head − 32 → providers agree
+  - Chainlink ETH/USD `latestRoundData()` cached (archive-only)
+  - LPT/WETH pool `slot0()` cached, `observation_cardinality = 601 ≥ 144` ✓
+- [x] **Real-world finding** — Chainstack and liveinfraspe disagree on JSON shape (post-Pectra `requestsHash` / post-Shanghai `withdrawals` rendering) even when chain data agrees. SPEC §7.6 / §13.2 amended in v1.5 to make cross-check method-aware: raw bytes for `eth_call`, `.hash` extraction for `eth_getBlockByNumber`, per-log raw bytes for `eth_getLogs`. Divergence row from the original raw-bytes attempt was preserved and marked resolved with notes.
+- [ ] alloy integration deferred to S6 (needed when we start ABI-decoding logs; reqwest is sufficient through S5)
+- [ ] Circuit breaker + token-bucket rate limit deferred to S6
 
 ### S5 — seed migrator (real work)
 
@@ -107,3 +116,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S1 complete. Foundation in place; seed-migrator smoke-tested against live Postgres and live SQLite. Switched from `rusqlite` to `sqlx::sqlite` to resolve a `libsqlite3-sys` link conflict — single SQL library across both stores.
 - **2026-04-27** S2 complete. All 14 migrations applied, schema matches SPEC §11. SPEC bumped to v1.4 — §11.5 PK corrected (Postgres rejects function calls in PRIMARY KEY). 8 FKs verified, 2 check constraints verified.
 - **2026-04-27** S3 partial. `core::abi` + `seed-abi-registry` + ABI hash verification in `probe`. 7 ABIs registered. Tamper test verified — modifying `abi/Minter.json` triggers `AbiHashMismatch` and halts probe. RPC-side boot checks deferred to S4 since they need `core::rpc`.
+- **2026-04-27** S4 done. `core::rpc::{provider,cache,cross_check}` + `verify-rpc` subcommand. End-to-end pass against live Chainstack + liveinfraspe; 4 cache rows written; cardinality 601 verified at head. SPEC bumped to v1.5 — cross-check is method-aware (block hash for headers, raw bytes for eth_call, per-log for eth_getLogs). The cross-check fired on a real provider JSON-shape disagreement before the fix; that divergence row is preserved as a record.

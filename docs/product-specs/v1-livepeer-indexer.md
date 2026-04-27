@@ -1,12 +1,16 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.4
+## Technical Specification v1.5
 
 **Status:** Draft, ready for implementation
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.4
+**Document version:** 1.5
+
+### Changes since v1.4 (2026-04-27)
+
+- §7.6 / §13.2 — cross-check is **method-aware**, not unconditionally raw-bytes. Verified empirically: Chainstack and liveinfraspe agree on chain data but disagree on JSON shape for `eth_getBlockByNumber` (Chainstack emits `requestsHash`/`withdrawals` as `null`; liveinfraspe omits them). The load-bearing invariant from §9.2 is "block N has hash H" — `cross_check_block_hash` extracts `.hash` from each response and compares. `eth_call` results are hex-blob strings with no provider rendering choices, so raw-bytes compare remains correct there.
 
 ### Changes since v1.3 (2026-04-27)
 
@@ -515,7 +519,13 @@ An auditor can re-derive the final USD value end-to-end from this JSON without m
 
 Going-forward (post-seed-boundary) pricing reads are made against **two RPC providers** for `eth_getLogs` and block-hash reads (§13.3). For historical state reads (`eth_call` at archive blocks), only the archive provider can respond — these are single-source.
 
-Cross-check operates at the **raw response level**: `slot0`/`observe()` raw bytes from both providers are compared bit-for-bit. Any mismatch is `failed_rpc_divergence` — never auto-retried, always surfaced for human review.
+Cross-check is **method-aware**:
+
+- For `eth_call` (e.g. `slot0`, `observe`, `latestRoundData`) the result is a hex-blob string with no provider rendering choices, so **raw-bytes compare** is correct and bit-exact.
+- For `eth_getBlockByNumber` providers disagree on JSON shape — Chainstack emits `requestsHash`/`withdrawals` as `null`; liveinfraspe omits them — even when chain data agrees. Cross-check therefore extracts `.hash` from each response and compares the hashes. The load-bearing invariant from §9.2 is "block N has hash H"; full-header byte compare would be perpetually noisy.
+- For `eth_getLogs` cross-check is logs-by-(tx_hash, log_index) at raw byte level on each entry; ordering may differ between providers.
+
+Any mismatch on the chosen invariant is `failed_rpc_divergence` — never auto-retried, always surfaced for human review.
 
 ---
 

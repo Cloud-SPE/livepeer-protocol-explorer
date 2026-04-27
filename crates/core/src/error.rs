@@ -28,6 +28,31 @@ pub enum CoreError {
         expected: String,
         actual: String,
     },
+
+    #[error("HTTP error talking to {provider}: {source}")]
+    Http {
+        provider: String,
+        #[source]
+        source: reqwest::Error,
+    },
+
+    #[error("JSON-RPC error from {provider} on {method}: code={code} message={message}")]
+    JsonRpc {
+        provider: String,
+        method: String,
+        code: i64,
+        message: String,
+    },
+
+    #[error("RPC divergence on {method} block={block:?}: provider {provider_a} hash={hash_a} vs provider {provider_b} hash={hash_b}")]
+    RpcDivergence {
+        method: String,
+        block: Option<i64>,
+        provider_a: String,
+        hash_a: String,
+        provider_b: String,
+        hash_b: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

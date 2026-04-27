@@ -3,12 +3,14 @@ use clap::{Parser, Subcommand};
 use livepeer_core::{
     abi::{self, AbiRegistration},
     config::Config,
-    db, tracing_init,
+    db,
+    rpc::{cross_check, Provider},
+    tracing_init,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::path::PathBuf;
 use std::str::FromStr;
-use tracing::info;
+use tracing::{info, warn};
 
 const SERVICE: &str = "livepeer-seed-migrator";
 
@@ -46,6 +48,8 @@ enum Command {
         #[arg(long, env = "SOURCE_SQLITE")]
         source_sqlite: PathBuf,
     },
+    /// Verify both RPC providers + cross-check + cache write. SPEC §13.2, §7.6, §16.2.
+    VerifyRpc,
 }
 
 #[tokio::main]
@@ -73,6 +77,7 @@ async fn main() -> Result<()> {
                 source_sqlite.display()
             )
         }
+        Command::VerifyRpc => verify_rpc(&pg, &cfg).await?,
     }
     Ok(())
 }
@@ -169,4 +174,125 @@ async fn probe(pg: &sqlx::PgPool, source_sqlite: &PathBuf, abi_dir: &PathBuf) ->
         .await?;
     info!(payout, reward, events, "source SQLite read-only");
     Ok(())
+}
+
+async fn verify_rpc(pg: &sqlx::PgPool, cfg: &Config) -> Result<()> {
+    let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
+    let secondary_url = cfg.secondary_rpc_url().context("SECONDARY_RPC_URL")?;
+    let archive = Provider::new("chainstack", archive_url)?;
+    let secondary = Provider::new("liveinfraspe", secondary_url)?;
+
+    // 1. eth_chainId on both — must match the configured chain.
+    let expected_chain = cfg.static_.chain.chain_id;
+    let chain_a = archive.eth_chain_id().await?;
+    let chain_b = secondary.eth_chain_id().await?;
+    if chain_a != expected_chain || chain_b != expected_chain {
+        anyhow::bail!(
+            "chain_id mismatch: expected {expected_chain}, archive={chain_a}, secondary={chain_b}"
+        );
+    }
+    info!(chain_id = expected_chain, "both providers report expected chain");
+
+    // 2. eth_blockNumber on both. Heads can differ by 1–2 blocks (sequencing variance).
+    let head_a = archive.eth_block_number().await?;
+    let head_b = secondary.eth_block_number().await?;
+    let delta = head_a.abs_diff(head_b);
+    info!(
+        archive_head = head_a,
+        secondary_head = head_b,
+        delta_blocks = delta,
+        "block heads"
+    );
+    if delta > 5 {
+        warn!(
+            delta_blocks = delta,
+            "providers > 5 blocks apart — investigate before backfill"
+        );
+    }
+
+    // 3. Pin a recent block N — `min(both heads) - 32` for finality margin.
+    let pin = head_a.min(head_b).saturating_sub(32);
+    info!(pin_block = pin, "pinning cross-check block");
+
+    // 4. Cross-check the block hash at the pinned block. Per the design note above
+    //    cross_check_block_hash, raw-bytes compare on full headers fails on
+    //    provider-specific optional-null fields (Chainstack emits requestsHash/withdrawals
+    //    as null; liveinfraspe omits them). The load-bearing invariant is .hash equality.
+    let canonical_hash =
+        cross_check::cross_check_block_hash(pg, &archive, &secondary, pin).await?;
+    info!(
+        block = pin,
+        canonical_hash = %canonical_hash,
+        "cross-check passed: providers agree on block hash"
+    );
+
+    // 5. Single-source archive call: Chainlink ETH/USD latestRoundData() at the pinned block.
+    let chainlink = &cfg.static_.pricing.chainlink_eth_usd_aggregator;
+    let chainlink_outcome = cross_check::single_call_cached(
+        pg,
+        &archive,
+        "eth_call",
+        &serde_json::json!([
+            { "to": chainlink, "data": "0xfeaf968c" },  // latestRoundData()
+            format!("0x{:x}", pin),
+        ]),
+        Some(pin as i64),
+    )
+    .await?;
+    let chainlink_result =
+        std::str::from_utf8(&chainlink_outcome.response_bytes).unwrap_or_default();
+    info!(
+        call_hash = %chainlink_outcome.call_hash,
+        response_hash = %chainlink_outcome.response_hash,
+        result_preview = %&chainlink_result[..chainlink_result.len().min(80)],
+        "archive-only: Chainlink ETH/USD latestRoundData() cached"
+    );
+
+    // 6. Single-source archive call: UniswapV3 LPT/WETH pool slot0() at the pinned block.
+    let pool = &cfg.static_.pricing.uniswap_v3_lpt_weth_pool;
+    let pool_outcome = cross_check::single_call_cached(
+        pg,
+        &archive,
+        "eth_call",
+        &serde_json::json!([
+            { "to": pool, "data": "0x3850c7bd" },  // slot0()
+            format!("0x{:x}", pin),
+        ]),
+        Some(pin as i64),
+    )
+    .await?;
+    let cardinality = parse_slot0_cardinality(&pool_outcome.response_bytes);
+    let required = cfg.static_.pricing.required_observation_cardinality;
+    info!(
+        call_hash = %pool_outcome.call_hash,
+        response_hash = %pool_outcome.response_hash,
+        observation_cardinality = cardinality,
+        required,
+        sufficient_for_twap = cardinality >= required,
+        "archive-only: pool slot0() cached"
+    );
+
+    // Cache row count + divergence count for observability.
+    let cache_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rpc_call_cache")
+        .fetch_one(pg)
+        .await?;
+    let divergence_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM rpc_divergence_failures WHERE resolved_at IS NULL",
+    )
+    .fetch_one(pg)
+    .await?;
+    info!(cache_rows, unresolved_divergences = divergence_rows, "verify-rpc complete");
+    Ok(())
+}
+
+/// Decode the `observationCardinality` field from a packed `slot0()` return value.
+/// Layout: sqrtPriceX96 (uint160 → 32B), tick (int24 → 32B), observationIndex (uint16 → 32B),
+/// observationCardinality (uint16 → 32B), ... Index 192..256 of the hex (after 0x).
+fn parse_slot0_cardinality(response_bytes: &[u8]) -> u32 {
+    let s = std::str::from_utf8(response_bytes).unwrap_or_default();
+    let hex_str = s.trim_matches('"').trim_start_matches("0x");
+    if hex_str.len() < 256 {
+        return 0;
+    }
+    u32::from_str_radix(&hex_str[192..256], 16).unwrap_or(0)
 }

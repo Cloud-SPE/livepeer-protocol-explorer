@@ -1,0 +1,101 @@
+# SPEC §15.2 — single-host deployment, all services + Postgres on one machine.
+# Prometheus + Grafana run on a separate, pre-provisioned external host (§15.1).
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"   # bound to localhost only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  livepeer-indexer:
+    image: livepeer-valuation-system:latest
+    build: .
+    command: livepeer-indexer
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9101:9101"
+
+  livepeer-reorg-watcher:
+    image: livepeer-valuation-system:latest
+    command: livepeer-reorg-watcher
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9102:9102"
+
+  livepeer-finality-watcher:
+    image: livepeer-valuation-system:latest
+    command: livepeer-finality-watcher
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9103:9103"
+
+  livepeer-valuator:
+    image: livepeer-valuation-system:latest
+    command: livepeer-valuator
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9104:9104"
+
+  livepeer-staker:
+    image: livepeer-valuation-system:latest
+    command: livepeer-staker
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9105:9105"
+
+  livepeer-api:
+    image: livepeer-valuation-system:latest
+    command: livepeer-api
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "9106:9106"
+
+  # livepeer-seed-migrator is a one-shot, not a long-running service (SPEC §15.2).
+  # Run via:
+  #   docker compose run --rm livepeer-seed-migrator livepeer-seed-migrator --source-sqlite /seed/sqlite-4.0.db
+  livepeer-seed-migrator:
+    image: livepeer-valuation-system:latest
+    profiles: ["tools"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./seed:/seed:ro
+
+volumes:
+  postgres_data:

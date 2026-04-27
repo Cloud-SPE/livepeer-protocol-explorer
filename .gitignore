@@ -1,0 +1,31 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Local Postgres data (if running outside docker volume)
+/pgdata
+*.dump
+
+# SQLite seeds — large; live outside the repo
+*.sqlite
+*.db
+!docs/**/*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated docs (regenerate locally; commit when stable)
+# docs/generated/  # uncomment to ignore

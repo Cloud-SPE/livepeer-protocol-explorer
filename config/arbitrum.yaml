@@ -1,0 +1,64 @@
+# Static config — committed, PR-reviewed (SPEC §16.1 Layer 1).
+#
+# Chain identity, contract addresses, pool/oracle addresses, default valuation
+# version, batch sizes, retry policies, observation cardinality requirements.
+#
+# Secrets DO NOT live here. See .env.example.
+
+chain:
+  name: arbitrum-one
+  chain_id: 42161
+  livepeer_arbitrum_genesis_block: 6738090  # SPEC §5.4 — feb 2022 deployment, confirm before backfill
+
+contracts:
+  # SPEC §5.1 — Controller is the only address hardcoded; all other targets resolved at boot.
+  controller: "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
+
+  # Proxies the indexer subscribes to (SPEC §5.3).
+  governor:           "0xD9dEd6f9959176F0A04dcf88a0d2306178A736a6"
+  livepeer_token:     "0x289ba1701C2F088cf0faf8B3705246331cB8A839"
+  minter:             "0xc20DE37170B45774e6CD3d2304017fc962f27252"
+  bonding_manager:    "0x35Bcf3c30594191d53231E4FF333E8A770453e40"
+  ticket_broker:      "0xa8bB618B1520E284046F3dFc448851A1Ff26e41B"
+  rounds_manager:     "0xdd6f56DcC28D3F5f27084381fE8Df634985cc39f"
+  bonding_votes:      "0x0B9C254837E72Ebe9Fe04960C43B69782E68169A"  # ABI not vendored — TD-001
+  l2_lpt_gateway:     "0x6D2457a4ad276000A615295f7A80F79E48CcD318"
+
+pricing:
+  default_valuation_version: "v1_lpt_weth_twap_30min_x_chainlink_eth"
+  twap_window_seconds: 1800
+  required_observation_cardinality: 144  # 30 min ÷ ~12.5s tick spacing — confirm at backfill window start (§7.3.2)
+
+  uniswap_v3_lpt_weth_pool: "0x4fd47e5102dfbf95541f64ed6fe13d4ed26d2546"  # SPEC §7.3
+  chainlink_eth_usd_aggregator: "TODO_Q-OD-8"   # SPEC §22 Q-OD-8
+  l2_sequencer_uptime_feed:    "TODO_Q-OD-10"   # SPEC §22 Q-OD-10
+  chainlink_staleness_seconds: 86400            # 24h heartbeat per §7.3.3
+  chainlink_warn_staleness_seconds: 14400       # 4h warn threshold
+
+indexer:
+  initial_batch_size_blocks: 5000      # SPEC §13.4 dynamic batch size
+  max_batch_size_blocks: 10000
+  max_retries_per_batch: 5
+
+reorg_watcher:
+  walk_depth_blocks: 7500              # SPEC §9.2.3
+  cadence_seconds_normal: 15
+  cadence_seconds_heightened: 5
+  cadence_seconds_backoff: 60
+
+retry_policy:
+  failed_rpc:
+    backoff_seconds: [60, 300, 1800, 7200, 43200]
+    max_attempts: 5
+  failed_missing_oracle:
+    backoff_seconds: [86400]
+    max_attempts: 1
+  failed_sequencer_outage:
+    reevaluate_seconds: 3600
+    terminal_after_days: 30
+
+abi_registry:
+  # Hashes verified at boot (SPEC §5.5). Populated by a tooling step that hashes
+  # the JSON files in ./abi/. Until that tool exists, leave empty and let the
+  # boot-validator complain — TODO.
+  entries: []

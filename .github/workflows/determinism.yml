@@ -1,0 +1,42 @@
+name: Determinism
+
+# SPEC §12.4 — replay determinism is the load-bearing CI gate. Once implemented,
+# every PR must reproduce expected_hashes.json byte-for-byte.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: livepeer_indexer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/livepeer_indexer_test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+
+      # TODO: when fixtures land, swap this for the real replay test.
+      # - run: cargo run --release -p livepeer-test -- replay --fixtures tests/fixtures
+      - name: Determinism placeholder
+        run: |
+          echo "::warning::Determinism replay test is a scaffold placeholder. See docs/DETERMINISM.md."
+          test -f tests/fixtures/.gitkeep

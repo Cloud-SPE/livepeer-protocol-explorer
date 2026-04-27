@@ -1,0 +1,34 @@
+log_level: info
+
+postgres:
+  connection_string_env: DATABASE_URL
+  pool_max_connections: 10
+
+rpc:
+  archive:
+    url_env: CHAINSTACK_RPC_URL
+    rate_limit_rps: 500
+    burst: 1000
+    max_concurrent: 50
+  local:
+    url_env: LOCAL_NITRO_URL
+    rate_limit_rps: 2000
+    burst: 4000
+    max_concurrent: 100
+
+alerting:
+  telegram:
+    bot_token_env: TELEGRAM_BOT_TOKEN
+    chat_id_env: TELEGRAM_CHAT_ID
+    enabled: true
+
+metrics:
+  port_indexer:           9101
+  port_reorg_watcher:     9102
+  port_finality_watcher:  9103
+  port_valuator:          9104
+  port_staker:            9105
+  port_api_metrics:       9106
+
+api:
+  bind: "0.0.0.0:8080"

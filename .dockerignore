@@ -1,0 +1,14 @@
+target/
+.git/
+.github/
+docs/
+tests/fixtures/seed.sqlite
+*.db
+*.db-pre-refactor
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+README.md
+AGENTS.md

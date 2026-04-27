@@ -1,0 +1,19 @@
+[package]
+name = "livepeer-reorg-watcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "livepeer-reorg-watcher"
+path = "src/main.rs"
+
+[dependencies]
+livepeer-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

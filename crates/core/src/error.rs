@@ -21,6 +21,13 @@ pub enum CoreError {
 
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
+
+    #[error("ABI hash mismatch for {path}: expected {expected}, got {actual}")]
+    AbiHashMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

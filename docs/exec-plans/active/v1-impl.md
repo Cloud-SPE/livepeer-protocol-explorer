@@ -37,11 +37,13 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] SPEC §11.5 corrected (v1.4): `COALESCE(log_index, -1)` in PK is invalid Postgres syntax — replaced with `NOT NULL DEFAULT -1` sentinel + plain PK
 - [ ] `tools/gen-schema-doc` — emit `docs/generated/db-schema.md` from migrations (defer to S3 — needs core::abi too)
 
-### S3 — ABI registry + boot validation
+### S3 — ABI registry + boot validation (in_progress)
 
-- [ ] `core::abi` — load JSON files, compute sha256, populate `contract_abi_registry`
-- [ ] `core::boot` — checks per SPEC §16.2: RPC reachable, schema-version match, ABI hashes match, Controller-resolved targets unchanged, Chainlink + sequencer feeds sane, pool cardinality sufficient
-- [ ] `tools/verify-providers.sh` — shell version of the same checks
+- [x] `core::abi` — `hash_file()`, `verify_against_registry()`, `upsert()`. sha256 hash + idempotent upsert.
+- [x] `livepeer-seed-migrator seed-abi-registry` subcommand — populates 7 contracts (Controller, BondingManager, TicketBroker, RoundsManager, LivepeerToken, Minter, Governor) from `abi/`. Idempotent (re-run = `inserted: 0, already: 7`).
+- [x] `livepeer-seed-migrator probe` extended with ABI hash verification. **Tamper test passes:** appending a byte to `abi/Minter.json` triggers `AbiHashMismatch` and halts the probe before SQLite read; restoration returns to green.
+- [ ] `core::boot` — full §16.2 checks (RPC reachable, schema-version match, Controller-resolved targets unchanged, Chainlink + sequencer feeds sane, pool cardinality sufficient). RPC-related checks need `core::rpc` (S4); ship the rest now.
+- [ ] `tools/verify-providers.sh` — shell-level version of the same checks for ops use
 
 ### S4 — RPC layer
 
@@ -104,3 +106,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** Plan opened. Scaffold + SPEC v1.3 in place. All 10 SPEC §22 open data items resolved. Starting S1.
 - **2026-04-27** S1 complete. Foundation in place; seed-migrator smoke-tested against live Postgres and live SQLite. Switched from `rusqlite` to `sqlx::sqlite` to resolve a `libsqlite3-sys` link conflict — single SQL library across both stores.
 - **2026-04-27** S2 complete. All 14 migrations applied, schema matches SPEC §11. SPEC bumped to v1.4 — §11.5 PK corrected (Postgres rejects function calls in PRIMARY KEY). 8 FKs verified, 2 check constraints verified.
+- **2026-04-27** S3 partial. `core::abi` + `seed-abi-registry` + ABI hash verification in `probe`. 7 ABIs registered. Tamper test verified — modifying `abi/Minter.json` triggers `AbiHashMismatch` and halts probe. RPC-side boot checks deferred to S4 since they need `core::rpc`.

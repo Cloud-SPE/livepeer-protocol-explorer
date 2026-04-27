@@ -89,6 +89,10 @@ impl Provider {
     /// Generic call. `params` is a JSON value (typically an array). Returns the raw
     /// `result` value as `serde_json::Value`. The cache layer wants the raw bytes —
     /// see `cache::store_with_call`.
+    ///
+    /// We wrap the whole `send → text` flow in a `tokio::time::timeout` so even if
+    /// reqwest's per-request timeout misfires (observed on half-closed pooled
+    /// connections that hang silently), we always get a clean Err in bounded time.
     pub async fn call(&self, method: &str, params: &Value) -> Result<Value> {
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
@@ -96,27 +100,42 @@ impl Provider {
             params,
             id: 1,
         };
-        let resp_text = self
-            .client
-            .post(&self.url)
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| CoreError::Http {
-                provider: self.name.clone(),
-                source: e,
-            })?
-            .error_for_status()
-            .map_err(|e| CoreError::Http {
-                provider: self.name.clone(),
-                source: e,
-            })?
-            .text()
-            .await
-            .map_err(|e| CoreError::Http {
-                provider: self.name.clone(),
-                source: e,
-            })?;
+        // A bit longer than the reqwest client timeout so the inner one usually
+        // fires first; this is the hard floor.
+        let hard_timeout = Duration::from_secs(30);
+        let send_text = async {
+            self.client
+                .post(&self.url)
+                .json(&req)
+                .send()
+                .await
+                .map_err(|e| CoreError::Http {
+                    provider: self.name.clone(),
+                    source: e,
+                })?
+                .error_for_status()
+                .map_err(|e| CoreError::Http {
+                    provider: self.name.clone(),
+                    source: e,
+                })?
+                .text()
+                .await
+                .map_err(|e| CoreError::Http {
+                    provider: self.name.clone(),
+                    source: e,
+                })
+        };
+        let resp_text = match tokio::time::timeout(hard_timeout, send_text).await {
+            Ok(r) => r?,
+            Err(_) => {
+                return Err(CoreError::JsonRpc {
+                    provider: self.name.clone(),
+                    method: method.to_string(),
+                    code: -32001,
+                    message: format!("hard timeout {}s exceeded", hard_timeout.as_secs()),
+                });
+            }
+        };
         let parsed: JsonRpcResponse = serde_json::from_str(&resp_text).map_err(|_| {
             // Treat malformed JSON-RPC as a determinism-fatal error per §13.3
             CoreError::JsonRpc {

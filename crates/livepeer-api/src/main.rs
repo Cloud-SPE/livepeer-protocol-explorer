@@ -53,6 +53,14 @@ async fn main() -> Result<()> {
         .route("/events/{id}/valuation", get(routes::valuations::for_event))
         // Valuations
         .route("/valuations", get(routes::valuations::list))
+        // Aggregations
+        .route("/aggregations/events", get(routes::aggregations::events))
+        // Governance
+        .route("/governance/proposals", get(routes::governance::list))
+        .route("/governance/proposals/{proposal_id}", get(routes::governance::get_one))
+        // Prices
+        .route("/prices/{asset}/{quote}/block/{block}", get(routes::prices::at_block))
+        .route("/prices/{asset}/{quote}/latest", get(routes::prices::latest))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
 

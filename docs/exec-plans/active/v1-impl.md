@@ -211,13 +211,18 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] Standard error envelope `{ "error": { "code", "message", "context" } }`
 - [x] **Live verification:** Reward 533.21 LPT × $2.191 = $1,168.28 with inline valuations ✓; cursor pagination produces stable strict-after pages ✓; multi-asset EarningsClaimed returns LPT + ETH portions ✓; 404 envelope ✓
 
-#### S10.2 — prices + stake + aggregations + governance + ETag (pending)
-- [ ] `GET /prices/{asset}/{quote}/{block,latest,range}` — backed by `token_prices_by_block`
+#### S10.2 — aggregations + governance + prices ✅ done (stake + ETag → S10.3)
+- [x] `GET /aggregations/events` — bucket = day | week | month; metric = count | sum_amount_native | sum_amount_usd | avg_amount_usd; tz default UTC; from/to accept ISO date or block number; LEFT JOIN to `event_valuations` only when metric needs it. **Live verified:** 94 Rewards summing $60,890.17 in one day; 5 WinningTicketRedeemed in one day; total $65,246.65 across 155 valuable events.
+- [x] `GET /governance/proposals[?status=executed|not_executed|active|all]` — joins `ProposalCreated` + `ProposalExecuted` + per-proposal `VoteCast` tally (against / for / abstain weight, vote count). Empty result confirmed for our test range (no governance activity).
+- [x] `GET /governance/proposals/{proposal_id}` — single proposal fetch.
+- [x] `GET /prices/{asset}/{quote}/block/{block}` and `/latest` — backed by `token_prices_by_block`. Returns 404 today because the valuator caches via `rpc_call_cache` instead of `token_prices_by_block` — see TD-007.
+- [x] Validation: rejects `bucket=hour`, `metric=median`, etc. with conformant 400 + error envelope.
+
+#### S10.3 — stake + ETag + range prices + sort=amount_usd_desc (pending)
 - [ ] `GET /stake/{delegator}/...` — needs S9 staker
-- [ ] `GET /aggregations/events?bucket=day|week|month&metric=count|sum_amount_usd&...` — replaces 4 legacy summary routes
-- [ ] `GET /governance/proposals` — convenience join over ProposalCreated/ProposalExecuted/VoteCast
 - [ ] `If-None-Match` / `ETag` / `Cache-Control` per SPEC §14.2
-- [ ] `sort=amount_usd_desc` requires the join — ship in this slice
+- [ ] `GET /prices/{asset}/{quote}/range` with lazy backfill
+- [ ] `sort=amount_usd_desc` on `/events` (requires JOIN)
 
 ### S11 — cross-check + determinism CI
 
@@ -249,3 +254,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S8.2.b done — Uniswap V3 TWAP × Chainlink for LPT events. tick_math::get_sqrt_ratio_at_tick implemented as deterministic integer math (Uniswap reference algorithm), 6 unit tests pass. Sample: avg tick -69945 → sqrtPriceX96 = 2399491... → LPT/WETH = 0.0009172 × $2394.51 = $2.196 → 326.35 LPT = $716.76 ✓. 25 LPT events priced. Pricing chain provenance carries cumulative ticks, mean tick, sqrtPriceX96, oracle, raw_round. Total event_valuations coverage: 143 across 3 sources (seed 112 + Chainlink ETH 6 + Uniswap LPT 25). Idempotent.
 - **2026-04-27** S8.3 + S8.4 scaffolding done. Multi-asset: 12 EarningsClaimed → 24 rows (12 LPT priced via TWAP, 4 ETH via Chainlink, 8 ETH zero-amount). Total event_valuations coverage now: 167 across 4 sources. Determinism guard `insert_valuation_checked` + diff helper ready with 3 unit tests; verify-mode CLI integration deferred to S8.5. 9/9 unit tests pass.
 - **2026-04-27** S10.1 done — Axum API with /health, /backfills/status, /events (with cursor pagination + inline valuations), /events/{id}, /events/{id}/valuation, /valuations. Live tests pass: Reward 533.21 LPT × $2.191 = $1,168.28 returned with inline valuations; cursor pagination stable; multi-asset EarningsClaimed returns both LPT + ETH portions; 404 error envelope conforms to SPEC §14.4. Numerics serialized as strings.
+- **2026-04-27** S10.2 done — /aggregations/events (94 Rewards = $60,890.17/day verified), /governance/proposals + tally, /prices/{asset}/{quote}/{block,latest}. TD-007 added — token_prices_by_block isn't being written by the valuator yet; rpc_call_cache holds the data instead. Validation envelope confirmed for bad bucket/metric inputs.

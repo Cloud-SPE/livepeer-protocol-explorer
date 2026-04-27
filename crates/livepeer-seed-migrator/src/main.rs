@@ -1,3 +1,5 @@
+mod import;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use livepeer_core::{
@@ -71,12 +73,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::SeedAbiRegistry { abi_dir } => seed_abi_registry(&pg, &abi_dir, &cfg).await?,
         Command::Probe { source_sqlite, abi_dir } => probe(&pg, &source_sqlite, &abi_dir).await?,
-        Command::Import { source_sqlite } => {
-            anyhow::bail!(
-                "Import not yet implemented (S5). Source SQLite would be: {}",
-                source_sqlite.display()
-            )
-        }
+        Command::Import { source_sqlite } => run_import(&pg, &source_sqlite).await?,
         Command::VerifyRpc => verify_rpc(&pg, &cfg).await?,
     }
     Ok(())
@@ -282,6 +279,45 @@ async fn verify_rpc(pg: &sqlx::PgPool, cfg: &Config) -> Result<()> {
     .fetch_one(pg)
     .await?;
     info!(cache_rows, unresolved_divergences = divergence_rows, "verify-rpc complete");
+    Ok(())
+}
+
+async fn run_import(pg: &sqlx::PgPool, source_sqlite: &PathBuf) -> Result<()> {
+    if !source_sqlite.exists() {
+        anyhow::bail!("source SQLite not found at {}", source_sqlite.display());
+    }
+    let sqlite_url = format!("sqlite:{}", source_sqlite.display());
+    let sqlite_opts = SqliteConnectOptions::from_str(&sqlite_url)?
+        .read_only(true)
+        .immutable(true);
+    let sqlite_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlite_opts)
+        .await
+        .with_context(|| format!("opening source SQLite at {}", source_sqlite.display()))?;
+    info!(source = %source_sqlite.display(), "source SQLite open");
+
+    let summary = import::run(pg, &sqlite_pool).await?;
+
+    let payouts_total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM seeded_event_prices WHERE event_type_hint = 'payout'",
+    )
+    .fetch_one(pg)
+    .await?;
+    let rewards_total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM seeded_event_prices WHERE event_type_hint = 'reward'",
+    )
+    .fetch_one(pg)
+    .await?;
+    info!(
+        payouts_seen = summary.payouts_seen,
+        payouts_inserted_this_run = summary.payouts_inserted,
+        payouts_total_in_postgres = payouts_total,
+        rewards_seen = summary.rewards_seen,
+        rewards_inserted_this_run = summary.rewards_inserted,
+        rewards_total_in_postgres = rewards_total,
+        "seed import complete"
+    );
     Ok(())
 }
 

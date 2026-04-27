@@ -60,11 +60,18 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [ ] alloy integration deferred to S6 (needed when we start ABI-decoding logs; reqwest is sufficient through S5)
 - [ ] Circuit breaker + token-bucket rate limit deferred to S6
 
-### S5 — seed migrator (real work)
+### S5 — seed migrator (real work) ✅ done (events.payload staging → S11)
 
-- [ ] Read SQLite payout + reward + events.payload (staging)
-- [ ] Insert into `seeded_event_prices` per `docs/design-docs/sqlite-seed-mapping.md`
-- [ ] Idempotent re-run
+- [x] `livepeer-seed-migrator import` — real SQLite read + Postgres write
+- [x] 297,105 payouts → `seeded_event_prices(asset='ETH', event_type_hint='payout')`
+- [x] 158,448 rewards → `seeded_event_prices(asset='LPT', event_type_hint='reward')`
+- [x] Per Q-OD-2: `log_index = -1` sentinel; PK `(chain_id, tx_hash, log_index, asset)`
+- [x] Per Q-OD-1: SQLite f64 → BigDecimal::from_f64; valuator re-derives `amount_native` from RPC at valuation time
+- [x] Idempotent: re-run inserts 0, totals unchanged at 297,105 / 158,448
+- [x] CAST AS REAL on every numeric column to normalize SQLite's INTEGER-affinity-on-whole-numbers (sqlx rejects INT↔f64 decode)
+- [x] Spot-checked: payout has ETH price ≈ $2390, reward has LPT price ≈ $5.24 — sane
+- [x] **Performance:** 24.7s for 455K rows in batches of 1000 (one PG transaction per table)
+- [ ] events.payload staging table + import → S11 (cross-check pass; uses TD-004 plumbing)
 
 ### S6 — indexer
 
@@ -117,3 +124,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S2 complete. All 14 migrations applied, schema matches SPEC §11. SPEC bumped to v1.4 — §11.5 PK corrected (Postgres rejects function calls in PRIMARY KEY). 8 FKs verified, 2 check constraints verified.
 - **2026-04-27** S3 partial. `core::abi` + `seed-abi-registry` + ABI hash verification in `probe`. 7 ABIs registered. Tamper test verified — modifying `abi/Minter.json` triggers `AbiHashMismatch` and halts probe. RPC-side boot checks deferred to S4 since they need `core::rpc`.
 - **2026-04-27** S4 done. `core::rpc::{provider,cache,cross_check}` + `verify-rpc` subcommand. End-to-end pass against live Chainstack + liveinfraspe; 4 cache rows written; cardinality 601 verified at head. SPEC bumped to v1.5 — cross-check is method-aware (block hash for headers, raw bytes for eth_call, per-log for eth_getLogs). The cross-check fired on a real provider JSON-shape disagreement before the fix; that divergence row is preserved as a record.
+- **2026-04-27** S5 done. Real seed import: 297K payouts + 158K rewards = 455,553 rows in 24.7s. Idempotent (`inserted_this_run = 0` on second run). Required CAST AS REAL on every numeric column to handle SQLite's per-row INTEGER affinity for whole-number values. Sample rows verified sane (ETH @ $2390, LPT @ $5.24).

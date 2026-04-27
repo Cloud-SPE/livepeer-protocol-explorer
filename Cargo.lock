@@ -2582,8 +2582,13 @@ name = "livepeer-staker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bigdecimal",
+ "chrono",
  "clap",
  "livepeer-core",
+ "serde",
+ "serde_json",
+ "sqlx",
  "tokio",
  "tracing",
  "tracing-subscriber",

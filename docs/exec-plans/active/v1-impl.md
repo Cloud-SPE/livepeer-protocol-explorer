@@ -190,11 +190,21 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] **3 unit tests pass:** match→null, single-column mismatch, multi-column mismatch
 - [ ] Verify-mode CLI that re-runs all priced events through the checked path — defer to S8.5; the helper is ready, the routine integration just needs a `--verify` subcommand. Useful only when valuator logic changes without a version bump (a thing the spec says shouldn't happen but the guard exists for that exact case).
 
-### S9 — staker
+### S9 — staker (in_progress)
 
-- [ ] Scope 2 — flow-derived principal + event-triggered pendingStake/pendingFees
-- [ ] EarningsClaimed reconciliation
-- [ ] `delegator_registry` derived from Bond events
+#### S9.1 — flow-derived principal ✅ done
+- [x] `livepeer-staker backfill` walks Bond / Unbond / Rebond / WithdrawStake / EarningsClaimed / TransferBond events in `(block_number, log_index)` order, maintains an in-memory per-delegator running balance, writes one `stake_balances_by_block` row per affected delegator after each event
+- [x] `delegator_registry` populated as a side effect — Bond is the canonical first-event; TransferBond auto-registers the receiving side too
+- [x] EarningsClaimed reconciliation: rewards portion compounds into the delegator's `bonded_principal`
+- [x] TransferBond writes 2 rows per event (one per affected delegator)
+- [x] Idempotent: ON CONFLICT (chain_id, delegator_address, block_number) DO UPDATE; same input → same output
+- [x] Skipped 22 events on delegators whose Bond is outside the 30K-block test window (full-genesis backfill would not skip)
+- [x] **Live verification:** 3 delegators registered, 3 rows persisted (61.91 / 20.97 / 0.9 LPT) — re-run leaves DB row count unchanged
+
+#### S9.2 — pending stake / fees via RPC (pending)
+- [ ] BondingManager.pendingStake(delegator) + pendingFees(delegator) at event block via `cross_check::single_call_cached`
+- [ ] Update source = 'pending_call' or 'both' per SPEC §11.10
+- [ ] Triggered on EarningsClaimed (canonical reconciliation point per SPEC §6.8)
 
 ### S10 — API (in_progress)
 
@@ -255,3 +265,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S8.3 + S8.4 scaffolding done. Multi-asset: 12 EarningsClaimed → 24 rows (12 LPT priced via TWAP, 4 ETH via Chainlink, 8 ETH zero-amount). Total event_valuations coverage now: 167 across 4 sources. Determinism guard `insert_valuation_checked` + diff helper ready with 3 unit tests; verify-mode CLI integration deferred to S8.5. 9/9 unit tests pass.
 - **2026-04-27** S10.1 done — Axum API with /health, /backfills/status, /events (with cursor pagination + inline valuations), /events/{id}, /events/{id}/valuation, /valuations. Live tests pass: Reward 533.21 LPT × $2.191 = $1,168.28 returned with inline valuations; cursor pagination stable; multi-asset EarningsClaimed returns both LPT + ETH portions; 404 error envelope conforms to SPEC §14.4. Numerics serialized as strings.
 - **2026-04-27** S10.2 done — /aggregations/events (94 Rewards = $60,890.17/day verified), /governance/proposals + tally, /prices/{asset}/{quote}/{block,latest}. TD-007 added — token_prices_by_block isn't being written by the valuator yet; rpc_call_cache holds the data instead. Validation envelope confirmed for bad bucket/metric inputs.
+- **2026-04-27** S9.1 + stake API done. Flow-derived stake: 3 delegators registered, 3 rows persisted (61.91/20.97/0.9 LPT). 22 events skipped on out-of-window delegators (full-genesis backfill resolves). API: GET /stake/{del}/block/{N} returns at-or-before snapshot with staleness_blocks; /range filters by from/to. /stake/.../block/<pre-bond> returns 404 cleanly. Pending-stake-via-RPC defers to S9.2.

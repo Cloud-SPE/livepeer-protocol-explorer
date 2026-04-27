@@ -1,12 +1,19 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.0
+## Technical Specification v1.1
 
 **Status:** Draft, ready for implementation
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.0
+**Document version:** 1.1
+
+### Changes since v1.0 (2026-04-27)
+
+- §6.2 — added `TransferBond` to the critical-events allowlist (strict-decode).
+- §6.3 — added `TransferBond` (LPT-valued) and `WithdrawFees` (ETH-valued) rows to the BondingManager event catalog. Both surfaced from the SQLite seed but absent in v1.0. Resolves TD-003.
+- §6.3 — replaced `TBD per ABI inspection` amount-field placeholders with verified field names from `abi/BondingManager.json`. Resolves Q-OD-7.
+- §24.1 — added explicit acceptance criterion for the seed/canonical event cross-check pass (TD-004).
 
 ---
 
@@ -280,7 +287,7 @@ Each event falls into exactly one of three categories:
 
 The following events trigger **strict decode halt** (§10.2) on any decode failure. The indexer refuses to advance past a block containing one of these in a non-decodable form:
 
-- `Bond`, `Unbond`, `Rebond`, `WithdrawStake` (BondingManager — stake-worker depends on these)
+- `Bond`, `Unbond`, `Rebond`, `WithdrawStake`, `TransferBond` (BondingManager — stake-worker depends on these)
 - `Reward`, `EarningsClaimed` (BondingManager — high-value protocol events)
 - `WinningTicketRedeemed`, `WinningTicketTransfer` (TicketBroker — high-value)
 - `Transfer` (LivepeerToken — canonical token movement)
@@ -291,12 +298,14 @@ All other events go to `decode_failures` on decode error and indexing continues.
 
 | Event | Category | Amount field | `is_valuable` | Strict | Notes |
 |---|---|---|---|---|---|
-| `Bond` | LPT | TBD per ABI inspection | TRUE | YES | Stake inflow |
-| `Unbond` | LPT | TBD | TRUE | YES | Stake outflow (unbonding lock created) |
-| `Rebond` | LPT | TBD | TRUE | YES | Restoration of unbonding lock to stake |
-| `WithdrawStake` | LPT | TBD | TRUE | YES | Final withdrawal of unbonded stake |
-| `Reward` | LPT | TBD | TRUE | YES | Newly minted LPT credited to transcoder + delegators (valued at market price; mint vs transfer distinction preserved in `event_name`) |
-| `EarningsClaimed` | LPT + ETH | both LPT and ETH portions | TRUE | YES | Multi-asset event — generates two `event_valuations` rows |
+| `Bond` | LPT | `additionalAmount` | TRUE | YES | Stake inflow. **NOT `bondedAmount`** — that is the running post-bond total. |
+| `Unbond` | LPT | `amount` | TRUE | YES | Stake outflow (unbonding lock created) |
+| `Rebond` | LPT | `amount` | TRUE | YES | Restoration of unbonding lock to stake |
+| `WithdrawStake` | LPT | `amount` | TRUE | YES | Final withdrawal of unbonded stake |
+| `TransferBond` | LPT | `amount` | TRUE | YES | Stake position transferred between delegators (`old_delegator` → `new_delegator`). LPT-denominated movement; same severity class as `Bond`/`Transfer`. |
+| `Reward` | LPT | `amount` | TRUE | YES | Newly minted LPT credited to transcoder + delegators (valued at market price; mint vs transfer distinction preserved in `event_name`) |
+| `EarningsClaimed` | LPT + ETH | `rewards` (LPT) + `fees` (ETH) | TRUE | YES | Multi-asset event — generates two `event_valuations` rows |
+| `WithdrawFees` | ETH | `amount` | TRUE | NO | Delegator withdrawal of accumulated ETH fees. Stake-worker reads `pendingFees()` directly (§11.10), so doesn't depend on event flow — non-strict. |
 | `TranscoderActivated` | non-monetary | n/a | FALSE | NO | Active set entry |
 | `TranscoderDeactivated` | non-monetary | n/a | FALSE | NO | Active set exit |
 | `TranscoderUpdate` | non-monetary | n/a | FALSE | NO | rewardCut / feeShare changes |
@@ -1992,6 +2001,7 @@ The system is ready for v1 production declaration when **all** of the following 
 - [ ] `EarningsClaimed` events produce two rows in `event_valuations` (LPT + ETH) per version.
 - [ ] Stake-worker produces `stake_balances_by_block` rows for every stake-touching event, with both `bonded_principal` and `pending_stake`/`pending_fees` populated.
 - [ ] API exposes all endpoints listed in §14.3, with conditional GET (`ETag`) support working.
+- [ ] Seed/canonical event cross-check pass completes with a discrepancy report (`livepeer-test cross-check`). For every `(tx_hash, log_index)` present in both the SQLite `events` table and `raw_protocol_events` after backfill, decoded field values match. Discrepancies must be triaged and either resolved or explicitly accepted before v1 sign-off. (Resolves TD-004.)
 
 ### 24.2 Determinism
 

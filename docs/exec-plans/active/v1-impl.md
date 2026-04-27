@@ -137,12 +137,31 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [ ] Needs L1 RPC (Ethereum mainnet) — user has `https://ethereum.liveinfraspe.com/...` available (per legacy `config.toml`)
 - [ ] Watches Arbitrum's `RollupCore.SequencerBatchDelivered` (or equivalent) on L1 to mark `l1_posted`, then L1 finality confirmations to mark `finalized`
 
-### S8 — valuator
+### S8 — valuator (in_progress)
 
-- [ ] Pricing chain (§7.3) — TWAP × Chainlink with provenance JSONB
-- [ ] **Degraded path** `v1_degraded_spot_pre_cardinality` (per Q-OD-9 finding — required for v1, not optional)
-- [ ] Sequencer outage check (§7.3.4)
-- [ ] Determinism guard (§10.5)
+#### S8.1 — seed-hit pricing path ✅ done
+- [x] `livepeer-valuator backfill-from-seed [--version V] [--include-tentative]` subcommand
+- [x] LEFT JOIN to find unvalued, valuable, canonical events at the requested version (filters multi-asset out via `asset IS NULL` skip)
+- [x] Seed lookup by `(chain_id, tx_hash, asset)` against `seeded_event_prices`
+- [x] Per Q-OD-1: amount_native re-derived from chain (`raw_protocol_events.amount_normalized`); price + amount_usd computed from seed's `asset_usd_price`
+- [x] One Postgres transaction per event: INSERT `event_valuations` (idempotent ON CONFLICT) + INSERT `valuation_attempts`
+- [x] `pricing_chain` JSONB carries seed provenance: source = `trusted_historical_seed_v1`, raw seed row preserved, computation re-derivable
+- [x] `--include-tentative` development flag (SPEC §9.1 says only finalized in prod; without finality watcher, all rows are tentative)
+- [x] **Live verification:** 155 candidates → 112 priced / 31 seed-misses (Bond/Unbond/etc. → S8.2) / 12 multi-asset skipped (EarningsClaimed → S8.3). Reward 3952 LPT × $2.191 = $8,659.29 ✓; WinningTicketRedeemed 0.0024 ETH × $2,390.93 = $5.75 ✓. 112 audit rows in `valuation_attempts`. Re-run priced 0 — idempotent.
+
+#### S8.2 — on-chain pricing path (TWAP × Chainlink)
+- [ ] Sequencer-uptime check at the event block (§7.3.4) — fail as `failed_sequencer_outage`
+- [ ] Chainlink ETH/USD `latestRoundData()` at event block via `cross_check::single_call_cached` (cached after first read)
+- [ ] Uniswap V3 `observe([1800, 0])` for 30-min TWAP at event block
+- [ ] Cardinality precheck — fall back to `v1_degraded_spot_pre_cardinality` if < 144 (Q-OD-9 finding — required for v1)
+- [ ] `pricing_chain` JSONB with full multi-step provenance (§7.5)
+- [ ] Mandatory checks: `answeredInRound >= roundId`, staleness ≤ 86400s
+- [ ] Status routing: `priced`, `priced_with_warning`, `failed_*` per §10.1
+
+#### S8.3 — multi-asset (EarningsClaimed) — generates 2 valuation rows per event per SPEC §6.8
+
+#### S8.4 — determinism guard (§10.5)
+- [ ] On `event_valuations` PK conflict where computed values differ from stored — log CRITICAL alert + write `valuation_attempts` row with `result_status='failed_determinism_violation'` and full diff
 
 ### S9 — staker
 
@@ -180,3 +199,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S6.3 + S6.4 done. Driver walks `[from, to]` in dynamic-sized chunks (5K start, doubles to 10K on success, halves to 100 floor on transient errors). Strict-decode allowlist halts the chunk transaction; non-strict failures write to `decode_failures`. Checkpoint resume + `--no-resume` flag verified. 30K-block run did 4 chunks / 125 logs / 113 events / 0 dead-letters cleanly.
 - **2026-04-27** S6.5 done — RoundsManager.NewRound, Governor (proposals/votes), LivepeerToken Mint/Burn. 15 distinct event types now decoding live. S6 substantively complete.
 - **2026-04-27** S7.1 done — reorg-watcher daemon with cadence picker (15s/5s/60s), events-only walk in `[head − 7500, head]`. Synthetic divergence test (poisoned `0xdeadbeef` block hash) verified end-to-end: detected, `is_canonical=FALSE` set, audit row written. Mutation flow (`block_number`/`block_hash` update + `reorg_mutations`) deferred to TD-005.
+- **2026-04-27** S8.1 done — valuator's seed-hit path. 112 events priced from seed in one pass; 31 seed-misses + 12 multi-asset deferred to subsequent slices. Q-OD-1 mitigation in action: chain provides `amount_native`, seed provides `asset_usd_price`, valuator multiplies them to get `amount_usd`. Reward 3952 LPT × $2.191 = $8,659.29 verified end-to-end.

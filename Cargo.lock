@@ -2549,6 +2549,8 @@ dependencies = [
  "anyhow",
  "clap",
  "livepeer-core",
+ "serde_json",
+ "sqlx",
  "tokio",
  "tracing",
  "tracing-subscriber",

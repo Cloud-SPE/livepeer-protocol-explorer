@@ -121,10 +121,21 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [ ] `recover-decode-failures` subcommand — defer to v1.5 (operator tool, not core flow)
 - [ ] Cross-check sampling on backfill — defer to S6.5
 
-### S7 — reorg + finality watchers
+### S7 — reorg + finality watchers (in_progress)
 
-- [ ] Reorg watcher (§9.2 algorithm + cadence modes)
-- [ ] Finality watcher (L1 batch posting + L1 finalization)
+#### S7.1 — reorg watcher ✅ done
+- [x] Long-running daemon binary `livepeer-reorg-watcher` with `--once` flag
+- [x] Algorithm v1 (events-only walk): for each block_number with rows in `raw_protocol_events` within `[head − 7500, head]` and `finality='tentative' AND is_canonical=TRUE`, fetch chain hash from secondary RPC and compare to stored
+- [x] On mismatch: mark `is_canonical=FALSE` on affected rows + insert `reorg_events` audit row, in one transaction
+- [x] Cadence picker: 15s normal, 5s heightened (within 5min of last detection), 60s backoff (after 1h clean)
+- [x] Severity → log level: INFO ≤ 2 / WARN 3-50 / CRITICAL > 50
+- [x] **Live verification:** synthetic divergence test — poisoned a row's `block_hash` to `0xdeadbeef...`, moved it inside the walk window (head − 100), watcher detected `stored=0xdeadbeef vs chain=0x8c6b40f4...`, marked `is_canonical=FALSE`, audit row inserted; happy-path runs returned 0 divergences cleanly
+- [ ] Mutation flow (block_number/block_hash update + `reorg_mutations`) deferred to TD-005
+
+#### S7.2 — finality watcher (after S7.1)
+- [ ] Two-tier model per SPEC §9.1: `tentative` → `l1_posted` → `finalized`
+- [ ] Needs L1 RPC (Ethereum mainnet) — user has `https://ethereum.liveinfraspe.com/...` available (per legacy `config.toml`)
+- [ ] Watches Arbitrum's `RollupCore.SequencerBatchDelivered` (or equivalent) on L1 to mark `l1_posted`, then L1 finality confirmations to mark `finalized`
 
 ### S8 — valuator
 
@@ -167,3 +178,5 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S6.1 done. End-to-end indexer slice for Reward — alloy in, sol! macro, eth_getLogs + decode + atomic insert + checkpoint. 4 Rewards captured cleanly. Q-OD-1 precision-loss verified empirically against the seed. Idempotent. SQLite-events duplicate finding noted in TD-004.
 - **2026-04-27** S6.2 done for BondingManager + TicketBroker + LivepeerToken (high-volume contracts). 13 distinct event types decoding cleanly via alloy `sol!(Contract, "abi/X.json")` JSON-path mode. 51 events landed in a 6,000-block window, idempotent across all 3 contracts. Real-data findings: SPEC §6.4 named the event `Withdraw` but ABI says `Withdrawal`; BondingManager has two `WithdrawFees` overloads (we use the one with `(delegator, recipient, amount)`). RoundsManager + Governor events deferred to S6.5.
 - **2026-04-27** S6.3 + S6.4 done. Driver walks `[from, to]` in dynamic-sized chunks (5K start, doubles to 10K on success, halves to 100 floor on transient errors). Strict-decode allowlist halts the chunk transaction; non-strict failures write to `decode_failures`. Checkpoint resume + `--no-resume` flag verified. 30K-block run did 4 chunks / 125 logs / 113 events / 0 dead-letters cleanly.
+- **2026-04-27** S6.5 done — RoundsManager.NewRound, Governor (proposals/votes), LivepeerToken Mint/Burn. 15 distinct event types now decoding live. S6 substantively complete.
+- **2026-04-27** S7.1 done — reorg-watcher daemon with cadence picker (15s/5s/60s), events-only walk in `[head − 7500, head]`. Synthetic divergence test (poisoned `0xdeadbeef` block hash) verified end-to-end: detected, `is_canonical=FALSE` set, audit row written. Mutation flow (`block_number`/`block_hash` update + `reorg_mutations`) deferred to TD-005.

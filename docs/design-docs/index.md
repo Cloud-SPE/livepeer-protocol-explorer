@@ -6,6 +6,7 @@ Each design doc captures a single architectural decision with rationale, alterna
 |---|---|---|---|
 | [sqlite-seed-mapping.md](sqlite-seed-mapping.md) | accepted | Q-OD-1, Q-OD-2, Q-OD-3, Q-OD-4 | 2026-04-27 |
 | [bonding-manager-event-fields.md](bonding-manager-event-fields.md) | accepted | Q-OD-7 | 2026-04-27 |
+| [on-chain-references.md](on-chain-references.md) | accepted | Q-OD-5, Q-OD-8, Q-OD-9, Q-OD-10 | 2026-04-27 |
 
 ## Conventions
 

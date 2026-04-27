@@ -8,7 +8,7 @@
 chain:
   name: arbitrum-one
   chain_id: 42161
-  livepeer_arbitrum_genesis_block: 6738090  # SPEC §5.4 — feb 2022 deployment, confirm before backfill
+  livepeer_arbitrum_genesis_block: 6072093  # SPEC §5.4 — verified 2026-04-27 against SQLite seed: earliest event (Bond, EarningsClaimed, TranscoderActivation) at this block, 2022-02-15 00:40:00 UTC
 
 contracts:
   # SPEC §5.1 — Controller is the only address hardcoded; all other targets resolved at boot.
@@ -29,11 +29,17 @@ pricing:
   twap_window_seconds: 1800
   required_observation_cardinality: 144  # 30 min ÷ ~12.5s tick spacing — confirm at backfill window start (§7.3.2)
 
-  uniswap_v3_lpt_weth_pool: "0x4fd47e5102dfbf95541f64ed6fe13d4ed26d2546"  # SPEC §7.3
-  chainlink_eth_usd_aggregator: "TODO_Q-OD-8"   # SPEC §22 Q-OD-8
-  l2_sequencer_uptime_feed:    "TODO_Q-OD-10"   # SPEC §22 Q-OD-10
+  uniswap_v3_lpt_weth_pool: "0x4fd47e5102dfbf95541f64ed6fe13d4ed26d2546"  # SPEC §7.3 — verified slot0() returns sane data on Arbitrum
+  chainlink_eth_usd_aggregator: "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"  # decimals=8, description="ETH / USD" — verified 2026-04-27
+  l2_sequencer_uptime_feed:    "0xFdB631F5EE196F0ed6FAa767959853A9F217697D"   # decimals=0, description="L2 Sequencer Uptime Status Feed" — verified 2026-04-27
   chainlink_staleness_seconds: 86400            # 24h heartbeat per §7.3.3
   chainlink_warn_staleness_seconds: 14400       # 4h warn threshold
+
+  # Pool cardinality history (Q-OD-9, see docs/design-docs/on-chain-references.md):
+  # - pre-deployment:                blocks ≤ ~6.7M       — pool does not exist
+  # - cardinality 1–2 (degraded):    blocks ~10.7M–30M    — TWAP impossible; events in this window are seeded, so on-chain pricing is never invoked
+  # - cardinality jumped to 601:     between ~30M and ~35.5M
+  # - cardinality 601 (sufficient):  blocks ≥ ~35.5M       — TWAP fully usable
 
 indexer:
   initial_batch_size_blocks: 5000      # SPEC §13.4 dynamic batch size

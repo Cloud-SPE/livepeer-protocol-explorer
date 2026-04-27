@@ -1,12 +1,19 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.2
+## Technical Specification v1.3
 
 **Status:** Draft, ready for implementation
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.2
+**Document version:** 1.3
+
+### Changes since v1.2 (2026-04-27)
+
+- §13.1 — provider topology corrected: there is no self-hosted Nitro node. The secondary is **liveinfraspe** — a hosted HTTP RPC, non-archive. The routing matrix in §13.2 is unchanged (same logical roles), only the physical provider name changed. Resolves Q-OD-5.
+- §7.3.2 — added the verified historical impact: ~17,032 monetary events in the cardinality-degraded window `[genesis, ~33M]` are not in the seed and must take a degraded valuation version. v1 implementation must build the degraded path, not stub it. Resolves Q-OD-9.
+- Resolved (no spec change beyond §7.3.2 / §13.1): Q-OD-8 (Chainlink ETH/USD aggregator on Arbitrum = `0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612`), Q-OD-10 (L2 Sequencer Uptime Feed = `0xFdB631F5EE196F0ed6FAa767959853A9F217697D`). Addresses persisted in `config/arbitrum.yaml`. Verification details in `docs/design-docs/on-chain-references.md`.
+- `config/arbitrum.yaml` — corrected `livepeer_arbitrum_genesis_block` from `6738090` to `6072093` (off by ~666K blocks; verified from earliest event in the SQLite seed).
 
 ### Changes since v1.1 (2026-04-27)
 
@@ -428,6 +435,8 @@ Decimal correction: LPT and WETH are both 18-decimal. The raw tick-derived price
 Uniswap V3 pools store a ringbuffer of price observations. The default cardinality is 1, which makes 30-minute TWAP impossible. Someone must call `increaseObservationCardinalityNext` to enable longer windows.
 
 **Boot-time check:** the indexer verifies pool cardinality at the start of every backfill window. If cardinality is insufficient at any historical block range, valuations in that range fall back to a degraded version (e.g., spot, or shorter TWAP) and are tagged with an explicit version such as `v1_degraded_spot_pre_cardinality`.
+
+**Verified historical impact (2026-04-27):** the LPT/WETH pool was deployed shortly after Livepeer's Arbitrum genesis (block 6,072,093, 2022-02-15) and cardinality stayed at 1–2 through ~block 33M (~late 2022) before jumping to 601 in (33M, 35M]. Approximately **17,032 monetary events** (`Bond`, `Unbond`, `Rebond`, `TransferBond`, `WithdrawStake`, `EarningsClaimed`, `WithdrawFees`, `DepositFunded`, `ReserveFunded`, `ReserveClaimed`, `Withdrawal`) fall in `[genesis, 32M)` and have no SQLite seed coverage — these must take a degraded valuation version. v1 implementation must therefore build the degraded-version path, not stub it. `Reward` and `WinningTicketRedeemed` events in the same window are seeded and bypass on-chain pricing entirely. See `docs/design-docs/on-chain-references.md` for full counts and bisection log.
 
 #### 7.3.3 Chainlink ETH/USD on Arbitrum
 
@@ -1364,7 +1373,9 @@ THEN:
 | Role | Provider | Capability |
 |---|---|---|
 | Archive primary | Chainstack | Full Arbitrum archive, all historical state |
-| Local secondary | Self-hosted Arbitrum Nitro | Recent state, all logs, no historical archive |
+| Secondary | liveinfraspe (hosted HTTP RPC) | Recent state, all logs, no historical archive |
+
+The terms "local" and "secondary" are used interchangeably in §13.2; both refer to the non-archive provider above. Earlier draft versions of this spec assumed a self-hosted Arbitrum Nitro node; the actual operational topology is two hosted HTTP RPCs (one archive, one not).
 
 ### 13.2 Routing matrix
 

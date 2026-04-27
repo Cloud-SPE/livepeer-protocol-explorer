@@ -15,8 +15,10 @@ rpc:
     rate_limit_rps: 500
     burst: 1000
     max_concurrent: 50
-  local:
-    url_env: LOCAL_NITRO_URL
+  secondary:
+    # liveinfraspe — hosted HTTP RPC, non-archive. Earlier drafts of the
+    # spec assumed a self-hosted Nitro; the actual setup is two hosted RPCs.
+    url_env: SECONDARY_RPC_URL
     rate_limit_rps: 2000
     burst: 4000
     max_concurrent: 100

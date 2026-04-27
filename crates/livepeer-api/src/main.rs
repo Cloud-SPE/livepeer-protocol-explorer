@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
         // Prices
         .route("/prices/{asset}/{quote}/block/{block}", get(routes::prices::at_block))
         .route("/prices/{asset}/{quote}/latest", get(routes::prices::latest))
+        .route("/prices/{asset}/{quote}/range", get(routes::prices::range))
         // Stake
         .route("/stake/{delegator}/block/{block}", get(routes::stake::at_block))
         .route("/stake/{delegator}/range", get(routes::stake::range))

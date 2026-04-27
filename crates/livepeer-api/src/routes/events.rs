@@ -110,11 +110,13 @@ pub async fn list(
 ) -> Result<Json<EventListResponse>, ApiError> {
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64;
     let sort = q.sort.as_deref().unwrap_or("block_asc");
+    if sort == "amount_usd_desc" {
+        return list_by_amount_usd_desc(&state, &q, limit).await;
+    }
     let (sort_clause, sort_dir_asc) = match sort {
         "block_asc" => ("ORDER BY block_number ASC, log_index ASC", true),
         "block_desc" => ("ORDER BY block_number DESC, log_index DESC", false),
-        // amount_usd_desc requires a join + is implemented in a follow-up slice.
-        other => return Err(ApiError::bad_request(format!("unsupported sort: {other}; use block_asc or block_desc"))),
+        other => return Err(ApiError::bad_request(format!("unsupported sort: {other}; use block_asc | block_desc | amount_usd_desc"))),
     };
 
     let event_name = q.event_name.clone().or_else(|| q.event_type.clone());
@@ -308,4 +310,89 @@ async fn load_valuations(state: &AppState, event_id: i64) -> Result<Vec<Valuatio
             status: r.get(7),
         })
         .collect())
+}
+
+/// `sort=amount_usd_desc` path. JOINs raw_protocol_events to event_valuations on
+/// the operator's chosen valuation_version (defaults to state.default_version) and
+/// orders by amount_usd descending. Multi-asset events have multiple valuation
+/// rows per event_id; we DISTINCT on event_id and keep the largest amount_usd.
+///
+/// No cursor on this sort yet — it ships limit-based; cursor for floating-point-ish
+/// amounts is a follow-up (would need stable tie-breakers like (amount_usd, event_id)).
+async fn list_by_amount_usd_desc(
+    state: &AppState,
+    q: &EventsQuery,
+    limit: i64,
+) -> Result<Json<EventListResponse>, ApiError> {
+    let version = q.event_name.as_ref(); // dummy use to silence clippy; we don't filter by event_name on this path yet
+    let _ = version;
+    let default_version = &state.default_version;
+
+    let mut where_clauses: Vec<String> = vec![
+        "r.chain_id = $1".to_string(),
+        "r.is_valuable = TRUE".to_string(),
+    ];
+    if !q.include_reorged { where_clauses.push("r.is_canonical = TRUE".to_string()); }
+    if !q.include_tentative { where_clauses.push("r.finality = 'finalized'".to_string()); }
+
+    // We don't take filters on this path beyond the basics + valuation_version. Most
+    // callers using amount_usd_desc want "top N most valuable events" — a thin slice.
+    let sql = format!(
+        r#"WITH max_per_event AS (
+              SELECT v.event_id, MAX(v.amount_usd) AS amount_usd
+                FROM event_valuations v
+               WHERE v.valuation_version = $2
+               GROUP BY v.event_id
+            )
+            SELECT r.id, r.chain_id, r.tx_hash, r.log_index, r.block_number, r.block_hash,
+                   r.block_timestamp, r.contract_address, r.contract_name, r.event_name,
+                   r.event_signature, r.asset, r.amount_normalized, r.is_valuable,
+                   r.from_address, r.to_address, r.finality, r.is_canonical
+              FROM raw_protocol_events r
+              JOIN max_per_event m ON m.event_id = r.id
+             WHERE {where_clauses}
+             ORDER BY m.amount_usd DESC NULLS LAST, r.id DESC
+             LIMIT {limit}"#,
+        where_clauses = where_clauses.join(" AND "),
+    );
+    let rows = sqlx::query(&sql)
+        .bind(state.chain_id)
+        .bind(default_version)
+        .fetch_all(&state.pg)
+        .await?;
+    let mut events: Vec<EventRow> = rows.iter().map(row_to_event).collect();
+
+    if q.with_valuations && !events.is_empty() {
+        let ids: Vec<i64> = events.iter().filter_map(|e| e.id.parse().ok()).collect();
+        let val_rows = sqlx::query(
+            r#"SELECT event_id, asset, valuation_version, amount_native, native_usd_price,
+                      amount_usd, source, pricing_method, status
+                 FROM event_valuations
+                WHERE event_id = ANY($1)"#,
+        )
+        .bind(&ids)
+        .fetch_all(&state.pg)
+        .await?;
+        use std::collections::HashMap;
+        let mut by_id: HashMap<i64, Vec<ValuationInline>> = HashMap::new();
+        for r in &val_rows {
+            let event_id: i64 = r.get(0);
+            by_id.entry(event_id).or_default().push(ValuationInline {
+                asset: r.get(1),
+                valuation_version: r.get(2),
+                amount_native: r.get::<bigdecimal::BigDecimal, _>(3).to_string(),
+                native_usd_price: r.get::<bigdecimal::BigDecimal, _>(4).to_string(),
+                amount_usd: r.get::<bigdecimal::BigDecimal, _>(5).to_string(),
+                source: r.get(6),
+                pricing_method: r.get(7),
+                status: r.get(8),
+            });
+        }
+        for ev in events.iter_mut() {
+            let id: i64 = ev.id.parse().unwrap_or_default();
+            ev.valuations = Some(by_id.remove(&id).unwrap_or_default());
+        }
+    }
+
+    Ok(Json(EventListResponse { data: events, next_cursor: None, last_finalized_block: None }))
 }

@@ -6,10 +6,10 @@
 //! be split out from the valuator pass and run on demand.
 
 use crate::{error::ApiError, state::AppState};
-use axum::{extract::{Path, State}, Json};
+use axum::{extract::{Path, Query, State}, Json};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 #[derive(Debug, Serialize)]
@@ -79,6 +79,71 @@ pub async fn latest(
         return Err(ApiError::not_found(format!("no cached price for {asset_u}/{quote_u}")));
     };
     Ok(Json(to_price_row(&r)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RangeQuery {
+    pub from_block: i64,
+    pub to_block: i64,
+    pub source: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RangeResponse {
+    pub data: Vec<PriceRow>,
+}
+
+/// SPEC §14.3.3 — list cached prices in a block range. v1 ships read-only
+/// (no lazy-fill); the valuator populates `token_prices_by_block` per
+/// TD-007 as events get priced.
+pub async fn range(
+    State(state): State<AppState>,
+    Path((asset, quote)): Path<(String, String)>,
+    Query(q): Query<RangeQuery>,
+) -> Result<Json<RangeResponse>, ApiError> {
+    if q.to_block < q.from_block {
+        return Err(ApiError::bad_request("to_block < from_block"));
+    }
+    if q.to_block - q.from_block > 1_000_000 {
+        return Err(ApiError::bad_request("range > 1,000,000 blocks; narrow your query"));
+    }
+    let asset_u = asset.to_uppercase();
+    let quote_u = quote.to_uppercase();
+    let limit = q.limit.unwrap_or(1000).min(10_000) as i64;
+    let mut where_clauses = vec![
+        "chain_id = $1".to_string(),
+        "asset = $2".to_string(),
+        "quote = $3".to_string(),
+        "block_number BETWEEN $4 AND $5".to_string(),
+    ];
+    let mut bind_source: Option<String> = None;
+    if let Some(s) = q.source {
+        where_clauses.push("source = $6".to_string());
+        bind_source = Some(s);
+    }
+    let sql = format!(
+        r#"SELECT chain_id, asset, quote, block_number, block_hash, block_timestamp,
+                  price, source, pool_address, oracle_address
+             FROM token_prices_by_block
+            WHERE {where_clauses}
+            ORDER BY block_number ASC, source
+            LIMIT {limit}"#,
+        where_clauses = where_clauses.join(" AND "),
+    );
+    let mut q = sqlx::query(&sql)
+        .bind(state.chain_id)
+        .bind(&asset_u)
+        .bind(&quote_u)
+        .bind(q.from_block)
+        .bind(q.to_block);
+    if let Some(s) = bind_source {
+        q = q.bind(s);
+    }
+    let rows = q.fetch_all(&state.pg).await?;
+    Ok(Json(RangeResponse {
+        data: rows.iter().map(to_price_row).collect(),
+    }))
 }
 
 fn to_price_row(r: &sqlx::postgres::PgRow) -> PriceRow {

@@ -29,7 +29,7 @@ clap = { version = "=4.5.27", features = ["derive", "env"] }
 serde = { version = "=1.0.217", features = ["derive"] }
 serde_json = "=1.0.138"
 serde_yaml = "=0.9.34"
-sqlx = { version = "=0.8.3", features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "json", "uuid", "chrono", "bigdecimal"] }
+sqlx = { version = "=0.8.3", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "sqlite", "macros", "migrate", "json", "uuid", "chrono", "bigdecimal"] }
 axum = "=0.8.1"
 tower = "=0.5.2"
 tower-http = { version = "=0.6.2", features = ["trace", "cors"] }
@@ -39,8 +39,6 @@ sha2 = "=0.10.8"
 hex = "=0.4.3"
 chrono = { version = "=0.4.39", features = ["serde"] }
 bigdecimal = { version = "=0.4.7", features = ["serde"] }
-rusqlite = { version = "=0.33.0", features = ["bundled"] }
-
 livepeer-core = { path = "crates/core" }
 
 [profile.release]

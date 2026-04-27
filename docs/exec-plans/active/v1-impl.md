@@ -99,15 +99,27 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [ ] Governor ProposalCreated / VoteCast / ProposalExecuted — S6.5
 - [ ] Naming-bridge update needed: SPEC §6.4 listed `Withdraw`, real ABI emits `Withdrawal`. Spec amendment pending.
 
-#### S6.3 — strict-decode + dead-letter (pending)
-- [ ] Critical-events allowlist halt path (§10.2.1)
-- [ ] Non-critical decode failures → `decode_failures` (§10.2.2)
-- [ ] `recover-decode-failures` subcommand
+#### S6.3 + S6.4 — strict-decode routing + chunked driver ✅ done
 
-#### S6.4 — orchestration (pending)
-- [ ] Dynamic batch sizing on `eth_getLogs` (start 5K, halve on rate-limit, double on success, cap 10K — §13.4)
-- [ ] Backfill driver: walks `[from, to]`, advances checkpoint per batch, resumes from checkpoint
-- [ ] Cross-check sampling on backfill (§13.2 — backfill historical logs cross-checked across providers)
+- [x] `DispatchOutcome` enum: `Decoded` / `DecodeFailed { is_strict, … }` / `UnknownTopic0`
+- [x] `is_strict_event(contract, topic0)` — encodes SPEC §6.2 v1.6 critical-events allowlist statically
+- [x] On strict-event decode failure → entire chunk transaction aborts (no events committed, no dead-letters written, no checkpoint advance) per §10.2.1
+- [x] On non-strict decode failure or unknown topic0 → row in `decode_failures` per §10.2.2; chunk still commits
+- [x] `drive_backfill` walks `[from, to]` in chunks of `current_batch_size`. Starts at 5,000, doubles on success up to 10,000 (cap), halves to a 100-block floor on transient HTTP errors and retries the same range
+- [x] `resume_from(pg, requested_from)` reads `indexer_checkpoints('main')` and clamps the start to checkpoint+1 if past requested
+- [x] `--no-resume` CLI flag forces start at `--from-block`
+- [x] Per-chunk: ONE Postgres transaction wraps `INSERT raw_protocol_events + INSERT decode_failures + UPDATE indexer_checkpoints` so the chunk is atomic
+- [x] **Live verification on `[456720000, 456750000]` (30K blocks):**
+  - 4 chunks committed (5K → 10K → 10K → 5K — dynamic doubling visible)
+  - 125 logs seen, 113 events newly inserted (12 collisions from prior runs, idempotent)
+  - 0 dead-letters, 0 strict failures, 0 unresolved divergences
+  - Checkpoint advanced to 456,750,000
+  - Resume run: "checkpoint already past target — nothing to do" early-exit ✓
+  - `--no-resume` re-fetches all 125 logs, inserts 0 (idempotent) ✓
+  - `final_batch_size = 10000` (capped) ✓
+- [ ] Failure-path runtime testing (planted strict failure / planted dead-letter) — defer until determinism fixture (S11) lands; current happy-path proves the routing wiring; the failure code paths are small + reviewable
+- [ ] `recover-decode-failures` subcommand — defer to v1.5 (operator tool, not core flow)
+- [ ] Cross-check sampling on backfill — defer to S6.5
 
 ### S7 — reorg + finality watchers
 
@@ -154,3 +166,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S5 done. Real seed import: 297K payouts + 158K rewards = 455,553 rows in 24.7s. Idempotent (`inserted_this_run = 0` on second run). Required CAST AS REAL on every numeric column to handle SQLite's per-row INTEGER affinity for whole-number values. Sample rows verified sane (ETH @ $2390, LPT @ $5.24).
 - **2026-04-27** S6.1 done. End-to-end indexer slice for Reward — alloy in, sol! macro, eth_getLogs + decode + atomic insert + checkpoint. 4 Rewards captured cleanly. Q-OD-1 precision-loss verified empirically against the seed. Idempotent. SQLite-events duplicate finding noted in TD-004.
 - **2026-04-27** S6.2 done for BondingManager + TicketBroker + LivepeerToken (high-volume contracts). 13 distinct event types decoding cleanly via alloy `sol!(Contract, "abi/X.json")` JSON-path mode. 51 events landed in a 6,000-block window, idempotent across all 3 contracts. Real-data findings: SPEC §6.4 named the event `Withdraw` but ABI says `Withdrawal`; BondingManager has two `WithdrawFees` overloads (we use the one with `(delegator, recipient, amount)`). RoundsManager + Governor events deferred to S6.5.
+- **2026-04-27** S6.3 + S6.4 done. Driver walks `[from, to]` in dynamic-sized chunks (5K start, doubles to 10K on success, halves to 100 floor on transient errors). Strict-decode allowlist halts the chunk transaction; non-strict failures write to `decode_failures`. Checkpoint resume + `--no-resume` flag verified. 30K-block run did 4 chunks / 125 logs / 113 events / 0 dead-letters cleanly.

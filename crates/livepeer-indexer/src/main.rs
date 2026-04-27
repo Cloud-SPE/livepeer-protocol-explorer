@@ -25,6 +25,8 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Backfill all known events from a contract over [from_block, to_block]. Idempotent.
+    /// Resumes from `indexer_checkpoints('main')` if it's past `--from-block` (use
+    /// `--no-resume` to override). Halts on any strict-decode failure (§10.2.1).
     Backfill {
         #[arg(long, value_enum)]
         contract: ContractArg,
@@ -32,6 +34,9 @@ enum Command {
         from_block: u64,
         #[arg(long)]
         to_block: u64,
+        /// Skip checkpoint resume; start exactly at `--from-block`.
+        #[arg(long, default_value_t = false)]
+        no_resume: bool,
     },
 }
 
@@ -69,6 +74,7 @@ async fn main() -> Result<()> {
             contract,
             from_block,
             to_block,
+            no_resume,
         } => {
             let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
             let archive = Provider::new("chainstack", archive_url)?;
@@ -87,20 +93,41 @@ async fn main() -> Result<()> {
             .await
             .with_context(|| format!("loading {} abi_hash from registry", kind.name()))?;
 
-            let inserted = backfill::backfill_contract(
+            let actual_from = if no_resume {
+                from_block
+            } else {
+                backfill::resume_from(&pg, from_block).await?
+            };
+            if actual_from != from_block {
+                info!(
+                    requested_from = from_block,
+                    resumed_from = actual_from,
+                    "resuming from checkpoint"
+                );
+            }
+            if actual_from > to_block {
+                info!(actual_from, to_block, "checkpoint already past target — nothing to do");
+                return Ok(());
+            }
+
+            let summary = backfill::drive_backfill(
                 &pg,
                 &archive,
                 kind,
                 &proxy,
                 &abi_hash,
-                from_block,
+                actual_from,
                 to_block,
             )
             .await?;
             info!(
-                inserted,
                 contract = kind.name(),
-                from_block,
+                chunks = summary.chunks,
+                logs_seen = summary.logs_seen,
+                events_inserted = summary.events_inserted,
+                dead_lettered = summary.dead_lettered,
+                final_batch_size = summary.final_batch_size,
+                from_block = actual_from,
                 to_block,
                 "backfill complete"
             );

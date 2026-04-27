@@ -176,10 +176,19 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 #### TD-006 (added) — degraded version derivation
 - [ ] `DEGRADED_VERSION_SUFFIX` is currently appended to a hardcoded "v1" prefix. When v2 valuation versions land, derive the prefix from the operator-passed `--version`.
 
-#### S8.3 — multi-asset (EarningsClaimed) — generates 2 valuation rows per event per SPEC §6.8
+#### S8.3 — multi-asset (EarningsClaimed) ✅ done
+- [x] `multi_asset.rs` module — fetches unvalued EarningsClaimed events (raw `asset IS NULL`, `decoded.{rewards, fees}` in JSONB)
+- [x] Refactored `price_eth_event` and `price_lpt_event` into pure helpers `price_eth_amount(block, ts, amount)` and `price_lpt_amount(...)` so the multi-asset pass reuses them without constructing synthetic CandidateEvents
+- [x] Per event: split into LPT (rewards) + ETH (fees) BigDecimal amounts; price each via existing helpers; write 2 `event_valuations` rows
+- [x] Zero-amount portions get `pricing_method='no_amount'` rows so the pair (LPT + ETH) is always complete per SPEC §6.8
+- [x] **Live verification:** 12 EarningsClaimed → 24 valuation rows. event 30: ETH 0.184 × $2390.62 = $439.87 + LPT 0.000114 × $2.192 = $0.00025 ✓; event 115: LPT 9.436 × $2.181 = $20.59 + ETH 0.0000051 × $2378.51 = $0.0123 ✓. Idempotent.
 
-#### S8.4 — determinism guard (§10.5)
-- [ ] On `event_valuations` PK conflict where computed values differ from stored — log CRITICAL alert + write `valuation_attempts` row with `result_status='failed_determinism_violation'` and full diff
+#### S8.4 — determinism guard (§10.5) ✅ scaffold (verify-mode CLI → S8.5)
+- [x] `persist::insert_valuation_checked` — SELECTs existing row by PK; on hit, computes diff against the four numeric columns + 3 string columns; on diff fires `error!` log + inserts `valuation_attempts` row with `result_status='failed_determinism_violation'` and JSON diff in `error_detail`; preserves the stored row (no overwrite)
+- [x] `DeterminismOutcome::{Inserted, Idempotent, Violation}` returned to callers
+- [x] `StoredValuation::diff` reports per-column diffs
+- [x] **3 unit tests pass:** match→null, single-column mismatch, multi-column mismatch
+- [ ] Verify-mode CLI that re-runs all priced events through the checked path — defer to S8.5; the helper is ready, the routine integration just needs a `--verify` subcommand. Useful only when valuator logic changes without a version bump (a thing the spec says shouldn't happen but the guard exists for that exact case).
 
 ### S9 — staker
 
@@ -220,3 +229,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S8.1 done — valuator's seed-hit path. 112 events priced from seed in one pass; 31 seed-misses + 12 multi-asset deferred to subsequent slices. Q-OD-1 mitigation in action: chain provides `amount_native`, seed provides `asset_usd_price`, valuator multiplies them to get `amount_usd`. Reward 3952 LPT × $2.191 = $8,659.29 verified end-to-end.
 - **2026-04-27** S8.2.a done — on-chain Chainlink ETH/USD path. 6 ETH events priced. Sequencer + Chainlink reads cached forever per SPEC §13.5 (12 cache rows added; replay reads from cache). Sample: WithdrawFees 0.184 ETH × $2,390.62 = $439.87 ✓. Sub-microETH amount priced to 18-decimal precision. pricing_chain JSONB carries full provenance (oracle address, raw_round, checks block). Idempotent.
 - **2026-04-27** S8.2.b done — Uniswap V3 TWAP × Chainlink for LPT events. tick_math::get_sqrt_ratio_at_tick implemented as deterministic integer math (Uniswap reference algorithm), 6 unit tests pass. Sample: avg tick -69945 → sqrtPriceX96 = 2399491... → LPT/WETH = 0.0009172 × $2394.51 = $2.196 → 326.35 LPT = $716.76 ✓. 25 LPT events priced. Pricing chain provenance carries cumulative ticks, mean tick, sqrtPriceX96, oracle, raw_round. Total event_valuations coverage: 143 across 3 sources (seed 112 + Chainlink ETH 6 + Uniswap LPT 25). Idempotent.
+- **2026-04-27** S8.3 + S8.4 scaffolding done. Multi-asset: 12 EarningsClaimed → 24 rows (12 LPT priced via TWAP, 4 ETH via Chainlink, 8 ETH zero-amount). Total event_valuations coverage now: 167 across 4 sources. Determinism guard `insert_valuation_checked` + diff helper ready with 3 unit tests; verify-mode CLI integration deferred to S8.5. 9/9 unit tests pass.

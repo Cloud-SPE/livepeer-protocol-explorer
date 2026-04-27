@@ -1,3 +1,4 @@
+mod multi_asset;
 mod onchain;
 mod persist;
 mod seed;
@@ -42,7 +43,9 @@ enum Command {
     /// (S8.2.b) On-chain pass for LPT-valued events — Uniswap V3 TWAP × Chainlink,
     /// with degraded-spot fallback when pool cardinality < 144 (Q-OD-9).
     BackfillLptOnchain,
-    /// Run seed → ETH on-chain → LPT on-chain in sequence.
+    /// (S8.3) Multi-asset pass — splits each EarningsClaimed into LPT (rewards) + ETH (fees).
+    BackfillMultiAsset,
+    /// Run seed → ETH on-chain → LPT on-chain → multi-asset in sequence.
     BackfillAll,
 }
 
@@ -107,6 +110,22 @@ async fn main() -> Result<()> {
                 "on-chain LPT pass summary"
             );
         }
+        Command::BackfillMultiAsset => {
+            let archive = Provider::new(
+                "chainstack",
+                cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
+            )?;
+            let s = multi_asset::run_multi_asset_pass(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            info!(
+                events_considered = s.events_considered,
+                lpt_rows_priced = s.lpt_rows_priced,
+                eth_rows_priced = s.eth_rows_priced,
+                lpt_zero_amount_rows = s.lpt_zero_amount_rows,
+                eth_zero_amount_rows = s.eth_zero_amount_rows,
+                failures = s.failures,
+                "multi-asset pass summary"
+            );
+        }
         Command::BackfillAll => {
             let s = seed::run_seed_pass(&pg, &valuation_version, cli.include_tentative).await?;
             info!(
@@ -139,6 +158,16 @@ async fn main() -> Result<()> {
                 failed_missing_pool = l.failed_missing_pool,
                 other_skipped = l.other_skipped,
                 "on-chain LPT pass summary"
+            );
+            let m = multi_asset::run_multi_asset_pass(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            info!(
+                events_considered = m.events_considered,
+                lpt_rows_priced = m.lpt_rows_priced,
+                eth_rows_priced = m.eth_rows_priced,
+                lpt_zero_amount_rows = m.lpt_zero_amount_rows,
+                eth_zero_amount_rows = m.eth_zero_amount_rows,
+                failures = m.failures,
+                "multi-asset pass summary"
             );
         }
     }

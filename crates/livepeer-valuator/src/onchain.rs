@@ -198,7 +198,7 @@ pub async fn run_onchain_pass_eth(
     Ok(summary)
 }
 
-enum PricingOutcome {
+pub(crate) enum PricingOutcome {
     Priced {
         native_usd_price: BigDecimal,
         amount_usd: BigDecimal,
@@ -219,8 +219,28 @@ async fn price_eth_event(
     ev: &CandidateEvent,
     amount_native: &BigDecimal,
 ) -> Result<PricingOutcome> {
-    let block = ev.block_number as u64;
-    let block_ts = ev.block_timestamp.timestamp();
+    price_eth_amount(
+        pg,
+        archive,
+        cfg,
+        ev.block_number as u64,
+        ev.block_timestamp.timestamp(),
+        amount_native,
+    )
+    .await
+}
+
+/// Pure ETH-on-chain pricing helper: same Chainlink+sequencer reads as the
+/// per-event flow, parameterized by `(block, block_ts, amount_native)` so the
+/// multi-asset path can call it for the ETH portion of an EarningsClaimed.
+pub(crate) async fn price_eth_amount(
+    pg: &PgPool,
+    archive: &Provider,
+    cfg: &Config,
+    block: u64,
+    block_ts: i64,
+    amount_native: &BigDecimal,
+) -> Result<PricingOutcome> {
 
     // 1. Sequencer uptime — read at event block. answer == 0 means UP.
     let seq_round = read_round(pg, archive, &cfg.static_.pricing.l2_sequencer_uptime_feed, block).await?;
@@ -266,7 +286,7 @@ async fn price_eth_event(
         });
     }
     if staleness > STALENESS_WARN_SECS {
-        warn!(staleness, event_id = ev.event_id, "Chainlink staleness > 4h");
+        warn!(staleness, block, "Chainlink staleness > 4h");
     }
 
     // 4. Decode price. Chainlink ETH/USD has 8 decimals.
@@ -529,7 +549,7 @@ pub async fn run_onchain_pass_lpt(
     Ok(summary)
 }
 
-enum LptOutcome {
+pub(crate) enum LptOutcome {
     PricedTwap {
         native_usd_price: BigDecimal,
         amount_usd: BigDecimal,
@@ -556,8 +576,32 @@ async fn price_lpt_event(
     ev: &CandidateEvent,
     amount_native: &BigDecimal,
 ) -> Result<LptOutcome> {
-    let block = ev.block_number as u64;
-    let block_ts = ev.block_timestamp.timestamp();
+    price_lpt_amount(
+        pg,
+        archive,
+        pool,
+        chainlink,
+        sequencer,
+        ev.block_number as u64,
+        ev.block_timestamp.timestamp(),
+        amount_native,
+    )
+    .await
+}
+
+/// Pure LPT-on-chain pricing helper for the multi-asset path. Takes raw
+/// `(block, block_ts, amount_native)` instead of a CandidateEvent.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn price_lpt_amount(
+    pg: &PgPool,
+    archive: &Provider,
+    pool: &str,
+    chainlink: &str,
+    sequencer: &str,
+    block: u64,
+    block_ts: i64,
+    amount_native: &BigDecimal,
+) -> Result<LptOutcome> {
 
     // 1. Sequencer up?
     let seq = read_round(pg, archive, sequencer, block).await?;

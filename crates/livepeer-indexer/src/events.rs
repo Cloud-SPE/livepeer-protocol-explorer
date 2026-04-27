@@ -26,3 +26,9 @@ sol!(
     RoundsManager,
     "../../abi/RoundsManager.json"
 );
+
+sol!(
+    #[allow(missing_docs)]
+    Governor,
+    "../../abi/LivepeerGovernor.json"
+);

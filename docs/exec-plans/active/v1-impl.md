@@ -94,10 +94,10 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] **Live test:** 51 events across 13 distinct types in `[456735000, 456741000]` window. Sample correctness: EarningsClaimed multi-asset breakdown landed in `raw_event.decoded`; Transfer mint pattern (0x0→Minter→recipient) captured; WinningTicketRedeemed sender resolved to known Livepeer Inc address.
 - [x] **Q-OD-1 verified live again:** Reward amount 7.529685595729787584 LPT matches seed `7.52968559572978800000` to 16 sig figs.
 - [x] Idempotent on all 3 contracts (re-run `inserted=0` × 3).
-- [ ] Mint / Burn on LivepeerToken — S6.5 if needed; Transfer-from-zero already captures mints semantically
-- [ ] RoundsManager NewRound — S6.5
-- [ ] Governor ProposalCreated / VoteCast / ProposalExecuted — S6.5
-- [ ] Naming-bridge update needed: SPEC §6.4 listed `Withdraw`, real ABI emits `Withdrawal`. Spec amendment pending.
+- [x] Mint / Burn on LivepeerToken (S6.5)
+- [x] RoundsManager NewRound (S6.5) — round + blockHash decoded into raw_event.decoded
+- [x] Governor ProposalCreated / VoteCast / ProposalExecuted (S6.5) — proposal_id / voter / weight / etc. decoded
+- [x] Naming-bridge: SPEC v1.6 corrected `Withdraw` → `Withdrawal`
 
 #### S6.3 + S6.4 — strict-decode routing + chunked driver ✅ done
 

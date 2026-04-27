@@ -45,6 +45,8 @@ enum ContractArg {
     BondingManager,
     TicketBroker,
     LivepeerToken,
+    RoundsManager,
+    Governor,
 }
 
 impl ContractArg {
@@ -53,6 +55,8 @@ impl ContractArg {
             ContractArg::BondingManager => backfill::ContractKind::BondingManager,
             ContractArg::TicketBroker => backfill::ContractKind::TicketBroker,
             ContractArg::LivepeerToken => backfill::ContractKind::LivepeerToken,
+            ContractArg::RoundsManager => backfill::ContractKind::RoundsManager,
+            ContractArg::Governor => backfill::ContractKind::Governor,
         }
     }
 }
@@ -83,6 +87,8 @@ async fn main() -> Result<()> {
                 backfill::ContractKind::BondingManager => &cfg.static_.contracts.bonding_manager,
                 backfill::ContractKind::TicketBroker => &cfg.static_.contracts.ticket_broker,
                 backfill::ContractKind::LivepeerToken => &cfg.static_.contracts.livepeer_token,
+                backfill::ContractKind::RoundsManager => &cfg.static_.contracts.rounds_manager,
+                backfill::ContractKind::Governor => &cfg.static_.contracts.governor,
             }
             .to_lowercase();
             let abi_hash: String = sqlx::query_scalar(

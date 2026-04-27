@@ -21,7 +21,9 @@ use crate::events::BondingManager::{
 // BondingManager has two WithdrawFees overloads. _0 carries (delegator, recipient, amount);
 // _1 is the legacy form with just (delegator) and no amount. We bind _0 explicitly.
 use crate::events::BondingManager::WithdrawFees_0 as WithdrawFees;
-use crate::events::LivepeerToken::{self, Transfer};
+use crate::events::Governor::{ProposalCreated, ProposalExecuted, VoteCast};
+use crate::events::LivepeerToken::{self, Burn, Mint, Transfer};
+use crate::events::RoundsManager::NewRound;
 // TicketBroker emits "Withdrawal" (full deposit + reserve drain) — not "Withdraw".
 use crate::events::TicketBroker::{
     self, DepositFunded, ReserveFunded, Withdrawal, WinningTicketRedeemed,
@@ -54,6 +56,8 @@ pub enum ContractKind {
     BondingManager,
     TicketBroker,
     LivepeerToken,
+    RoundsManager,
+    Governor,
 }
 
 impl ContractKind {
@@ -62,6 +66,8 @@ impl ContractKind {
             ContractKind::BondingManager => "BondingManager",
             ContractKind::TicketBroker => "TicketBroker",
             ContractKind::LivepeerToken => "LivepeerToken",
+            ContractKind::RoundsManager => "RoundsManager",
+            ContractKind::Governor => "Governor",
         }
     }
     #[allow(dead_code)] // useful from tests + future CLI parsing
@@ -70,6 +76,8 @@ impl ContractKind {
             "BondingManager" => Some(Self::BondingManager),
             "TicketBroker" => Some(Self::TicketBroker),
             "LivepeerToken" => Some(Self::LivepeerToken),
+            "RoundsManager" => Some(Self::RoundsManager),
+            "Governor" => Some(Self::Governor),
             _ => None,
         }
     }
@@ -400,6 +408,8 @@ fn is_strict_event(contract: ContractKind, topic0: B256) -> bool {
                 || topic0 == WinningTicketTransfer::SIGNATURE_HASH
         }
         ContractKind::LivepeerToken => topic0 == Transfer::SIGNATURE_HASH,
+        // RoundsManager and Governor have no critical events in v1 — non-monetary only.
+        ContractKind::RoundsManager | ContractKind::Governor => false,
     }
 }
 
@@ -745,8 +755,110 @@ fn decode_one(
                     }),
                     Err(e) => return decode_failed(contract, "Transfer", topic0, e),
                 }
+            } else if topic0 == Mint::SIGNATURE_HASH {
+                match Mint::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("Mint", {
+                        row.asset = Some("LPT");
+                        row.is_valuable = true;
+                        set_amount(&mut row, d.amount, LPT_DECIMALS);
+                        row.to_address = Some(addr_lower(&d.to));
+                    }),
+                    Err(e) => return decode_failed(contract, "Mint", topic0, e),
+                }
+            } else if topic0 == Burn::SIGNATURE_HASH {
+                match Burn::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("Burn", {
+                        row.asset = Some("LPT");
+                        row.is_valuable = true;
+                        set_amount(&mut row, d.value, LPT_DECIMALS);
+                        row.from_address = Some(addr_lower(&d.burner));
+                    }),
+                    Err(e) => return decode_failed(contract, "Burn", topic0, e),
+                }
             } else if topic0 == LivepeerToken::Approval::SIGNATURE_HASH {
                 decoded!("Approval", {});
+            } else {
+                return DispatchOutcome::UnknownTopic0 { topic0 };
+            }
+        }
+        ContractKind::RoundsManager => {
+            if topic0 == NewRound::SIGNATURE_HASH {
+                match NewRound::decode_log_data(&log_data, true) {
+                    Ok(d) => {
+                        row.event_name = "NewRound";
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "round":      d.round.to_string(),
+                                    "blockHash":  format!("0x{:x}", d.blockHash),
+                                }),
+                            );
+                        }
+                        return DispatchOutcome::Decoded(row);
+                    }
+                    Err(e) => return decode_failed(contract, "NewRound", topic0, e),
+                }
+            } else {
+                return DispatchOutcome::UnknownTopic0 { topic0 };
+            }
+        }
+        ContractKind::Governor => {
+            if topic0 == ProposalCreated::SIGNATURE_HASH {
+                match ProposalCreated::decode_log_data(&log_data, true) {
+                    Ok(d) => {
+                        row.event_name = "ProposalCreated";
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "proposalId": d.proposalId.to_string(),
+                                    "proposer":   addr_lower(&d.proposer),
+                                    "voteStart":  d.voteStart.to_string(),
+                                    "voteEnd":    d.voteEnd.to_string(),
+                                    "description": d.description,
+                                }),
+                            );
+                        }
+                        return DispatchOutcome::Decoded(row);
+                    }
+                    Err(e) => return decode_failed(contract, "ProposalCreated", topic0, e),
+                }
+            } else if topic0 == ProposalExecuted::SIGNATURE_HASH {
+                match ProposalExecuted::decode_log_data(&log_data, true) {
+                    Ok(d) => {
+                        row.event_name = "ProposalExecuted";
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "proposalId": d.proposalId.to_string() }),
+                            );
+                        }
+                        return DispatchOutcome::Decoded(row);
+                    }
+                    Err(e) => return decode_failed(contract, "ProposalExecuted", topic0, e),
+                }
+            } else if topic0 == VoteCast::SIGNATURE_HASH {
+                match VoteCast::decode_log_data(&log_data, true) {
+                    Ok(d) => {
+                        row.event_name = "VoteCast";
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "voter":      addr_lower(&d.voter),
+                                    "proposalId": d.proposalId.to_string(),
+                                    "support":    d.support,
+                                    "weight":     d.weight.to_string(),
+                                    "reason":     d.reason,
+                                }),
+                            );
+                        }
+                        row.from_address = Some(addr_lower(&d.voter));
+                        return DispatchOutcome::Decoded(row);
+                    }
+                    Err(e) => return decode_failed(contract, "VoteCast", topic0, e),
+                }
             } else {
                 return DispatchOutcome::UnknownTopic0 { topic0 };
             }
@@ -807,6 +919,14 @@ fn topic0s_for(c: ContractKind) -> Vec<String> {
         ContractKind::LivepeerToken => vec![
             to_hex(Transfer::SIGNATURE_HASH),
             to_hex(LivepeerToken::Approval::SIGNATURE_HASH),
+            to_hex(Mint::SIGNATURE_HASH),
+            to_hex(Burn::SIGNATURE_HASH),
+        ],
+        ContractKind::RoundsManager => vec![to_hex(NewRound::SIGNATURE_HASH)],
+        ContractKind::Governor => vec![
+            to_hex(ProposalCreated::SIGNATURE_HASH),
+            to_hex(ProposalExecuted::SIGNATURE_HASH),
+            to_hex(VoteCast::SIGNATURE_HASH),
         ],
     }
 }

@@ -66,6 +66,14 @@ pub struct EnvConfig {
     pub log_level: String,
     pub postgres: PostgresConfig,
     pub rpc: RpcEndpoints,
+    /// Optional. Required when the finality-watcher runs.
+    #[serde(default)]
+    pub l1: Option<L1Endpoint>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct L1Endpoint {
+    pub url_env: String,
 }
 
 #[derive(Debug)]

@@ -132,10 +132,22 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] **Live verification:** synthetic divergence test — poisoned a row's `block_hash` to `0xdeadbeef...`, moved it inside the walk window (head − 100), watcher detected `stored=0xdeadbeef vs chain=0x8c6b40f4...`, marked `is_canonical=FALSE`, audit row inserted; happy-path runs returned 0 divergences cleanly
 - [ ] Mutation flow (block_number/block_hash update + `reorg_mutations`) deferred to TD-005
 
-#### S7.2 — finality watcher (after S7.1)
-- [ ] Two-tier model per SPEC §9.1: `tentative` → `l1_posted` → `finalized`
-- [ ] Needs L1 RPC (Ethereum mainnet) — user has `https://ethereum.liveinfraspe.com/...` available (per legacy `config.toml`)
-- [ ] Watches Arbitrum's `RollupCore.SequencerBatchDelivered` (or equivalent) on L1 to mark `l1_posted`, then L1 finality confirmations to mark `finalized`
+#### S7.2 — finality watcher ✅ done (timestamp-heuristic; SPEC-true batch tracking → TD-008)
+- [x] `livepeer-finality-watcher` daemon with `--once` flag
+- [x] Each iteration reads L1 `latest` and `finalized` block timestamps via `eth_getBlockByNumber`
+- [x] Marks `tentative → l1_posted` when L2 block_timestamp ≤ `latest_l1_ts − 600s` (~10 min posting lag per SPEC §9.1)
+- [x] Marks `(tentative|l1_posted) → finalized` (with `finalized_at = now()`) when L2 block_timestamp ≤ `finalized_l1_ts − 60s` (1 min safety margin)
+- [x] Cadence: 60s (L1 advances slowly)
+- [x] Updates `indexer_checkpoints('finality_watcher')` for observability
+- [x] Doesn't need L1 archive depth — only reads block tags
+- [x] **Live verification:** L1 latest=1777299251 / finalized=1777298123 (~19 min apart). 165 events promoted tentative → finalized in one iteration. Valuator without `--include-tentative` now correctly processes them.
+
+#### TD-008 (added) — SPEC-true batch tracking
+- [ ] Watch Arbitrum's `SequencerInbox.SequencerBatchDelivered` on Ethereum L1
+- [ ] Decode batches → map to L2 block ranges → mark events `l1_posted` precisely (not by 10-min heuristic)
+- [ ] L1 finality of each batch tx → marks events `finalized`
+- [ ] Requires L1 archive depth for back-fill (Chainstack Eth L1 archive — user provides URL)
+- [ ] liveinfra L1 prunes; useful as the secondary cross-check provider but not for back-fill
 
 ### S8 — valuator (in_progress)
 
@@ -266,3 +278,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S10.1 done — Axum API with /health, /backfills/status, /events (with cursor pagination + inline valuations), /events/{id}, /events/{id}/valuation, /valuations. Live tests pass: Reward 533.21 LPT × $2.191 = $1,168.28 returned with inline valuations; cursor pagination stable; multi-asset EarningsClaimed returns both LPT + ETH portions; 404 error envelope conforms to SPEC §14.4. Numerics serialized as strings.
 - **2026-04-27** S10.2 done — /aggregations/events (94 Rewards = $60,890.17/day verified), /governance/proposals + tally, /prices/{asset}/{quote}/{block,latest}. TD-007 added — token_prices_by_block isn't being written by the valuator yet; rpc_call_cache holds the data instead. Validation envelope confirmed for bad bucket/metric inputs.
 - **2026-04-27** S9.1 + stake API done. Flow-derived stake: 3 delegators registered, 3 rows persisted (61.91/20.97/0.9 LPT). 22 events skipped on out-of-window delegators (full-genesis backfill resolves). API: GET /stake/{del}/block/{N} returns at-or-before snapshot with staleness_blocks; /range filters by from/to. /stake/.../block/<pre-bond> returns 404 cleanly. Pending-stake-via-RPC defers to S9.2.
+- **2026-04-27** S7.2 done — finality-watcher daemon. Heuristic v1.5: each iteration reads L1 latest + finalized block timestamps, marks L2 events accordingly (10-min posting lag, 1-min margin past L1 finalized). One iteration promoted all 165 test-DB events from tentative → finalized. Valuator now works in production mode (no `--include-tentative`). SPEC-true SequencerBatchDelivered tracking → TD-008 (Chainstack L1 archive URL provided + .env updated).

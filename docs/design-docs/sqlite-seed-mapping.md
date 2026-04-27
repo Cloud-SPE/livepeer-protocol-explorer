@@ -23,27 +23,15 @@ reward:  158,448 rows / 158,448 distinct transaction_id
 
 If a future seed source ever has multiple log indexes per tx, this assumption breaks; the migrator must reject the import in that case. Add a sanity check: `SELECT COUNT(*) FROM payout GROUP BY transaction_id HAVING COUNT(*) > 1` returns zero rows. Same for `reward`.
 
-## Q-OD-4: seed boundary is a vector of 18 cursors
+## Q-OD-4: `block_cursors` not consumed (SPEC v1.2)
 
-`block_cursors` snapshot (2026-04-27):
+The SQLite `block_cursors` table holds 18 per-event-type seed-coverage cursors. **We don't import them.** The valuator does a flat `(chain_id, tx_hash, asset)` lookup against `seeded_event_prices` — a hit means the seed has it, a miss means on-chain pricing. No per-type bound vector required.
 
-| event_type | last_block | event_type | last_block |
-|---|---|---|---|
-| Bond | 456846476 | Rebond | 456851342 |
-| DepositFunded | 456821014 | ReserveClaimed | 456851342 |
-| EarningsClaimed | 456846476 | ReserveFunded | 456851342 |
-| ProposalCreated | 456810262 | Reward | 456833281 |
-| TranscoderActivation | 456809997 | Withdrawal | 456827124 |
-| TranscoderDeactivation | 456833301 | TranscoderUpdate | 456830184 |
-| TransferBond | 456827750 | Unbond | 456850255 |
-| VoteCast | 456849626 | WinningTicket | 456851345 |
-| WithdrawFees | 456842435 | WithdrawStake | 456842435 |
-
-**Decision:** the migrator records each cursor as one `indexer_checkpoints` row named `seed_<event_type_lowercased>`. The valuator's seed-lookup logic uses these per-type bounds: a `Reward` event at block ≤ 456833281 may have a seed hit; above that block, on-chain pricing only.
+This is a simplification from earlier spec versions. SPEC §8.3 lists `block_cursors` in the explicitly-ignored set alongside `orchestrator`, `broadcaster`, `proposals`, `votes`.
 
 ### Naming bridge (SQLite → on-chain)
 
-SQLite event_type names diverge from on-chain event names in a few places. The migrator and the valuator use this mapping:
+The seed's `event_type` strings diverge from on-chain event names in a few places. Even though we don't consume `block_cursors`, the staging cross-check pass (TD-004) needs the same mapping when comparing `events.payload` rows to RPC-derived events:
 
 | SQLite `event_type` | On-chain event name | Notes |
 |---|---|---|

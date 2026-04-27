@@ -1,14 +1,23 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.1
+## Technical Specification v1.2
 
 **Status:** Draft, ready for implementation
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.1
+**Document version:** 1.2
 
-### Changes since v1.0 (2026-04-27)
+### Changes since v1.1 (2026-04-27)
+
+- §8 — `block_cursors` SQLite table dropped from the seed-migration scope. The valuator does a flat `(chain_id, tx_hash, asset)` lookup against `seeded_event_prices`; no per-event-type bound vector. Simpler and equivalent: a hit means the seed has it, a miss means on-chain pricing.
+- §11.2 — removed the `seed_<event_type>` checkpoint names; only `'main'`, `'reorg_watcher'`, `'finality_watcher'`, `'valuator_v1'`, `'staker'` remain.
+- §14.3.1 — Events endpoint augmented: cursor-based pagination (opaque cursor, stable under append), sort whitelist, dual-address filter (`from_address` / `to_address` / `address`), `with_valuations=true` join, `asset`, `contract`, `event_name`.
+- §14.3.6 — NEW `/aggregations/events` endpoint covering daily/weekly/monthly USD totals + ticket-count timeseries. Replaces 4 legacy summary routes.
+- §14.3.7 — NEW `/governance/proposals` convenience endpoint joining `ProposalCreated` + `ProposalExecuted` + `VoteCast` aggregates.
+- §14 (consciously dropped from v1) — CSV report endpoints (JSON-only per §14.4); orchestrator/gateway metadata endpoints (deferred to v2 per §20); `job_type` (`ai`/`transcoding`) filter (no on-chain encoding; would require a manual overlay we are not maintaining).
+
+### Changes from v1.0 → v1.1 (2026-04-27)
 
 - §6.2 — added `TransferBond` to the critical-events allowlist (strict-decode).
 - §6.3 — added `TransferBond` (LPT-valued) and `WithdrawFees` (ETH-valued) rows to the BondingManager event catalog. Both surfaced from the SQLite seed but absent in v1.0. Resolves TD-003.
@@ -556,18 +565,6 @@ The `payload` column is the canonical decoded source. All other tables in the SQ
 
 The structure of `payload` requires inspection of sample rows during migration utility implementation (open data item Q-OD-3, §22).
 
-#### 8.2.4 `block_cursors` — Per-event-type checkpoints
-
-```sql
-CREATE TABLE block_cursors (
-    event_type TEXT PRIMARY KEY NOT NULL,
-    last_block INTEGER NOT NULL DEFAULT 0,
-    updated TIMESTAMP NOT NULL DEFAULT current_timestamp
-);
-```
-
-Provides per-event-type seeded coverage boundaries. **Note: the seed boundary is a vector by event type, not a single block.** The migrator records each cursor; the valuator's seed-lookup logic uses these per-type bounds.
-
 ### 8.3 Tables explicitly ignored
 
 The following SQLite tables are **not** consumed:
@@ -576,6 +573,7 @@ The following SQLite tables are **not** consumed:
 - `broadcaster` — current-state metadata
 - `proposals` — governance state
 - `votes` — governance state
+- `block_cursors` — per-event-type checkpoints. Not needed: the valuator does a flat `(chain_id, tx_hash, asset)` lookup against `seeded_event_prices` — a hit means the seed has it, a miss means on-chain pricing. No per-type bound vector required.
 
 Governance and orchestrator metadata may be re-derived from on-chain events post-v1; they are not part of the seed migration.
 
@@ -608,12 +606,11 @@ For each unvalued (event_id, version, asset) tuple:
 
 1. Connects to source SQLite (read-only).
 2. Connects to target Postgres.
-3. Reads `block_cursors` — records per-event-type cutoffs in `indexer_checkpoints`.
-4. Iterates `payout` rows — inserts into `seeded_event_prices` with `event_type_hint = 'payout'`.
-5. Iterates `reward` rows — inserts into `seeded_event_prices` with `event_type_hint = 'reward'`.
-6. Optionally imports `events.payload` rows for cross-checking against future RPC-derived events (open work — depends on payload structure inspection).
-7. Logs a summary: rows imported per table, min/max block per event type.
-8. Exits.
+3. Iterates `payout` rows — inserts into `seeded_event_prices` with `event_type_hint = 'payout'`.
+4. Iterates `reward` rows — inserts into `seeded_event_prices` with `event_type_hint = 'reward'`.
+5. Imports `events.payload` rows into a staging table for the seed/canonical cross-check pass (§24.1).
+6. Logs a summary: rows imported per table, min/max block.
+7. Exits.
 
 Migration is idempotent: re-running on the same input is safe (`ON CONFLICT DO NOTHING`).
 
@@ -870,7 +867,7 @@ CREATE TABLE indexer_checkpoints (
 );
 ```
 
-Names used: `'main'`, `'reorg_watcher'`, `'finality_watcher'`, `'valuator_v1'`, `'staker'`. Plus per-event-type seed cursors named `'seed_payout'`, `'seed_reward'`, etc.
+Names used: `'main'`, `'reorg_watcher'`, `'finality_watcher'`, `'valuator_v1'`, `'staker'`.
 
 ### 11.3 `contract_abi_registry`
 
@@ -1484,10 +1481,28 @@ v1 exposes **poll-based** endpoints only. No webhooks, no Kafka, no push. To mak
 
 ```http
 GET /events/{id}
-GET /events?from_block=&to_block=&event_type=&address=&include_tentative=false
+GET /events
+  ?from_block=        &to_block=
+  ?contract=          (e.g. BondingManager, TicketBroker, Governor)
+  ?event_name=        (e.g. WinningTicketRedeemed, Reward, Bond)
+  ?event_type=        (legacy alias for event_name)
+  ?from_address=      &to_address=     &address=    (any-role match)
+  ?asset=             (LPT | ETH)
+  ?with_valuations=   (default false; joins event_valuations rows inline)
+  ?sort=              (block_asc | block_desc | amount_usd_desc)   ← whitelist only
+  ?limit=             (default 100, max 1000)
+  ?cursor=            (opaque, returned by prior response)
+  ?include_tentative=false
+  ?include_reorged=false
 ```
 
-Defaults to `is_canonical = TRUE` and `finality = 'finalized'`. The `?include_tentative=true` flag relaxes the finality filter; `?include_reorged=true` relaxes the canonical filter (audit/forensic only).
+Defaults to `is_canonical = TRUE` and `finality = 'finalized'`. `include_tentative=true` relaxes the finality filter; `include_reorged=true` relaxes the canonical filter (audit/forensic only).
+
+**Pagination is cursor-based.** Response carries `next_cursor` (null if no more). The cursor is an opaque string encoding the last `(block_number, log_index)` pair for the chosen sort order — stable under append. `offset`-based paging is not supported (it would skip events arriving mid-walk on an append-only store).
+
+**`sort` is a whitelist.** Only the listed values are accepted; arbitrary user-supplied SQL ordering is rejected. Default is `block_asc`.
+
+**`with_valuations=true`** inlines the matching `event_valuations` rows under the `valuations` key (an array, since multi-asset events have multiple). The default is `false` to keep responses small for callers that don't need them.
 
 #### 14.3.2 Valuations
 
@@ -1525,6 +1540,52 @@ GET /health
 ```
 
 Status endpoint returns indexer + valuator + stake-worker progress, plus reorg-watcher and finality-watcher status. Health endpoint is a simple liveness check.
+
+#### 14.3.6 Aggregations
+
+```http
+GET /aggregations/events
+  ?contract=          &event_name=
+  ?bucket=            (day | week | month)
+  ?from=              &to=             (ISO date YYYY-MM-DD or block number)
+  ?address=           &from_address=   &to_address=
+  ?asset=             (LPT | ETH)
+  ?metric=            (count | sum_amount_native | sum_amount_usd | avg_amount_usd)
+  ?valuation_version= (defaults to current default version)
+  ?tz=                (IANA tz; default UTC) — controls bucket-edge alignment
+```
+
+Returns a time series of buckets:
+
+```json
+{
+  "bucket": "day",
+  "tz": "UTC",
+  "results": [
+    { "bucket_start": "2026-04-01", "count": 12345, "sum_amount_usd": "..." },
+    { "bucket_start": "2026-04-02", ... }
+  ],
+  "next_cursor": null
+}
+```
+
+Backed by `GROUP BY date_trunc(bucket, block_timestamp)` over `raw_protocol_events` joined with `event_valuations` (when `metric` includes USD or `_amount_usd`). Bounded by a configured max-bucket count to prevent unbounded scans. Replaces 4 legacy summary routes (daily/weekly/monthly payouts + ticket-count timeseries).
+
+`metric=count` requires no valuation join — fast for ticket-count timeseries.
+
+#### 14.3.7 Governance
+
+```http
+GET /governance/proposals
+  ?status=            (active | succeeded | executed | defeated | all)
+  ?limit=             ?cursor=
+GET /governance/proposals/{proposal_id}
+GET /governance/proposals/{proposal_id}/votes
+```
+
+Convenience layer over `/events`. Each proposal row joins `ProposalCreated` with the `ProposalExecuted` row (if any) and includes a per-support-side vote-weight tally aggregated from `VoteCast`. Saves callers a 3-event-type query.
+
+Underlying data is still queryable via raw `/events?contract=Governor&event_name=...` for forensic use.
 
 ### 14.4 Response format
 

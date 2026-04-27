@@ -73,14 +73,34 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] **Performance:** 24.7s for 455K rows in batches of 1000 (one PG transaction per table)
 - [ ] events.payload staging table + import → S11 (cross-check pass; uses TD-004 plumbing)
 
-### S6 — indexer
+### S6 — indexer (in_progress)
 
-- [ ] `eth_getLogs` with dynamic batch size
-- [ ] ABI-driven decode against `contract_abi_registry`
-- [ ] Strict-decode halt on critical events (§6.2)
-- [ ] Atomic batch commit (events + checkpoint advance in one tx)
-- [ ] Decode failures → dead letter
-- [ ] Idempotent backfill command
+#### S6.1 ✅ end-to-end vertical slice for Reward
+- [x] alloy added to `livepeer-indexer` deps
+- [x] `events.rs` — `sol!` macro for `Reward(address indexed transcoder, uint256 amount)`
+- [x] `core::rpc::Provider::eth_get_logs` added
+- [x] `backfill.rs` — fetch via `eth_getLogs` → decode via alloy → fetch+cache block timestamps via `single_call_cached` → batch INSERT into `raw_protocol_events` + advance `indexer_checkpoints` in one atomic transaction
+- [x] **Live test results:** 4 Rewards across blocks 456735816–456740385 captured cleanly. Sample amount `18.199267584391068228` matches the seed `18.19926758439107` to 14 sig figs, confirming Q-OD-1 precision-loss finding empirically.
+- [x] **Idempotency:** re-run inserts 0; ON CONFLICT DO NOTHING on `(chain_id, tx_hash, log_index)` works as designed.
+- [x] **Real-data finding:** SQLite `events` table has duplicate rows for some on-chain logs (block 456740385: 2 rows / 1 log). Recorded in TD-004 — cross-check pass must dedupe.
+
+#### S6.2 — remaining event types (pending)
+- [ ] Bond, Unbond, Rebond, WithdrawStake, EarningsClaimed, TransferBond, WithdrawFees (BondingManager)
+- [ ] WinningTicketRedeemed, WinningTicketTransfer, DepositFunded, ReserveFunded, Withdraw (TicketBroker)
+- [ ] Transfer, Mint, Burn (LivepeerToken)
+- [ ] NewRound (RoundsManager — non-monetary, indexed for context)
+- [ ] ProposalCreated, VoteCast, ProposalExecuted (Governor — non-monetary)
+- [ ] EarningsClaimed multi-asset → 2 valuation rows per SPEC §6.8
+
+#### S6.3 — strict-decode + dead-letter (pending)
+- [ ] Critical-events allowlist halt path (§10.2.1)
+- [ ] Non-critical decode failures → `decode_failures` (§10.2.2)
+- [ ] `recover-decode-failures` subcommand
+
+#### S6.4 — orchestration (pending)
+- [ ] Dynamic batch sizing on `eth_getLogs` (start 5K, halve on rate-limit, double on success, cap 10K — §13.4)
+- [ ] Backfill driver: walks `[from, to]`, advances checkpoint per batch, resumes from checkpoint
+- [ ] Cross-check sampling on backfill (§13.2 — backfill historical logs cross-checked across providers)
 
 ### S7 — reorg + finality watchers
 
@@ -125,3 +145,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S3 partial. `core::abi` + `seed-abi-registry` + ABI hash verification in `probe`. 7 ABIs registered. Tamper test verified — modifying `abi/Minter.json` triggers `AbiHashMismatch` and halts probe. RPC-side boot checks deferred to S4 since they need `core::rpc`.
 - **2026-04-27** S4 done. `core::rpc::{provider,cache,cross_check}` + `verify-rpc` subcommand. End-to-end pass against live Chainstack + liveinfraspe; 4 cache rows written; cardinality 601 verified at head. SPEC bumped to v1.5 — cross-check is method-aware (block hash for headers, raw bytes for eth_call, per-log for eth_getLogs). The cross-check fired on a real provider JSON-shape disagreement before the fix; that divergence row is preserved as a record.
 - **2026-04-27** S5 done. Real seed import: 297K payouts + 158K rewards = 455,553 rows in 24.7s. Idempotent (`inserted_this_run = 0` on second run). Required CAST AS REAL on every numeric column to handle SQLite's per-row INTEGER affinity for whole-number values. Sample rows verified sane (ETH @ $2390, LPT @ $5.24).
+- **2026-04-27** S6.1 done. End-to-end indexer slice for Reward — alloy in, sol! macro, eth_getLogs + decode + atomic insert + checkpoint. 4 Rewards captured cleanly. Q-OD-1 precision-loss verified empirically against the seed. Idempotent. SQLite-events duplicate finding noted in TD-004.

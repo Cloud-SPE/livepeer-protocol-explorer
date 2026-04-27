@@ -165,4 +165,22 @@ impl Provider {
         ]);
         self.call("eth_call", &params).await
     }
+
+    /// `eth_getLogs` filtered by single contract address + topic0. Returns the raw
+    /// JSON array of logs — decode upstream.
+    pub async fn eth_get_logs(
+        &self,
+        contract: &str,
+        topic0: &str,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Value> {
+        let params = serde_json::json!([{
+            "address": contract,
+            "topics": [topic0],
+            "fromBlock": format!("0x{:x}", from_block),
+            "toBlock":   format!("0x{:x}", to_block),
+        }]);
+        self.call("eth_getLogs", &params).await
+    }
 }

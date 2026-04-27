@@ -159,13 +159,22 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] Refactored `persist.rs` so seed.rs and onchain.rs share `insert_valuation` / `insert_attempt`
 - [x] **Live verification:** 6 ETH candidates → 6 priced. WithdrawFees 0.184 ETH × $2,390.62 = $439.87 ✓. Tiny-amount precision check: 0.00000517... ETH × $2378.51 = $0.01230... ✓. Idempotent.
 
-#### S8.2.b — on-chain pricing for LPT events (Uniswap V3 TWAP × Chainlink)
-- [ ] Cardinality precheck at event block — `slot0().observationCardinality < 144` triggers degraded path
-- [ ] **Default path:** `observe([1800, 0])` → cumulative ticks → average tick → 1.0001^tick → LPT/WETH price → × Chainlink ETH/USD → LPT/USD
-- [ ] **Degraded path:** `slot0()` → sqrtPriceX96 → spot LPT/WETH → × Chainlink ETH/USD → LPT/USD; stamped `v1_degraded_spot_pre_cardinality`
-- [ ] **Determinism critical:** `1.0001^tick` math must be deterministic — implement Uniswap's TickMath integer algorithm or use `sqrtPriceX96^2 / 2^192` (exact) when reading slot0; for TWAP need TickMath.getSqrtRatioAtTick(tick_avg)
-- [ ] Token0/token1 ordering verified at boot (LPT < WETH lexicographically → token0=LPT, token1=WETH; price = WETH per LPT)
-- [ ] Q-OD-9 finding: ~17,032 events in `[genesis, ~32M]` need degraded path
+#### S8.2.b — on-chain pricing for LPT events (Uniswap V3 TWAP × Chainlink) ✅ done
+- [x] `tick_math::get_sqrt_ratio_at_tick(tick) -> U256` — Uniswap V3 TickMath in Rust, deterministic integer math. 6 unit tests covering tick=0, ±MIN_TICK/MAX_TICK, range errors, signed sqrtPriceX96 correlation with tick sign, magnitude check at known tick.
+- [x] `read_pool_slot0(pool, block)` — sqrtPriceX96 + tick + observationCardinality via `single_call_cached`
+- [x] `read_pool_observe(pool, block, 1800)` — cumulative ticks for [1800, 0] via `single_call_cached`
+- [x] `uniswap_arithmetic_mean_tick(delta, secs)` — floor-division semantics matching Uniswap's OracleLibrary (subtract 1 when delta < 0 and not evenly divisible)
+- [x] **Default TWAP path:** observe → mean tick → TickMath.getSqrtRatioAtTick → square / 2^192 → LPT/WETH → × Chainlink ETH/USD → LPT/USD
+- [x] **Degraded path:** slot0().sqrtPriceX96 → square / 2^192 → spot LPT/WETH → × Chainlink ETH/USD → LPT/USD; version stamped `v1_degraded_spot_pre_cardinality`
+- [x] Cardinality precheck (`< 144` → degraded)
+- [x] Token0/token1 ordering: LPT < WETH lexicographically, both 18 decimals → price = WETH per LPT, no decimal correction
+- [x] Pool-not-yet-deployed handling (slot0 returns empty bytes) → `failed_missing_pool`
+- [x] Pool can't serve TWAP window (observe reverts with OLD) → `failed_missing_pool`
+- [x] **Live verification (TWAP path):** 25 LPT events priced. Sample: avg tick -69945 → sqrtPriceX96 = 2399491... → LPT/WETH = 0.0009172... × $2394.51 = LPT/USD $2.196 → 326.35 LPT × $2.196 = $716.76 ✓. Idempotent.
+- [ ] Live verification of degraded path requires fetching pre-cardinality events (none in current DB; deferred to S11 fixture work). Q-OD-9 says ~17,032 events in `[genesis, ~32M]` will hit it.
+
+#### TD-006 (added) — degraded version derivation
+- [ ] `DEGRADED_VERSION_SUFFIX` is currently appended to a hardcoded "v1" prefix. When v2 valuation versions land, derive the prefix from the operator-passed `--version`.
 
 #### S8.3 — multi-asset (EarningsClaimed) — generates 2 valuation rows per event per SPEC §6.8
 
@@ -210,3 +219,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S7.1 done — reorg-watcher daemon with cadence picker (15s/5s/60s), events-only walk in `[head − 7500, head]`. Synthetic divergence test (poisoned `0xdeadbeef` block hash) verified end-to-end: detected, `is_canonical=FALSE` set, audit row written. Mutation flow (`block_number`/`block_hash` update + `reorg_mutations`) deferred to TD-005.
 - **2026-04-27** S8.1 done — valuator's seed-hit path. 112 events priced from seed in one pass; 31 seed-misses + 12 multi-asset deferred to subsequent slices. Q-OD-1 mitigation in action: chain provides `amount_native`, seed provides `asset_usd_price`, valuator multiplies them to get `amount_usd`. Reward 3952 LPT × $2.191 = $8,659.29 verified end-to-end.
 - **2026-04-27** S8.2.a done — on-chain Chainlink ETH/USD path. 6 ETH events priced. Sequencer + Chainlink reads cached forever per SPEC §13.5 (12 cache rows added; replay reads from cache). Sample: WithdrawFees 0.184 ETH × $2,390.62 = $439.87 ✓. Sub-microETH amount priced to 18-decimal precision. pricing_chain JSONB carries full provenance (oracle address, raw_round, checks block). Idempotent.
+- **2026-04-27** S8.2.b done — Uniswap V3 TWAP × Chainlink for LPT events. tick_math::get_sqrt_ratio_at_tick implemented as deterministic integer math (Uniswap reference algorithm), 6 unit tests pass. Sample: avg tick -69945 → sqrtPriceX96 = 2399491... → LPT/WETH = 0.0009172 × $2394.51 = $2.196 → 326.35 LPT = $716.76 ✓. 25 LPT events priced. Pricing chain provenance carries cumulative ticks, mean tick, sqrtPriceX96, oracle, raw_round. Total event_valuations coverage: 143 across 3 sources (seed 112 + Chainlink ETH 6 + Uniswap LPT 25). Idempotent.

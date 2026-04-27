@@ -1,6 +1,7 @@
 mod onchain;
 mod persist;
 mod seed;
+mod tick_math;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -38,7 +39,10 @@ enum Command {
     BackfillFromSeed,
     /// (S8.2.a) On-chain pass for ETH-valued events — Chainlink ETH/USD at event block.
     BackfillEthOnchain,
-    /// Run both seed pass first, then ETH on-chain pass for whatever the seed missed.
+    /// (S8.2.b) On-chain pass for LPT-valued events — Uniswap V3 TWAP × Chainlink,
+    /// with degraded-spot fallback when pool cardinality < 144 (Q-OD-9).
+    BackfillLptOnchain,
+    /// Run seed → ETH on-chain → LPT on-chain in sequence.
     BackfillAll,
 }
 
@@ -86,6 +90,23 @@ async fn main() -> Result<()> {
                 "on-chain ETH pass summary"
             );
         }
+        Command::BackfillLptOnchain => {
+            let archive = Provider::new(
+                "chainstack",
+                cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
+            )?;
+            let s = onchain::run_onchain_pass_lpt(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            info!(
+                events_considered = s.events_considered,
+                priced_twap = s.priced_twap,
+                priced_degraded = s.priced_degraded,
+                failed_sequencer_outage = s.failed_sequencer_outage,
+                failed_missing_oracle = s.failed_missing_oracle,
+                failed_missing_pool = s.failed_missing_pool,
+                other_skipped = s.other_skipped,
+                "on-chain LPT pass summary"
+            );
+        }
         Command::BackfillAll => {
             let s = seed::run_seed_pass(&pg, &valuation_version, cli.include_tentative).await?;
             info!(
@@ -107,6 +128,17 @@ async fn main() -> Result<()> {
                 failed_missing_oracle = o.failed_missing_oracle,
                 other_skipped = o.other_skipped,
                 "on-chain ETH pass summary"
+            );
+            let l = onchain::run_onchain_pass_lpt(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            info!(
+                events_considered = l.events_considered,
+                priced_twap = l.priced_twap,
+                priced_degraded = l.priced_degraded,
+                failed_sequencer_outage = l.failed_sequencer_outage,
+                failed_missing_oracle = l.failed_missing_oracle,
+                failed_missing_pool = l.failed_missing_pool,
+                other_skipped = l.other_skipped,
+                "on-chain LPT pass summary"
             );
         }
     }

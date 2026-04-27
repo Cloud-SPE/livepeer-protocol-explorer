@@ -9,6 +9,47 @@ pub const ARBITRUM_CHAIN_ID: i64 = 42161;
 pub const STATUS_PRICED: &str = "priced";
 pub const STATUS_DETERMINISM_VIOLATION: &str = "failed_determinism_violation";
 
+/// Idempotent UPSERT into `token_prices_by_block`. PK is
+/// `(chain_id, asset, quote, block_number, source)`. ON CONFLICT DO NOTHING.
+/// SPEC §11.6 — populated by the valuator's on-chain reads so the `/prices` API
+/// can serve the same data the valuator computed.
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_price(
+    pool: &sqlx::PgPool,
+    asset: &str,
+    quote: &str,
+    block_number: i64,
+    block_hash: &str,
+    block_timestamp: chrono::DateTime<chrono::Utc>,
+    price: &BigDecimal,
+    source: &str,
+    pool_address: Option<&str>,
+    oracle_address: Option<&str>,
+    raw: Option<&serde_json::Value>,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO token_prices_by_block
+              (chain_id, asset, quote, block_number, block_hash, block_timestamp,
+               price, source, pool_address, oracle_address, raw)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           ON CONFLICT (chain_id, asset, quote, block_number, source) DO NOTHING"#,
+    )
+    .bind(ARBITRUM_CHAIN_ID)
+    .bind(asset)
+    .bind(quote)
+    .bind(block_number)
+    .bind(block_hash)
+    .bind(block_timestamp)
+    .bind(price)
+    .bind(source)
+    .bind(pool_address)
+    .bind(oracle_address)
+    .bind(raw)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_valuation(
     tx: &mut Transaction<'_, Postgres>,

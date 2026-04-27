@@ -1,8 +1,9 @@
 mod flow;
+mod pending;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use livepeer_core::{config::Config, db, tracing_init};
+use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -31,6 +32,10 @@ enum Command {
     /// events in (block, log_index) order; populates stake_balances_by_block and
     /// delegator_registry. Idempotent.
     Backfill,
+    /// (S9.2) Refresh pending_stake / pending_fees on existing stake rows by
+    /// calling BondingManager.pendingStake / pendingFees at each EarningsClaimed
+    /// event block.
+    RefreshPending,
 }
 
 #[tokio::main]
@@ -56,6 +61,19 @@ async fn main() -> Result<()> {
                 delegators_registered = summary.delegators_registered,
                 skipped_unregistered = summary.skipped_unregistered,
                 "staker flow backfill summary"
+            );
+        }
+        Command::RefreshPending => {
+            let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
+            let archive = Provider::new("chainstack", archive_url)?;
+            let bonding_manager = cfg.static_.contracts.bonding_manager.to_lowercase();
+            let summary = pending::refresh_pending(&pg, &archive, &bonding_manager, cli.include_tentative).await?;
+            info!(
+                events_considered = summary.events_considered,
+                refreshed = summary.refreshed,
+                failed_decode = summary.failed_decode,
+                no_stake_row = summary.no_stake_row,
+                "staker pending refresh summary"
             );
         }
     }

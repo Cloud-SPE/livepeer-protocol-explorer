@@ -89,6 +89,7 @@ pub struct OnChainRunSummary {
 struct CandidateEvent {
     event_id: i64,
     block_number: i64,
+    block_hash: String,
     block_timestamp: chrono::DateTime<chrono::Utc>,
     asset: Option<String>,
     amount_normalized: Option<BigDecimal>,
@@ -224,23 +225,26 @@ async fn price_eth_event(
         archive,
         cfg,
         ev.block_number as u64,
-        ev.block_timestamp.timestamp(),
+        &ev.block_hash,
+        ev.block_timestamp,
         amount_native,
     )
     .await
 }
 
 /// Pure ETH-on-chain pricing helper: same Chainlink+sequencer reads as the
-/// per-event flow, parameterized by `(block, block_ts, amount_native)` so the
-/// multi-asset path can call it for the ETH portion of an EarningsClaimed.
+/// per-event flow, parameterized by `(block, block_hash, block_timestamp, amount_native)`
+/// so the multi-asset path can call it for the ETH portion of an EarningsClaimed.
 pub(crate) async fn price_eth_amount(
     pg: &PgPool,
     archive: &Provider,
     cfg: &Config,
     block: u64,
-    block_ts: i64,
+    block_hash: &str,
+    block_timestamp: chrono::DateTime<chrono::Utc>,
     amount_native: &BigDecimal,
 ) -> Result<PricingOutcome> {
+    let block_ts = block_timestamp.timestamp();
 
     // 1. Sequencer uptime — read at event block. answer == 0 means UP.
     let seq_round = read_round(pg, archive, &cfg.static_.pricing.l2_sequencer_uptime_feed, block).await?;
@@ -337,10 +341,37 @@ pub(crate) async fn price_eth_amount(
         },
     });
 
+    // TD-007: also write a token_prices_by_block row so the /prices API can
+    // serve this. ON CONFLICT idempotent across re-runs.
+    crate::persist::upsert_price(
+        pg,
+        "ETH",
+        "USD",
+        block as i64,
+        block_hash,
+        block_timestamp,
+        &native_usd_price,
+        "chainlink",
+        None,
+        Some(&cfg.static_.pricing.chainlink_eth_usd_aggregator),
+        Some(&serde_json::json!({"raw_round": chainlink_audit_for_eth(&cl)})),
+    )
+    .await?;
+
     Ok(PricingOutcome::Priced {
         native_usd_price,
         amount_usd,
         pricing_chain,
+    })
+}
+
+fn chainlink_audit_for_eth(cl: &DecodedRound) -> serde_json::Value {
+    serde_json::json!({
+        "roundId":         cl.round_id,
+        "answer":          cl.answer,
+        "startedAt":       cl.started_at,
+        "updatedAt":       cl.updated_at,
+        "answeredInRound": cl.answered_in_round,
     })
 }
 
@@ -395,7 +426,7 @@ async fn fetch_eth_candidates(
         "AND r.finality = 'finalized'"
     };
     let sql = format!(
-        r#"SELECT r.id, r.block_number, r.block_timestamp, r.asset, r.amount_normalized
+        r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp, r.asset, r.amount_normalized
              FROM raw_protocol_events r
              LEFT JOIN event_valuations v
                ON v.event_id          = r.id
@@ -419,9 +450,10 @@ async fn fetch_eth_candidates(
         .map(|r| CandidateEvent {
             event_id: r.get(0),
             block_number: r.get(1),
-            block_timestamp: r.get(2),
-            asset: r.get(3),
-            amount_normalized: r.get(4),
+            block_hash: r.get(2),
+            block_timestamp: r.get(3),
+            asset: r.get(4),
+            amount_normalized: r.get(5),
         })
         .collect())
 }
@@ -583,14 +615,15 @@ async fn price_lpt_event(
         chainlink,
         sequencer,
         ev.block_number as u64,
-        ev.block_timestamp.timestamp(),
+        &ev.block_hash,
+        ev.block_timestamp,
         amount_native,
     )
     .await
 }
 
 /// Pure LPT-on-chain pricing helper for the multi-asset path. Takes raw
-/// `(block, block_ts, amount_native)` instead of a CandidateEvent.
+/// `(block, block_hash, block_timestamp, amount_native)` instead of a CandidateEvent.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn price_lpt_amount(
     pg: &PgPool,
@@ -599,9 +632,11 @@ pub(crate) async fn price_lpt_amount(
     chainlink: &str,
     sequencer: &str,
     block: u64,
-    block_ts: i64,
+    block_hash: &str,
+    block_timestamp: chrono::DateTime<chrono::Utc>,
     amount_native: &BigDecimal,
 ) -> Result<LptOutcome> {
+    let block_ts = block_timestamp.timestamp();
 
     // 1. Sequencer up?
     let seq = read_round(pg, archive, sequencer, block).await?;
@@ -708,6 +743,15 @@ pub(crate) async fn price_lpt_amount(
             "v1",
             DEGRADED_VERSION_SUFFIX
         );
+        // TD-007: write derived LPT/USD + intermediates to token_prices_by_block.
+        crate::persist::upsert_price(
+            pg, "LPT", "USD", block as i64, block_hash, block_timestamp,
+            &lpt_usd, "uniswap_v3_spot_x_chainlink", Some(pool), Some(chainlink), None,
+        ).await?;
+        crate::persist::upsert_price(
+            pg, "LPT", "WETH", block as i64, block_hash, block_timestamp,
+            &lpt_per_weth, "uniswap_v3_spot", Some(pool), None, None,
+        ).await?;
         return Ok(LptOutcome::PricedDegraded {
             native_usd_price: lpt_usd,
             amount_usd,
@@ -770,11 +814,23 @@ pub(crate) async fn price_lpt_amount(
     });
 
     let version = "v1_lpt_weth_twap_30min_x_chainlink_eth".to_string();
+
+    // TD-007: write LPT/USD + LPT/WETH (TWAP) to token_prices_by_block.
+    crate::persist::upsert_price(
+        pg, "LPT", "USD", block as i64, block_hash, block_timestamp,
+        &lpt_usd, "uniswap_v3_twap_30min_x_chainlink_eth", Some(pool), Some(chainlink), None,
+    ).await?;
+    crate::persist::upsert_price(
+        pg, "LPT", "WETH", block as i64, block_hash, block_timestamp,
+        &lpt_per_weth, "uniswap_v3_twap_30min", Some(pool), None,
+        Some(&serde_json::json!({"meanTick": avg_tick, "sqrtPriceX96": sqrt_price_x96.to_string()})),
+    ).await?;
+
     Ok(LptOutcome::PricedTwap {
         native_usd_price: lpt_usd,
         amount_usd,
         pricing_chain,
-        version,
+    version,
     })
 }
 
@@ -897,7 +953,7 @@ async fn fetch_lpt_candidates(
     // been priced under either, it's done.
     let degraded = format!("v1{DEGRADED_VERSION_SUFFIX}");
     let sql = format!(
-        r#"SELECT r.id, r.block_number, r.block_timestamp, r.asset, r.amount_normalized
+        r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp, r.asset, r.amount_normalized
              FROM raw_protocol_events r
              LEFT JOIN event_valuations v
                ON v.event_id  = r.id
@@ -922,9 +978,10 @@ async fn fetch_lpt_candidates(
         .map(|r| CandidateEvent {
             event_id: r.get(0),
             block_number: r.get(1),
-            block_timestamp: r.get(2),
-            asset: r.get(3),
-            amount_normalized: r.get(4),
+            block_hash: r.get(2),
+            block_timestamp: r.get(3),
+            asset: r.get(4),
+            amount_normalized: r.get(5),
         })
         .collect())
 }

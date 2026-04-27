@@ -42,6 +42,7 @@ pub struct MultiAssetSummary {
 struct MultiAssetCandidate {
     event_id: i64,
     block_number: i64,
+    block_hash: String,
     block_timestamp: chrono::DateTime<chrono::Utc>,
     rewards_wei: String, // u256 as decimal string
     fees_wei: String,    // u256 as decimal string
@@ -71,7 +72,6 @@ pub async fn run_multi_asset_pass(
 
     for ev in &candidates {
         let block = ev.block_number as u64;
-        let block_ts = ev.block_timestamp.timestamp();
 
         // Parse the wei amounts. BigDecimal handles arbitrary-precision integers.
         let rewards_wei = BigDecimal::from_str(&ev.rewards_wei).unwrap_or_default();
@@ -93,7 +93,7 @@ pub async fn run_multi_asset_pass(
             .await?;
             summary.lpt_zero_amount_rows += 1;
         } else {
-            match price_lpt_amount(pg, archive, &pool, &chainlink, &sequencer, block, block_ts, &rewards_lpt).await {
+            match price_lpt_amount(pg, archive, &pool, &chainlink, &sequencer, block, &ev.block_hash, ev.block_timestamp, &rewards_lpt).await {
                 Ok(LptOutcome::PricedTwap { native_usd_price, amount_usd, pricing_chain, version }) => {
                     commit(pg, ev.event_id, &version, "LPT", PRICING_METHOD_LPT_TWAP, SOURCE_LPT,
                            ev.block_number, &rewards_lpt, &native_usd_price, &amount_usd, &pricing_chain).await?;
@@ -135,7 +135,7 @@ pub async fn run_multi_asset_pass(
             .await?;
             summary.eth_zero_amount_rows += 1;
         } else {
-            match price_eth_amount(pg, archive, cfg, block, block_ts, &fees_eth).await {
+            match price_eth_amount(pg, archive, cfg, block, &ev.block_hash, ev.block_timestamp, &fees_eth).await {
                 Ok(PricingOutcome::Priced { native_usd_price, amount_usd, pricing_chain }) => {
                     commit(pg, ev.event_id, valuation_version, "ETH", PRICING_METHOD_ETH, SOURCE_ETH,
                            ev.block_number, &fees_eth, &native_usd_price, &amount_usd, &pricing_chain).await?;
@@ -183,7 +183,7 @@ async fn fetch_candidates(
                 FROM event_valuations
                GROUP BY event_id
             )
-            SELECT r.id, r.block_number, r.block_timestamp,
+            SELECT r.id, r.block_number, r.block_hash, r.block_timestamp,
                    COALESCE(r.raw_event -> 'decoded' ->> 'rewards', '0') AS rewards_wei,
                    COALESCE(r.raw_event -> 'decoded' ->> 'fees',    '0') AS fees_wei
               FROM raw_protocol_events r
@@ -208,9 +208,10 @@ async fn fetch_candidates(
         .map(|r| MultiAssetCandidate {
             event_id: r.get(0),
             block_number: r.get(1),
-            block_timestamp: r.get(2),
-            rewards_wei: r.try_get(3).unwrap_or_else(|_| "0".to_string()),
-            fees_wei: r.try_get(4).unwrap_or_else(|_| "0".to_string()),
+            block_hash: r.get(2),
+            block_timestamp: r.get(3),
+            rewards_wei: r.try_get(4).unwrap_or_else(|_| "0".to_string()),
+            fees_wei: r.try_get(5).unwrap_or_else(|_| "0".to_string()),
         })
         .collect())
 }

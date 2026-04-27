@@ -2583,6 +2583,7 @@ dependencies = [
 name = "livepeer-staker"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "anyhow",
  "bigdecimal",
  "chrono",

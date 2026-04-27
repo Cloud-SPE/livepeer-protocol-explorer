@@ -246,17 +246,32 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [ ] `GET /prices/{asset}/{quote}/range` with lazy backfill
 - [ ] `sort=amount_usd_desc` on `/events` (requires JOIN)
 
-### S11 — cross-check + determinism CI
+### S11 — cross-check + determinism CI (in_progress)
 
-- [ ] `livepeer-test cross-check` — compare RPC events to SQLite events.payload (TD-004 / SPEC §24.1)
-- [ ] Determinism replay test fixture (§12.4)
-- [ ] CI workflow flips `determinism.yml` from placeholder to real
+#### S11.1 — cross-check binary ✅ done
+- [x] `livepeer-seed-migrator cross-check --source-sqlite <path>` walks the (tx_hash, log_index) intersection of indexer + seed within the indexed window
+- [x] Reports matched / missing-in-indexer / missing-in-seed / block-number-mismatches / block-hash-mismatches with up to 10 sample tx-hash#log-index strings per class
+- [x] **Live verification on 30K-block window:** 165 indexer ↔ 136 seed events: 131 matched, 4 missing-in-indexer, 33 missing-in-seed, 1 block-hash-mismatch (the synthetic-divergence row from S7.1, correctly surfaced)
 
-### S12 — observability + alerting
+#### S11.2 — determinism replay CI gate (pending)
+- [ ] Committed fixture: mini SQLite + RPC cache snapshot covering SPEC §12.4 events (Reward, EarningsClaimed multi-asset, Bond, Unbond, WinningTicketRedeemed, NewRound, TranscoderUpdate, seeded + non-seeded)
+- [ ] `tests/replay.rs` drops DB, applies migrations, runs all binaries against the fixture, hashes every table by PK, asserts against `expected_hashes.json`
+- [ ] Flip `.github/workflows/determinism.yml` from placeholder to the real test
+- [ ] `livepeer-test regenerate-fixture` operator command
 
-- [ ] Prometheus metrics catalog (§17.2)
-- [ ] Telegram alerter (§10.6)
-- [ ] Grafana dashboards (§17.3)
+### S12 — observability + alerting (in_progress)
+
+#### S12.1 — Prometheus metrics on API ✅ done
+- [x] `livepeer-api/src/metrics.rs` builds a Registry + IntCounterVec(route, status)
+- [x] `GET /metrics` exposes standard Prometheus exposition format
+- [x] `/health` increments the counter — verified live: `api_requests_total{route="/health",status="2xx"} 3` after 3 requests
+
+#### S12.2 — daemon-side metrics + Telegram alerter (pending)
+- [ ] `/metrics` on indexer / reorg-watcher / finality-watcher / valuator / staker on ports 9101–9106 (SPEC §15.2)
+- [ ] Per-event-name counters per SPEC §17.2: `events_indexed_total`, `events_valued_total`, `decode_failures_total`, `rpc_calls_total`, `reorgs_detected_total`, `rpc_divergence_total`
+- [ ] Lag gauges (`indexer_lag_blocks`, `valuator_pending_events`, `rpc_provider_circuit_state`)
+- [ ] Histograms (`rpc_call_duration_seconds`, `event_processing_duration_seconds`)
+- [ ] Telegram alerter — last priority per SPEC §10.6, behind a feature flag
 
 ## Progress log
 
@@ -279,3 +294,7 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S10.2 done — /aggregations/events (94 Rewards = $60,890.17/day verified), /governance/proposals + tally, /prices/{asset}/{quote}/{block,latest}. TD-007 added — token_prices_by_block isn't being written by the valuator yet; rpc_call_cache holds the data instead. Validation envelope confirmed for bad bucket/metric inputs.
 - **2026-04-27** S9.1 + stake API done. Flow-derived stake: 3 delegators registered, 3 rows persisted (61.91/20.97/0.9 LPT). 22 events skipped on out-of-window delegators (full-genesis backfill resolves). API: GET /stake/{del}/block/{N} returns at-or-before snapshot with staleness_blocks; /range filters by from/to. /stake/.../block/<pre-bond> returns 404 cleanly. Pending-stake-via-RPC defers to S9.2.
 - **2026-04-27** S7.2 done — finality-watcher daemon. Heuristic v1.5: each iteration reads L1 latest + finalized block timestamps, marks L2 events accordingly (10-min posting lag, 1-min margin past L1 finalized). One iteration promoted all 165 test-DB events from tentative → finalized. Valuator now works in production mode (no `--include-tentative`). SPEC-true SequencerBatchDelivered tracking → TD-008 (Chainstack L1 archive URL provided + .env updated).
+- **2026-04-27** TD-007 done — valuator now writes token_prices_by_block alongside event_valuations. /prices/LPT/USD/latest serves $2.194 with pool + oracle addresses. /prices/.../range and sort=amount_usd_desc on /events also live (S10.3 partial).
+- **2026-04-27** S9.2 done — staker.refresh-pending walks EarningsClaimed events, eth_calls BondingManager.pendingStake / pendingFees at the event block, updates stake rows with source='both'. Sample: delegator with 61.91 LPT bonded_principal in our window has 40,856 LPT pendingStake on chain (full history).
+- **2026-04-27** S11.1 done — cross-check binary surfaces real divergences. 131 matched / 4 missing-in-indexer / 33 missing-in-seed / 1 block-hash-mismatch (the S7.1 synthetic-divergence row).
+- **2026-04-27** S12.1 done — /metrics endpoint on API binary, Prometheus exposition, IntCounterVec(route, status), /health increments and serves cleanly.

@@ -1,5 +1,6 @@
 mod cursor;
 mod error;
+mod metrics;
 mod routes;
 mod state;
 
@@ -41,11 +42,13 @@ async fn main() -> Result<()> {
         pg,
         default_version: cfg.static_.pricing.default_valuation_version.clone(),
         chain_id: cfg.static_.chain.chain_id as i64,
+        metrics: std::sync::Arc::new(metrics::Metrics::new()),
     };
 
     let router = Router::new()
         // Operational
         .route("/health", get(routes::operational::health))
+        .route("/metrics", get(routes::operational::metrics))
         .route("/backfills/status", get(routes::operational::backfill_status))
         // Events
         .route("/events", get(routes::events::list))

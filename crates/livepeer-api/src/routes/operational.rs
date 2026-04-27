@@ -1,11 +1,28 @@
 //! Operational endpoints — health + backfill status. SPEC §14.3.5.
 
 use crate::{error::ApiError, state::AppState};
-use axum::{extract::State, Json};
+use axum::{extract::State, http::header, response::IntoResponse, Json};
+use prometheus::{Encoder, TextEncoder};
 use serde::Serialize;
 
-pub async fn health() -> &'static str {
+pub async fn health(State(state): State<AppState>) -> &'static str {
+    state.metrics.api_requests_total.with_label_values(&["/health", "2xx"]).inc();
     "ok"
+}
+
+/// Standard Prometheus exposition. SPEC §17.2.
+pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let encoder = TextEncoder::new();
+    let mut buf = Vec::new();
+    let families = state.metrics.registry.gather();
+    if encoder.encode(&families, &mut buf).is_err() {
+        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "encode failed").into_response();
+    }
+    (
+        [(header::CONTENT_TYPE, encoder.format_type().to_string())],
+        String::from_utf8(buf).unwrap_or_default(),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Serialize)]

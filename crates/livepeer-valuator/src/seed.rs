@@ -14,16 +14,15 @@
 //! Multi-asset events (`asset IS NULL`, e.g. EarningsClaimed) are skipped here —
 //! S8.3 handles them.
 
+use crate::persist::{insert_attempt, insert_valuation, ARBITRUM_CHAIN_ID, STATUS_PRICED};
 use anyhow::{Context, Result};
 use bigdecimal::BigDecimal;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Row};
 use std::str::FromStr;
 use tracing::{debug, info};
 
-const ARBITRUM_CHAIN_ID: i64 = 42161;
 const PRICING_METHOD: &str = "seed_lookup";
 const SOURCE: &str = "trusted_historical_seed_v1";
-const STATUS: &str = "priced";
 
 #[derive(Debug, Default)]
 pub struct SeedRunSummary {
@@ -113,6 +112,9 @@ pub async fn run_seed_pass(
             ev.event_id,
             valuation_version,
             asset,
+            PRICING_METHOD,
+            SOURCE,
+            STATUS_PRICED,
             ev.block_number,
             &amount_native,
             &seed.asset_usd_price,
@@ -126,7 +128,7 @@ pub async fn run_seed_pass(
             ev.event_id,
             valuation_version,
             asset,
-            STATUS,
+            STATUS_PRICED,
             None,
         )
         .await?;
@@ -211,77 +213,6 @@ async fn lookup_seed(pg: &PgPool, tx_hash: &str, asset: &str) -> Result<Option<S
         asset_usd_price: row.get::<BigDecimal, _>(1),
         raw: row.try_get(2).unwrap_or(serde_json::Value::Null),
     }))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn insert_valuation(
-    tx: &mut Transaction<'_, Postgres>,
-    event_id: i64,
-    valuation_version: &str,
-    asset: &str,
-    block_number: i64,
-    amount_native: &BigDecimal,
-    native_usd_price: &BigDecimal,
-    amount_usd: &BigDecimal,
-    pricing_chain: &serde_json::Value,
-) -> Result<bool> {
-    let result = sqlx::query(
-        r#"INSERT INTO event_valuations
-              (event_id, valuation_version, asset, pricing_method,
-               chain_id, block_number,
-               amount_native, native_usd_price, amount_usd,
-               pricing_chain, status, source)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-           ON CONFLICT (event_id, valuation_version, asset) DO NOTHING"#,
-    )
-    .bind(event_id)
-    .bind(valuation_version)
-    .bind(asset)
-    .bind(PRICING_METHOD)
-    .bind(ARBITRUM_CHAIN_ID)
-    .bind(block_number)
-    .bind(amount_native)
-    .bind(native_usd_price)
-    .bind(amount_usd)
-    .bind(pricing_chain)
-    .bind(STATUS)
-    .bind(SOURCE)
-    .execute(&mut **tx)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-async fn insert_attempt(
-    tx: &mut Transaction<'_, Postgres>,
-    event_id: i64,
-    valuation_version: &str,
-    asset: &str,
-    result_status: &str,
-    error_detail: Option<serde_json::Value>,
-) -> Result<()> {
-    // attempt_number = next per (event_id, version, asset). Use a CTE to compute it.
-    sqlx::query(
-        r#"WITH next_n AS (
-              SELECT COALESCE(MAX(attempt_number), 0) + 1 AS n
-                FROM valuation_attempts
-               WHERE event_id          = $1
-                 AND valuation_version = $2
-                 AND asset             = $3
-            )
-            INSERT INTO valuation_attempts
-                (event_id, valuation_version, asset, attempt_number,
-                 result_status, error_detail)
-            SELECT $1, $2, $3, n, $4, $5 FROM next_n
-            ON CONFLICT (event_id, valuation_version, asset, attempt_number) DO NOTHING"#,
-    )
-    .bind(event_id)
-    .bind(valuation_version)
-    .bind(asset)
-    .bind(result_status)
-    .bind(error_detail)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
 }
 
 // Strip warnings for the unused FromStr import in some build configs.

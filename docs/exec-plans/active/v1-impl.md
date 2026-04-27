@@ -149,14 +149,23 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] `--include-tentative` development flag (SPEC §9.1 says only finalized in prod; without finality watcher, all rows are tentative)
 - [x] **Live verification:** 155 candidates → 112 priced / 31 seed-misses (Bond/Unbond/etc. → S8.2) / 12 multi-asset skipped (EarningsClaimed → S8.3). Reward 3952 LPT × $2.191 = $8,659.29 ✓; WinningTicketRedeemed 0.0024 ETH × $2,390.93 = $5.75 ✓. 112 audit rows in `valuation_attempts`. Re-run priced 0 — idempotent.
 
-#### S8.2 — on-chain pricing path (TWAP × Chainlink)
-- [ ] Sequencer-uptime check at the event block (§7.3.4) — fail as `failed_sequencer_outage`
-- [ ] Chainlink ETH/USD `latestRoundData()` at event block via `cross_check::single_call_cached` (cached after first read)
-- [ ] Uniswap V3 `observe([1800, 0])` for 30-min TWAP at event block
-- [ ] Cardinality precheck — fall back to `v1_degraded_spot_pre_cardinality` if < 144 (Q-OD-9 finding — required for v1)
-- [ ] `pricing_chain` JSONB with full multi-step provenance (§7.5)
-- [ ] Mandatory checks: `answeredInRound >= roundId`, staleness ≤ 86400s
-- [ ] Status routing: `priced`, `priced_with_warning`, `failed_*` per §10.1
+#### S8.2.a — on-chain pricing for ETH events (Chainlink) ✅ done
+- [x] `livepeer-valuator backfill-eth-onchain` subcommand
+- [x] Sequencer-uptime read at event block (§7.3.4); answer != 0 → `failed_sequencer_outage`
+- [x] Chainlink `latestRoundData()` at event block via `cross_check::single_call_cached` — cached forever per SPEC §13.5
+- [x] Mandatory checks: `answeredInRound >= roundId`, staleness ≤ 86400s; WARN at > 14400s
+- [x] `pricing_chain` JSONB with full provenance (oracle address, raw_round, checks block, result)
+- [x] Status routing: `priced` / `failed_sequencer_outage` / `failed_missing_oracle` (rows in `valuation_attempts` regardless)
+- [x] Refactored `persist.rs` so seed.rs and onchain.rs share `insert_valuation` / `insert_attempt`
+- [x] **Live verification:** 6 ETH candidates → 6 priced. WithdrawFees 0.184 ETH × $2,390.62 = $439.87 ✓. Tiny-amount precision check: 0.00000517... ETH × $2378.51 = $0.01230... ✓. Idempotent.
+
+#### S8.2.b — on-chain pricing for LPT events (Uniswap V3 TWAP × Chainlink)
+- [ ] Cardinality precheck at event block — `slot0().observationCardinality < 144` triggers degraded path
+- [ ] **Default path:** `observe([1800, 0])` → cumulative ticks → average tick → 1.0001^tick → LPT/WETH price → × Chainlink ETH/USD → LPT/USD
+- [ ] **Degraded path:** `slot0()` → sqrtPriceX96 → spot LPT/WETH → × Chainlink ETH/USD → LPT/USD; stamped `v1_degraded_spot_pre_cardinality`
+- [ ] **Determinism critical:** `1.0001^tick` math must be deterministic — implement Uniswap's TickMath integer algorithm or use `sqrtPriceX96^2 / 2^192` (exact) when reading slot0; for TWAP need TickMath.getSqrtRatioAtTick(tick_avg)
+- [ ] Token0/token1 ordering verified at boot (LPT < WETH lexicographically → token0=LPT, token1=WETH; price = WETH per LPT)
+- [ ] Q-OD-9 finding: ~17,032 events in `[genesis, ~32M]` need degraded path
 
 #### S8.3 — multi-asset (EarningsClaimed) — generates 2 valuation rows per event per SPEC §6.8
 
@@ -200,3 +209,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S6.5 done — RoundsManager.NewRound, Governor (proposals/votes), LivepeerToken Mint/Burn. 15 distinct event types now decoding live. S6 substantively complete.
 - **2026-04-27** S7.1 done — reorg-watcher daemon with cadence picker (15s/5s/60s), events-only walk in `[head − 7500, head]`. Synthetic divergence test (poisoned `0xdeadbeef` block hash) verified end-to-end: detected, `is_canonical=FALSE` set, audit row written. Mutation flow (`block_number`/`block_hash` update + `reorg_mutations`) deferred to TD-005.
 - **2026-04-27** S8.1 done — valuator's seed-hit path. 112 events priced from seed in one pass; 31 seed-misses + 12 multi-asset deferred to subsequent slices. Q-OD-1 mitigation in action: chain provides `amount_native`, seed provides `asset_usd_price`, valuator multiplies them to get `amount_usd`. Reward 3952 LPT × $2.191 = $8,659.29 verified end-to-end.
+- **2026-04-27** S8.2.a done — on-chain Chainlink ETH/USD path. 6 ETH events priced. Sequencer + Chainlink reads cached forever per SPEC §13.5 (12 cache rows added; replay reads from cache). Sample: WithdrawFees 0.184 ETH × $2,390.62 = $439.87 ✓. Sub-microETH amount priced to 18-decimal precision. pricing_chain JSONB carries full provenance (oracle address, raw_round, checks block). Idempotent.

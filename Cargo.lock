@@ -2588,8 +2588,10 @@ dependencies = [
 name = "livepeer-valuator"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "anyhow",
  "bigdecimal",
+ "chrono",
  "clap",
  "livepeer-core",
  "serde",

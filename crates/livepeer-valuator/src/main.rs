@@ -1,8 +1,10 @@
+mod onchain;
+mod persist;
 mod seed;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use livepeer_core::{config::Config, db, tracing_init};
+use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -17,32 +19,32 @@ struct Cli {
     #[arg(long, env = "ENV_CONFIG", default_value = "config/env/dev.yaml", global = true)]
     env_config: PathBuf,
 
+    /// Override the configured default valuation version.
+    #[arg(long, global = true)]
+    version: Option<String>,
+
+    /// Allow tentative events. SPEC §9.1 requires finalized in production; without
+    /// a finality watcher all events are tentative, so this is the dev override.
+    #[arg(long, default_value_t = false, global = true)]
+    include_tentative: bool,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// (S8.1) Run the seed-hit pricing pass over all unvalued events.
-    /// Writes `event_valuations` for events whose `(tx_hash, asset)` matches a
-    /// seed row. Skips multi-asset events (asset=NULL); skips events without
-    /// seed coverage (those need on-chain pricing — S8.2).
-    BackfillFromSeed {
-        /// Override the configured default valuation version.
-        #[arg(long)]
-        version: Option<String>,
-        /// Allow tentative events (development override). SPEC §9.1 requires
-        /// finality='finalized' in production; without a finality watcher all
-        /// events stay tentative, so this flag exists for end-to-end testing.
-        #[arg(long, default_value_t = false)]
-        include_tentative: bool,
-    },
+    /// (S8.1) Seed-hit pass — values events whose `(tx_hash, asset)` match a seed row.
+    BackfillFromSeed,
+    /// (S8.2.a) On-chain pass for ETH-valued events — Chainlink ETH/USD at event block.
+    BackfillEthOnchain,
+    /// Run both seed pass first, then ETH on-chain pass for whatever the seed missed.
+    BackfillAll,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_init::init("info");
-
     let cli = Cli::parse();
     let cfg = Config::load(&cli.static_config, &cli.env_config).context("loading config")?;
     let pg = db::connect(
@@ -51,21 +53,60 @@ async fn main() -> Result<()> {
     )
     .await
     .context("connecting to Postgres")?;
-    info!(service = SERVICE, "config + db ready");
+    let valuation_version = cli
+        .version
+        .clone()
+        .unwrap_or_else(|| cfg.static_.pricing.default_valuation_version.clone());
+    info!(service = SERVICE, valuation_version, "config + db ready");
 
     match cli.command {
-        Command::BackfillFromSeed { version, include_tentative } => {
-            let valuation_version =
-                version.unwrap_or_else(|| cfg.static_.pricing.default_valuation_version.clone());
-            let summary =
-                seed::run_seed_pass(&pg, &valuation_version, include_tentative).await?;
+        Command::BackfillFromSeed => {
+            let s = seed::run_seed_pass(&pg, &valuation_version, cli.include_tentative).await?;
             info!(
-                events_considered = summary.events_considered,
-                seed_hits = summary.seed_hits,
-                seed_misses = summary.seed_misses,
-                priced_this_run = summary.priced_this_run,
-                multi_asset_skipped = summary.multi_asset_skipped,
-                "seed-pass summary"
+                events_considered = s.events_considered,
+                seed_hits = s.seed_hits,
+                seed_misses = s.seed_misses,
+                priced_this_run = s.priced_this_run,
+                multi_asset_skipped = s.multi_asset_skipped,
+                "seed pass summary"
+            );
+        }
+        Command::BackfillEthOnchain => {
+            let archive = Provider::new(
+                "chainstack",
+                cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
+            )?;
+            let s = onchain::run_onchain_pass_eth(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            info!(
+                events_considered = s.events_considered,
+                priced = s.priced,
+                failed_sequencer_outage = s.failed_sequencer_outage,
+                failed_missing_oracle = s.failed_missing_oracle,
+                other_skipped = s.other_skipped,
+                "on-chain ETH pass summary"
+            );
+        }
+        Command::BackfillAll => {
+            let s = seed::run_seed_pass(&pg, &valuation_version, cli.include_tentative).await?;
+            info!(
+                events_considered = s.events_considered,
+                priced_this_run = s.priced_this_run,
+                seed_misses = s.seed_misses,
+                multi_asset_skipped = s.multi_asset_skipped,
+                "seed pass summary"
+            );
+            let archive = Provider::new(
+                "chainstack",
+                cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
+            )?;
+            let o = onchain::run_onchain_pass_eth(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            info!(
+                events_considered = o.events_considered,
+                priced = o.priced,
+                failed_sequencer_outage = o.failed_sequencer_outage,
+                failed_missing_oracle = o.failed_missing_oracle,
+                other_skipped = o.other_skipped,
+                "on-chain ETH pass summary"
             );
         }
     }

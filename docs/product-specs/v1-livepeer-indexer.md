@@ -1,12 +1,17 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.5
+## Technical Specification v1.6
 
 **Status:** Draft, ready for implementation
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.5
+**Document version:** 1.6
+
+### Changes since v1.5 (2026-04-27)
+
+- §6.4 — TicketBroker withdrawal event renamed `Withdraw` → `Withdrawal` (the actual on-chain event name; v1.0–v1.5 had it wrong). The amount is `deposit + reserve` since the event drains both at once. Verified by `sol!(TicketBroker, "abi/TicketBroker.json")` and confirmed against the SQLite seed which also uses `Withdrawal`.
+- §6.3 — `WithdrawFees` clarified: BondingManager has two overloads. The current form is `WithdrawFees(address indexed delegator, address recipient, uint256 amount)`. The legacy single-arg form `WithdrawFees(address indexed delegator)` exists in the ABI but is not emitted in v1; if encountered it has no amount field.
 
 ### Changes since v1.4 (2026-04-27)
 
@@ -343,7 +348,7 @@ All other events go to `decode_failures` on decode error and indexing continues.
 | `DepositFunded` | ETH | `amount` | TRUE | NO | Gateway/broadcaster deposit |
 | `ReserveFunded` | ETH | `amount` | TRUE | NO | Gateway/broadcaster reserve |
 | `Unlock` | non-monetary | n/a | FALSE | NO | Unlock initiated |
-| `Withdraw` | ETH | `amount` | TRUE | NO | Gateway/broadcaster withdrawal |
+| `Withdrawal` | ETH | `deposit + reserve` (sum) | TRUE | NO | Gateway/broadcaster withdrawal — drains both deposit and reserve in one event. The on-chain event name is `Withdrawal`; the legacy SQLite seed labels it `Withdrawal` too. (Spec v1.0–v1.5 mistakenly called it `Withdraw`.) |
 
 ### 6.5 RoundsManager events
 

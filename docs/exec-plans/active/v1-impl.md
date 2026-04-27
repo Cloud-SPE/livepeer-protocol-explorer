@@ -84,13 +84,20 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] **Idempotency:** re-run inserts 0; ON CONFLICT DO NOTHING on `(chain_id, tx_hash, log_index)` works as designed.
 - [x] **Real-data finding:** SQLite `events` table has duplicate rows for some on-chain logs (block 456740385: 2 rows / 1 log). Recorded in TD-004 — cross-check pass must dedupe.
 
-#### S6.2 — remaining event types (pending)
-- [ ] Bond, Unbond, Rebond, WithdrawStake, EarningsClaimed, TransferBond, WithdrawFees (BondingManager)
-- [ ] WinningTicketRedeemed, WinningTicketTransfer, DepositFunded, ReserveFunded, Withdraw (TicketBroker)
-- [ ] Transfer, Mint, Burn (LivepeerToken)
-- [ ] NewRound (RoundsManager — non-monetary, indexed for context)
-- [ ] ProposalCreated, VoteCast, ProposalExecuted (Governor — non-monetary)
-- [ ] EarningsClaimed multi-asset → 2 valuation rows per SPEC §6.8
+#### S6.2 — remaining event types ✅ for the 3 high-volume contracts (RoundsManager + Governor → S6.5)
+
+- [x] `events.rs` uses `sol!(Contract, "../../abi/X.json")` JSON-path mode — auto-generates Rust types for every event in each ABI. No hand-typed signatures.
+- [x] `backfill.rs` generalized: `ContractKind` enum, topic0 dispatch, `eth_getLogs` with multi-topic0 filter (`topics: [[t1, t2, ...]]`)
+- [x] BondingManager: Bond, Unbond, Rebond, WithdrawStake, TransferBond, EarningsClaimed (multi-asset → asset=NULL + decoded JSON), WithdrawFees (overload `_0` — has amount), Reward (S6.1), TranscoderActivated/Deactivated/Update (non-monetary)
+- [x] TicketBroker: WinningTicketRedeemed, WinningTicketTransfer, DepositFunded, ReserveFunded, Withdrawal (corrected from "Withdraw"), Unlock (non-monetary)
+- [x] LivepeerToken: Transfer, Approval (non-monetary)
+- [x] **Live test:** 51 events across 13 distinct types in `[456735000, 456741000]` window. Sample correctness: EarningsClaimed multi-asset breakdown landed in `raw_event.decoded`; Transfer mint pattern (0x0→Minter→recipient) captured; WinningTicketRedeemed sender resolved to known Livepeer Inc address.
+- [x] **Q-OD-1 verified live again:** Reward amount 7.529685595729787584 LPT matches seed `7.52968559572978800000` to 16 sig figs.
+- [x] Idempotent on all 3 contracts (re-run `inserted=0` × 3).
+- [ ] Mint / Burn on LivepeerToken — S6.5 if needed; Transfer-from-zero already captures mints semantically
+- [ ] RoundsManager NewRound — S6.5
+- [ ] Governor ProposalCreated / VoteCast / ProposalExecuted — S6.5
+- [ ] Naming-bridge update needed: SPEC §6.4 listed `Withdraw`, real ABI emits `Withdrawal`. Spec amendment pending.
 
 #### S6.3 — strict-decode + dead-letter (pending)
 - [ ] Critical-events allowlist halt path (§10.2.1)
@@ -146,3 +153,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S4 done. `core::rpc::{provider,cache,cross_check}` + `verify-rpc` subcommand. End-to-end pass against live Chainstack + liveinfraspe; 4 cache rows written; cardinality 601 verified at head. SPEC bumped to v1.5 — cross-check is method-aware (block hash for headers, raw bytes for eth_call, per-log for eth_getLogs). The cross-check fired on a real provider JSON-shape disagreement before the fix; that divergence row is preserved as a record.
 - **2026-04-27** S5 done. Real seed import: 297K payouts + 158K rewards = 455,553 rows in 24.7s. Idempotent (`inserted_this_run = 0` on second run). Required CAST AS REAL on every numeric column to handle SQLite's per-row INTEGER affinity for whole-number values. Sample rows verified sane (ETH @ $2390, LPT @ $5.24).
 - **2026-04-27** S6.1 done. End-to-end indexer slice for Reward — alloy in, sol! macro, eth_getLogs + decode + atomic insert + checkpoint. 4 Rewards captured cleanly. Q-OD-1 precision-loss verified empirically against the seed. Idempotent. SQLite-events duplicate finding noted in TD-004.
+- **2026-04-27** S6.2 done for BondingManager + TicketBroker + LivepeerToken (high-volume contracts). 13 distinct event types decoding cleanly via alloy `sol!(Contract, "abi/X.json")` JSON-path mode. 51 events landed in a 6,000-block window, idempotent across all 3 contracts. Real-data findings: SPEC §6.4 named the event `Withdraw` but ABI says `Withdrawal`; BondingManager has two `WithdrawFees` overloads (we use the one with `(delegator, recipient, amount)`). RoundsManager + Governor events deferred to S6.5.

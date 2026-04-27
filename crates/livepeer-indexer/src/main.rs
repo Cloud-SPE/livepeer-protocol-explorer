@@ -2,7 +2,7 @@ mod backfill;
 mod events;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
 use std::path::PathBuf;
 use tracing::info;
@@ -24,13 +24,32 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// (S6.1) Backfill `Reward` events for a block range. Idempotent.
-    BackfillRewards {
+    /// Backfill all known events from a contract over [from_block, to_block]. Idempotent.
+    Backfill {
+        #[arg(long, value_enum)]
+        contract: ContractArg,
         #[arg(long)]
         from_block: u64,
         #[arg(long)]
         to_block: u64,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ContractArg {
+    BondingManager,
+    TicketBroker,
+    LivepeerToken,
+}
+
+impl ContractArg {
+    fn to_kind(self) -> backfill::ContractKind {
+        match self {
+            ContractArg::BondingManager => backfill::ContractKind::BondingManager,
+            ContractArg::TicketBroker => backfill::ContractKind::TicketBroker,
+            ContractArg::LivepeerToken => backfill::ContractKind::LivepeerToken,
+        }
+    }
 }
 
 #[tokio::main]
@@ -46,26 +65,45 @@ async fn main() -> Result<()> {
     info!(service = SERVICE, "config + db ready");
 
     match cli.command {
-        Command::BackfillRewards { from_block, to_block } => {
+        Command::Backfill {
+            contract,
+            from_block,
+            to_block,
+        } => {
             let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
             let archive = Provider::new("chainstack", archive_url)?;
-            let bonding_manager = cfg.static_.contracts.bonding_manager.to_lowercase();
+            let kind = contract.to_kind();
+            let proxy = match kind {
+                backfill::ContractKind::BondingManager => &cfg.static_.contracts.bonding_manager,
+                backfill::ContractKind::TicketBroker => &cfg.static_.contracts.ticket_broker,
+                backfill::ContractKind::LivepeerToken => &cfg.static_.contracts.livepeer_token,
+            }
+            .to_lowercase();
             let abi_hash: String = sqlx::query_scalar(
-                "SELECT abi_hash FROM contract_abi_registry WHERE contract_name = 'BondingManager'",
+                "SELECT abi_hash FROM contract_abi_registry WHERE contract_name = $1",
             )
+            .bind(kind.name())
             .fetch_one(&pg)
             .await
-            .context("loading BondingManager abi_hash from registry")?;
-            let inserted = backfill::backfill_rewards(
+            .with_context(|| format!("loading {} abi_hash from registry", kind.name()))?;
+
+            let inserted = backfill::backfill_contract(
                 &pg,
                 &archive,
-                &bonding_manager,
+                kind,
+                &proxy,
                 &abi_hash,
                 from_block,
                 to_block,
             )
             .await?;
-            info!(inserted, from_block, to_block, "Reward backfill complete");
+            info!(
+                inserted,
+                contract = kind.name(),
+                from_block,
+                to_block,
+                "backfill complete"
+            );
         }
     }
     Ok(())

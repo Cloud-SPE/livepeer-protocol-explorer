@@ -29,3 +29,7 @@ Thumbs.db
 
 # Generated docs (regenerate locally; commit when stable)
 # docs/generated/  # uncomment to ignore
+
+# Detached-run logs
+full-run.log
+full-run-*.log

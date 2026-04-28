@@ -33,3 +33,6 @@ Thumbs.db
 # Detached-run logs
 full-run.log
 full-run-*.log
+
+# Determinism-replay baselines (one dir per snapshot)
+baselines/

@@ -237,7 +237,7 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] `GET /aggregations/events` — bucket = day | week | month; metric = count | sum_amount_native | sum_amount_usd | avg_amount_usd; tz default UTC; from/to accept ISO date or block number; LEFT JOIN to `event_valuations` only when metric needs it. **Live verified:** 94 Rewards summing $60,890.17 in one day; 5 WinningTicketRedeemed in one day; total $65,246.65 across 155 valuable events.
 - [x] `GET /governance/proposals[?status=executed|not_executed|active|all]` — joins `ProposalCreated` + `ProposalExecuted` + per-proposal `VoteCast` tally (against / for / abstain weight, vote count). Empty result confirmed for our test range (no governance activity).
 - [x] `GET /governance/proposals/{proposal_id}` — single proposal fetch.
-- [x] `GET /prices/{asset}/{quote}/block/{block}` and `/latest` — backed by `token_prices_by_block`. Returns 404 today because the valuator caches via `rpc_call_cache` instead of `token_prices_by_block` — see TD-007.
+- [x] `GET /prices/{asset}/{quote}/block/{block}` and `/latest` — backed by `token_prices_by_block`, populated by the valuator's on-chain reads (Chainlink ETH/USD; Uniswap V3 TWAP for LPT/WETH; LPT/USD as the derived product). Live verified: `/prices/LPT/USD/latest` serves $2.194 with pool + oracle addresses.
 - [x] Validation: rejects `bucket=hour`, `metric=median`, etc. with conformant 400 + error envelope.
 
 #### S10.3 — stake + ETag + range prices + sort=amount_usd_desc (pending)

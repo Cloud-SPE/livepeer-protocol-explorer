@@ -341,8 +341,8 @@ pub(crate) async fn price_eth_amount(
         },
     });
 
-    // TD-007: also write a token_prices_by_block row so the /prices API can
-    // serve this. ON CONFLICT idempotent across re-runs.
+    // Mirror the priced point into token_prices_by_block so the /prices API
+    // can serve the same values the valuator computed. Idempotent via ON CONFLICT.
     crate::persist::upsert_price(
         pg,
         "ETH",
@@ -743,7 +743,7 @@ pub(crate) async fn price_lpt_amount(
             "v1",
             DEGRADED_VERSION_SUFFIX
         );
-        // TD-007: write derived LPT/USD + intermediates to token_prices_by_block.
+        // Mirror derived LPT/USD + intermediate LPT/WETH into token_prices_by_block.
         crate::persist::upsert_price(
             pg, "LPT", "USD", block as i64, block_hash, block_timestamp,
             &lpt_usd, "uniswap_v3_spot_x_chainlink", Some(pool), Some(chainlink), None,
@@ -815,7 +815,7 @@ pub(crate) async fn price_lpt_amount(
 
     let version = "v1_lpt_weth_twap_30min_x_chainlink_eth".to_string();
 
-    // TD-007: write LPT/USD + LPT/WETH (TWAP) to token_prices_by_block.
+    // Mirror TWAP-derived LPT/USD + LPT/WETH into token_prices_by_block.
     crate::persist::upsert_price(
         pg, "LPT", "USD", block as i64, block_hash, block_timestamp,
         &lpt_usd, "uniswap_v3_twap_30min_x_chainlink_eth", Some(pool), Some(chainlink), None,

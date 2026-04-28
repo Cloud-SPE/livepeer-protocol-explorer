@@ -95,8 +95,8 @@ pub struct RangeResponse {
 }
 
 /// SPEC §14.3.3 — list cached prices in a block range. v1 ships read-only
-/// (no lazy-fill); the valuator populates `token_prices_by_block` per
-/// TD-007 as events get priced.
+/// (no lazy-fill); the valuator populates `token_prices_by_block` as events
+/// get priced.
 pub async fn range(
     State(state): State<AppState>,
     Path((asset, quote)): Path<(String, String)>,

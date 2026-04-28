@@ -37,6 +37,12 @@ enum Command {
         /// Skip checkpoint resume; start exactly at `--from-block`.
         #[arg(long, default_value_t = false)]
         no_resume: bool,
+        /// Optional non-empty suffix to namespace the checkpoint
+        /// (e.g. "patch" → indexer_BondingManager_patch). Used to run a
+        /// parallel patch indexer against the same contract without
+        /// colliding with the live run's checkpoint.
+        #[arg(long, default_value = "")]
+        checkpoint_suffix: String,
     },
 }
 
@@ -79,6 +85,7 @@ async fn main() -> Result<()> {
             from_block,
             to_block,
             no_resume,
+            checkpoint_suffix,
         } => {
             let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
             let archive = Provider::new("chainstack", archive_url)?;
@@ -102,7 +109,7 @@ async fn main() -> Result<()> {
             let actual_from = if no_resume {
                 from_block
             } else {
-                backfill::resume_from(&pg, kind, from_block).await?
+                backfill::resume_from(&pg, kind, &checkpoint_suffix, from_block).await?
             };
             if actual_from != from_block {
                 info!(
@@ -120,6 +127,7 @@ async fn main() -> Result<()> {
                 &pg,
                 &archive,
                 kind,
+                &checkpoint_suffix,
                 &proxy,
                 &abi_hash,
                 actual_from,
@@ -128,6 +136,7 @@ async fn main() -> Result<()> {
             .await?;
             info!(
                 contract = kind.name(),
+                checkpoint_suffix = %checkpoint_suffix,
                 chunks = summary.chunks,
                 logs_seen = summary.logs_seen,
                 events_inserted = summary.events_inserted,

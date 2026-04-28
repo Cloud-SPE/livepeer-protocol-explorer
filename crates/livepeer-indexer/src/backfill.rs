@@ -15,19 +15,23 @@
 //! success up to 10000. Hard cap 10000.
 
 use crate::events::BondingManager::{
-    self, Bond, EarningsClaimed, Rebond, Reward, TransferBond, Unbond,
+    self, Bond, EarningsClaimed, Rebond, Reward, TranscoderSlashed, TransferBond, Unbond,
     WithdrawStake,
 };
 // BondingManager has two WithdrawFees overloads. _0 carries (delegator, recipient, amount);
 // _1 is the legacy form with just (delegator) and no amount. We bind _0 explicitly.
+// _1 is post-Delta-impossible on Arbitrum (deployment is post-Delta) so we don't subscribe.
 use crate::events::BondingManager::WithdrawFees_0 as WithdrawFees;
-use crate::events::Governor::{ProposalCreated, ProposalExecuted, VoteCast};
+use crate::events::Governor::{
+    self, ProposalCanceled, ProposalCreated, ProposalExecuted, ProposalQueued, VoteCast,
+    VoteCastWithParams,
+};
 use crate::events::LivepeerToken::{self, Burn, Mint, Transfer};
-use crate::events::RoundsManager::NewRound;
+use crate::events::RoundsManager::{self, NewRound};
 // TicketBroker emits "Withdrawal" (full deposit + reserve drain) — not "Withdraw".
 use crate::events::TicketBroker::{
-    self, DepositFunded, ReserveFunded, Withdrawal, WinningTicketRedeemed,
-    WinningTicketTransfer,
+    self, DepositFunded, ReserveClaimed, ReserveFunded, UnlockCancelled, Withdrawal,
+    WinningTicketRedeemed, WinningTicketTransfer,
 };
 use alloy::primitives::{Address, FixedBytes, LogData, B256, U256};
 use alloy::sol_types::SolEvent;
@@ -103,15 +107,27 @@ pub struct DriveSummary {
 }
 
 /// Per-contract checkpoint name. Avoids cross-contract collisions when the
-/// driver runs contracts sequentially.
-pub fn checkpoint_name(contract: ContractKind) -> String {
-    format!("indexer_{}", contract.name())
+/// driver runs contracts sequentially. An optional non-empty `suffix` (e.g.
+/// "patch") yields `indexer_<ContractName>_<suffix>` so a parallel patch run
+/// can scan the same contract from genesis without colliding with the live
+/// run's checkpoint.
+pub fn checkpoint_name(contract: ContractKind, suffix: &str) -> String {
+    if suffix.is_empty() {
+        format!("indexer_{}", contract.name())
+    } else {
+        format!("indexer_{}_{}", contract.name(), suffix)
+    }
 }
 
 /// Resume from `indexer_checkpoints(<per-contract-name>)` if it's past `requested_from`.
 /// Returns the actual starting block.
-pub async fn resume_from(pg: &PgPool, contract: ContractKind, requested_from: u64) -> Result<u64> {
-    let name = checkpoint_name(contract);
+pub async fn resume_from(
+    pg: &PgPool,
+    contract: ContractKind,
+    suffix: &str,
+    requested_from: u64,
+) -> Result<u64> {
+    let name = checkpoint_name(contract, suffix);
     let checkpoint: Option<i64> = sqlx::query_scalar(
         "SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1",
     )
@@ -131,6 +147,7 @@ pub async fn drive_backfill(
     pg: &PgPool,
     archive: &Provider,
     contract: ContractKind,
+    suffix: &str,
     proxy_address: &str,
     abi_hash: &str,
     from_block: u64,
@@ -150,6 +167,7 @@ pub async fn drive_backfill(
             pg,
             archive,
             contract,
+            suffix,
             proxy_address,
             abi_hash,
             next,
@@ -239,6 +257,7 @@ async fn backfill_chunk(
     pg: &PgPool,
     archive: &Provider,
     contract: ContractKind,
+    suffix: &str,
     proxy_address: &str,
     abi_hash: &str,
     chunk_start: u64,
@@ -252,7 +271,7 @@ async fn backfill_chunk(
 
     if raw_logs.is_empty() {
         let mut tx = pg.begin().await?;
-        advance_checkpoint(&mut tx, contract, chunk_end).await?;
+        advance_checkpoint(&mut tx, contract, suffix, chunk_end).await?;
         tx.commit().await?;
         return Ok(ChunkSummary {
             logs_seen: 0,
@@ -321,7 +340,7 @@ async fn backfill_chunk(
     let mut tx = pg.begin().await?;
     let inserted = insert_events(&mut tx, &prepared, abi_hash).await?;
     let dl_inserted = insert_dead_letters(&mut tx, &dead_letters).await?;
-    advance_checkpoint(&mut tx, contract, chunk_end).await?;
+    advance_checkpoint(&mut tx, contract, suffix, chunk_end).await?;
     tx.commit().await?;
 
     info!(
@@ -459,6 +478,7 @@ fn is_strict_event(contract: ContractKind, topic0: B256) -> bool {
                 || topic0 == TransferBond::SIGNATURE_HASH
                 || topic0 == Reward::SIGNATURE_HASH
                 || topic0 == EarningsClaimed::SIGNATURE_HASH
+                || topic0 == TranscoderSlashed::SIGNATURE_HASH
         }
         ContractKind::TicketBroker => {
             topic0 == WinningTicketRedeemed::SIGNATURE_HASH
@@ -736,6 +756,55 @@ fn decode_one(
                 decoded!("TranscoderDeactivated", {});
             } else if topic0 == BondingManager::TranscoderUpdate::SIGNATURE_HASH {
                 decoded!("TranscoderUpdate", {});
+            } else if topic0 == TranscoderSlashed::SIGNATURE_HASH {
+                match TranscoderSlashed::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("TranscoderSlashed", {
+                        // Slashing penalty is LPT removed from the transcoder's bonded stake.
+                        // Strict-decode: slashing is monetary even if currently inactive
+                        // (slashRate=0 on Livepeer today).
+                        row.asset = Some("LPT");
+                        row.is_valuable = true;
+                        set_amount(&mut row, d.penalty, LPT_DECIMALS);
+                        row.from_address = Some(addr_lower(&d.transcoder));
+                        row.to_address = Some(addr_lower(&d.finder));
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "transcoder":    addr_lower(&d.transcoder),
+                                    "finder":        addr_lower(&d.finder),
+                                    "penalty":       d.penalty.to_string(),
+                                    "finderReward":  d.finderReward.to_string(),
+                                }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "TranscoderSlashed", topic0, e),
+                }
+            } else if topic0 == BondingManager::ParameterUpdate::SIGNATURE_HASH {
+                match BondingManager::ParameterUpdate::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("ParameterUpdate", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "param": d.param }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "ParameterUpdate", topic0, e),
+                }
+            } else if topic0 == BondingManager::SetController::SIGNATURE_HASH {
+                match BondingManager::SetController::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("SetController", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "controller": addr_lower(&d.controller) }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "SetController", topic0, e),
+                }
             } else {
                 return DispatchOutcome::UnknownTopic0 { topic0 };
             }
@@ -796,6 +865,54 @@ fn decode_one(
                 }
             } else if topic0 == TicketBroker::Unlock::SIGNATURE_HASH {
                 decoded!("Unlock", {});
+            } else if topic0 == ReserveClaimed::SIGNATURE_HASH {
+                match ReserveClaimed::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("ReserveClaimed", {
+                        // ETH from a broadcaster's reserve paid out to a claimant.
+                        // Marked is_valuable=FALSE initially: we suspect WinningTicketRedeemed.faceValue
+                        // already includes the reserve-drawn portion (so summing both would
+                        // double-count). Capture amount for forward compatibility — flip
+                        // is_valuable to TRUE post-backfill once the co-occurrence question
+                        // is resolved.
+                        row.asset = Some("ETH");
+                        row.is_valuable = false;
+                        set_amount(&mut row, d.amount, ETH_DECIMALS);
+                        row.from_address = Some(addr_lower(&d.reserveHolder));
+                        row.to_address = Some(addr_lower(&d.claimant));
+                    }),
+                    Err(e) => return decode_failed(contract, "ReserveClaimed", topic0, e),
+                }
+            } else if topic0 == UnlockCancelled::SIGNATURE_HASH {
+                match UnlockCancelled::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("UnlockCancelled", {
+                        row.from_address = Some(addr_lower(&d.sender));
+                    }),
+                    Err(e) => return decode_failed(contract, "UnlockCancelled", topic0, e),
+                }
+            } else if topic0 == TicketBroker::ParameterUpdate::SIGNATURE_HASH {
+                match TicketBroker::ParameterUpdate::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("ParameterUpdate", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "param": d.param }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "ParameterUpdate", topic0, e),
+                }
+            } else if topic0 == TicketBroker::SetController::SIGNATURE_HASH {
+                match TicketBroker::SetController::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("SetController", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "controller": addr_lower(&d.controller) }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "SetController", topic0, e),
+                }
             } else {
                 return DispatchOutcome::UnknownTopic0 { topic0 };
             }
@@ -855,6 +972,30 @@ fn decode_one(
                         return DispatchOutcome::Decoded(row);
                     }
                     Err(e) => return decode_failed(contract, "NewRound", topic0, e),
+                }
+            } else if topic0 == RoundsManager::ParameterUpdate::SIGNATURE_HASH {
+                match RoundsManager::ParameterUpdate::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("ParameterUpdate", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "param": d.param }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "ParameterUpdate", topic0, e),
+                }
+            } else if topic0 == RoundsManager::SetController::SIGNATURE_HASH {
+                match RoundsManager::SetController::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("SetController", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "controller": addr_lower(&d.controller) }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "SetController", topic0, e),
                 }
             } else {
                 return DispatchOutcome::UnknownTopic0 { topic0 };
@@ -916,6 +1057,82 @@ fn decode_one(
                     }
                     Err(e) => return decode_failed(contract, "VoteCast", topic0, e),
                 }
+            } else if topic0 == VoteCastWithParams::SIGNATURE_HASH {
+                match VoteCastWithParams::decode_log_data(&log_data, true) {
+                    Ok(d) => {
+                        // OZ Governor's extended vote path (castVoteWithReasonAndParams).
+                        // Same monetary semantics as VoteCast (none) but carries an extra
+                        // params blob that we preserve in raw_event.decoded.
+                        row.event_name = "VoteCastWithParams";
+                        row.from_address = Some(addr_lower(&d.voter));
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "voter":      addr_lower(&d.voter),
+                                    "proposalId": d.proposalId.to_string(),
+                                    "support":    d.support,
+                                    "weight":     d.weight.to_string(),
+                                    "reason":     d.reason,
+                                    "params":     format!("0x{}", alloy::hex::encode(&d.params)),
+                                }),
+                            );
+                        }
+                        return DispatchOutcome::Decoded(row);
+                    }
+                    Err(e) => return decode_failed(contract, "VoteCastWithParams", topic0, e),
+                }
+            } else if topic0 == ProposalCanceled::SIGNATURE_HASH {
+                match ProposalCanceled::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("ProposalCanceled", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "proposalId": d.proposalId.to_string() }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "ProposalCanceled", topic0, e),
+                }
+            } else if topic0 == ProposalQueued::SIGNATURE_HASH {
+                match ProposalQueued::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("ProposalQueued", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "proposalId": d.proposalId.to_string(),
+                                    "eta":        d.eta.to_string(),
+                                }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "ProposalQueued", topic0, e),
+                }
+            } else if topic0 == Governor::ParameterUpdate::SIGNATURE_HASH {
+                match Governor::ParameterUpdate::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("ParameterUpdate", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "param": d.param }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "ParameterUpdate", topic0, e),
+                }
+            } else if topic0 == Governor::SetController::SIGNATURE_HASH {
+                match Governor::SetController::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("SetController", {
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({ "controller": addr_lower(&d.controller) }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "SetController", topic0, e),
+                }
             } else {
                 return DispatchOutcome::UnknownTopic0 { topic0 };
             }
@@ -964,6 +1181,9 @@ fn topic0s_for(c: ContractKind) -> Vec<String> {
             to_hex(BondingManager::TranscoderActivated::SIGNATURE_HASH),
             to_hex(BondingManager::TranscoderDeactivated::SIGNATURE_HASH),
             to_hex(BondingManager::TranscoderUpdate::SIGNATURE_HASH),
+            to_hex(TranscoderSlashed::SIGNATURE_HASH),
+            to_hex(BondingManager::ParameterUpdate::SIGNATURE_HASH),
+            to_hex(BondingManager::SetController::SIGNATURE_HASH),
         ],
         ContractKind::TicketBroker => vec![
             to_hex(WinningTicketRedeemed::SIGNATURE_HASH),
@@ -972,6 +1192,10 @@ fn topic0s_for(c: ContractKind) -> Vec<String> {
             to_hex(ReserveFunded::SIGNATURE_HASH),
             to_hex(Withdrawal::SIGNATURE_HASH),
             to_hex(TicketBroker::Unlock::SIGNATURE_HASH),
+            to_hex(ReserveClaimed::SIGNATURE_HASH),
+            to_hex(UnlockCancelled::SIGNATURE_HASH),
+            to_hex(TicketBroker::ParameterUpdate::SIGNATURE_HASH),
+            to_hex(TicketBroker::SetController::SIGNATURE_HASH),
         ],
         ContractKind::LivepeerToken => vec![
             to_hex(Transfer::SIGNATURE_HASH),
@@ -979,11 +1203,20 @@ fn topic0s_for(c: ContractKind) -> Vec<String> {
             to_hex(Mint::SIGNATURE_HASH),
             to_hex(Burn::SIGNATURE_HASH),
         ],
-        ContractKind::RoundsManager => vec![to_hex(NewRound::SIGNATURE_HASH)],
+        ContractKind::RoundsManager => vec![
+            to_hex(NewRound::SIGNATURE_HASH),
+            to_hex(RoundsManager::ParameterUpdate::SIGNATURE_HASH),
+            to_hex(RoundsManager::SetController::SIGNATURE_HASH),
+        ],
         ContractKind::Governor => vec![
             to_hex(ProposalCreated::SIGNATURE_HASH),
             to_hex(ProposalExecuted::SIGNATURE_HASH),
             to_hex(VoteCast::SIGNATURE_HASH),
+            to_hex(VoteCastWithParams::SIGNATURE_HASH),
+            to_hex(ProposalCanceled::SIGNATURE_HASH),
+            to_hex(ProposalQueued::SIGNATURE_HASH),
+            to_hex(Governor::ParameterUpdate::SIGNATURE_HASH),
+            to_hex(Governor::SetController::SIGNATURE_HASH),
         ],
     }
 }
@@ -1007,9 +1240,10 @@ async fn eth_get_logs_multi_topic(
 async fn advance_checkpoint(
     tx: &mut Transaction<'_, Postgres>,
     contract: ContractKind,
+    suffix: &str,
     to_block: u64,
 ) -> Result<()> {
-    let name = checkpoint_name(contract);
+    let name = checkpoint_name(contract, suffix);
     sqlx::query(
         r#"INSERT INTO indexer_checkpoints
                 (name, chain_id, last_processed_block, updated_at)

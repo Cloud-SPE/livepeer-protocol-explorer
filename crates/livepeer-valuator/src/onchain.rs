@@ -247,7 +247,15 @@ pub(crate) async fn price_eth_amount(
     let block_ts = block_timestamp.timestamp();
 
     // 1. Sequencer uptime — read at event block. answer == 0 means UP.
-    let seq_round = read_round(pg, archive, &cfg.static_.pricing.l2_sequencer_uptime_feed, block).await?;
+    let Some(seq_round) = read_round(pg, archive, &cfg.static_.pricing.l2_sequencer_uptime_feed, block).await? else {
+        return Ok(PricingOutcome::MissingOracle {
+            detail: serde_json::json!({
+                "reason": "L2 sequencer uptime feed not deployed at this block",
+                "feed":   cfg.static_.pricing.l2_sequencer_uptime_feed,
+                "block":  block,
+            }),
+        });
+    };
     if seq_round.answer != "0" {
         return Ok(PricingOutcome::SequencerOutage {
             detail: serde_json::json!({
@@ -261,7 +269,15 @@ pub(crate) async fn price_eth_amount(
     }
 
     // 2. Chainlink ETH/USD at event block.
-    let cl = read_round(pg, archive, &cfg.static_.pricing.chainlink_eth_usd_aggregator, block).await?;
+    let Some(cl) = read_round(pg, archive, &cfg.static_.pricing.chainlink_eth_usd_aggregator, block).await? else {
+        return Ok(PricingOutcome::MissingOracle {
+            detail: serde_json::json!({
+                "reason": "Chainlink ETH/USD aggregator not deployed at this block",
+                "oracle": cfg.static_.pricing.chainlink_eth_usd_aggregator,
+                "block":  block,
+            }),
+        });
+    };
 
     // 3. Mandatory checks (§7.3.3): answeredInRound >= roundId, staleness ≤ 86400s.
     let round_id_u128: u128 = cl.round_id.parse().unwrap_or(0);
@@ -389,7 +405,7 @@ async fn read_round(
     archive: &Provider,
     aggregator: &str,
     block: u64,
-) -> Result<DecodedRound> {
+) -> Result<Option<DecodedRound>> {
     let calldata = AggregatorV3::latestRoundDataCall {};
     let data = format!("0x{}", alloy::hex::encode(calldata.abi_encode()));
     let outcome = cross_check::single_call_cached(
@@ -404,15 +420,21 @@ async fn read_round(
     let s = std::str::from_utf8(&outcome.response_bytes).unwrap_or_default();
     let hex_str = s.trim_matches('"').trim_start_matches("0x");
     let raw = alloy::hex::decode(hex_str).context("decoding eth_call return hex")?;
+    // An empty return (0x) means the aggregator contract was not deployed at
+    // this block. Surface as None so the caller can route to MissingOracle
+    // instead of bubbling up a malformed-tuple decode error.
+    if raw.is_empty() {
+        return Ok(None);
+    }
     let ret = AggregatorV3::latestRoundDataCall::abi_decode_returns(&raw, true)
         .context("ABI-decoding latestRoundData return tuple")?;
-    Ok(DecodedRound {
+    Ok(Some(DecodedRound {
         round_id: ret.roundId.to_string(),
         answer: ret.answer.to_string(),
         started_at: ret.startedAt.to_string(),
         updated_at: ret.updatedAt.to_string(),
         answered_in_round: ret.answeredInRound.to_string(),
-    })
+    }))
 }
 
 async fn fetch_eth_candidates(
@@ -639,7 +661,15 @@ pub(crate) async fn price_lpt_amount(
     let block_ts = block_timestamp.timestamp();
 
     // 1. Sequencer up?
-    let seq = read_round(pg, archive, sequencer, block).await?;
+    let Some(seq) = read_round(pg, archive, sequencer, block).await? else {
+        return Ok(LptOutcome::MissingOracle {
+            detail: serde_json::json!({
+                "reason": "L2 sequencer uptime feed not deployed at this block",
+                "feed":   sequencer,
+                "block":  block,
+            }),
+        });
+    };
     if seq.answer != "0" {
         return Ok(LptOutcome::SequencerOutage {
             detail: serde_json::json!({
@@ -671,7 +701,15 @@ pub(crate) async fn price_lpt_amount(
     });
 
     // 3. Chainlink ETH/USD — same path as ETH events.
-    let cl = read_round(pg, archive, chainlink, block).await?;
+    let Some(cl) = read_round(pg, archive, chainlink, block).await? else {
+        return Ok(LptOutcome::MissingOracle {
+            detail: serde_json::json!({
+                "reason": "Chainlink ETH/USD aggregator not deployed at this block",
+                "oracle": chainlink,
+                "block":  block,
+            }),
+        });
+    };
     let round_id_u128: u128 = cl.round_id.parse().unwrap_or(0);
     let answered_u128: u128 = cl.answered_in_round.parse().unwrap_or(0);
     if answered_u128 < round_id_u128 {

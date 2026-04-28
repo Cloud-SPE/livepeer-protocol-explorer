@@ -21,7 +21,7 @@ contracts:
   bonding_manager:    "0x35Bcf3c30594191d53231E4FF333E8A770453e40"
   ticket_broker:      "0xa8bB618B1520E284046F3dFc448851A1Ff26e41B"
   rounds_manager:     "0xdd6f56DcC28D3F5f27084381fE8Df634985cc39f"
-  bonding_votes:      "0x0B9C254837E72Ebe9Fe04960C43B69782E68169A"  # ABI not vendored — TD-001
+  bonding_votes:      "0x0B9C254837E72Ebe9Fe04960C43B69782E68169A"  # address-only; no ABI exists (confirmed 2026-04-28)
   l2_lpt_gateway:     "0x6D2457a4ad276000A615295f7A80F79E48CcD318"
 
 pricing:

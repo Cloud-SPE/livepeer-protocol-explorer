@@ -21,9 +21,9 @@ Vendored ABI JSON files for every contract the system decodes against. Sourced f
 | `AggregatorV3Interface.json` | Chainlink ETH/USD aggregator (`latestRoundData`) per §7.3.3 | (config) |
 | `UniswapV3Pool.json` | LPT/WETH pool (`observe`, `slot0`, `increaseObservationCardinalityNext`) per §7.3.1 | `0x4fd47e5102dfbf95541f64ed6fe13d4ed26d2546` |
 
-## Missing
+## Notes
 
-- **`BondingVotes.json`** — proxy at `0x0B9C254837E72Ebe9Fe04960C43B69782E68169A` (SPEC §5.1). Tracked in `docs/exec-plans/tech-debt-tracker.md` (TD-001). v1 event catalog (§6.7) only covers Governor events, so this is unblocked for v1; fetch from Arbiscan when delegation events are added.
+- **`BondingVotes` (`0x0B9C254837E72Ebe9Fe04960C43B69782E68169A`)** — listed in `config/arbitrum.yaml` for completeness but no ABI exists for it (confirmed 2026-04-28; TD-001 closed). SPEC §6.7 governance events are served entirely by `LivepeerGovernor.json`.
 
 ## Discipline
 

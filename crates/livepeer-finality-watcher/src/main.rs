@@ -101,21 +101,27 @@ async fn run_iteration(pg: &PgPool, l1: &Provider) -> Result<()> {
     }
 
     // tentative → l1_posted
+    //
+    // Predicate uses `block_timestamp <= to_timestamp($2)` instead of
+    // `EXTRACT(EPOCH FROM block_timestamp)::BIGINT <= $2` because the latter
+    // is not sargable — wrapping the indexed column in EXTRACT forces a full
+    // scan of all 2.6M rows even when only a tiny range needs updating
+    // (TD-009). The to_timestamp form lets the planner do an index range scan.
     let posted = sqlx::query(
         r#"UPDATE raw_protocol_events
               SET finality = 'l1_posted'
             WHERE chain_id = $1
               AND finality = 'tentative'
               AND is_canonical = TRUE
-              AND EXTRACT(EPOCH FROM block_timestamp)::BIGINT <= $2"#,
+              AND block_timestamp <= to_timestamp($2)"#,
     )
     .bind(ARBITRUM_CHAIN_ID)
-    .bind(l1_posted_cutoff)
+    .bind(l1_posted_cutoff as f64)
     .execute(pg)
     .await?
     .rows_affected();
 
-    // (tentative | l1_posted) → finalized
+    // (tentative | l1_posted) → finalized — same sargability fix.
     let finalized = sqlx::query(
         r#"UPDATE raw_protocol_events
               SET finality   = 'finalized',
@@ -123,10 +129,10 @@ async fn run_iteration(pg: &PgPool, l1: &Provider) -> Result<()> {
             WHERE chain_id = $1
               AND finality IN ('tentative', 'l1_posted')
               AND is_canonical = TRUE
-              AND EXTRACT(EPOCH FROM block_timestamp)::BIGINT <= $2"#,
+              AND block_timestamp <= to_timestamp($2)"#,
     )
     .bind(ARBITRUM_CHAIN_ID)
-    .bind(finalized_cutoff)
+    .bind(finalized_cutoff as f64)
     .execute(pg)
     .await?
     .rows_affected();

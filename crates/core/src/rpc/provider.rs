@@ -68,28 +68,8 @@ impl Provider {
 
     pub fn with_timeout(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self> {
         let name = name.into();
-        // HTTP/2 keep-alive + TCP keepalive. Cloudflare (which fronts most
-        // archive RPC providers including Chainstack) silently drops idle
-        // HTTP/2 streams after ~30-60s. Without these settings the valuator's
-        // brief between-batch idles caused ~17-20% of subsequent requests to
-        // hit "error sending request" against half-closed sessions.
-        //
-        //  - http2_keep_alive_interval(15s): send a PING frame every 15s,
-        //    well inside Cloudflare's drop window
-        //  - http2_keep_alive_timeout(5s):   if a PING isn't acked in 5s the
-        //    connection is genuinely dead — close it and open a fresh one
-        //    instead of waiting for the 25s timeout to fire
-        //  - http2_keep_alive_while_idle(true): send PINGs even with no
-        //    requests in flight (the critical bit — without it PINGs only
-        //    ride alongside actual traffic, defeating the purpose)
-        //  - tcp_keepalive(30s): TCP-layer fallback for the rare case the L4
-        //    LB drops the connection before HTTP/2 PINGs negotiate
         let client = reqwest::Client::builder()
             .timeout(timeout)
-            .http2_keep_alive_interval(Duration::from_secs(15))
-            .http2_keep_alive_timeout(Duration::from_secs(5))
-            .http2_keep_alive_while_idle(true)
-            .tcp_keepalive(Some(Duration::from_secs(30)))
             .build()
             .map_err(|e| CoreError::Http {
                 provider: name.clone(),
@@ -114,6 +94,24 @@ impl Provider {
     /// reqwest's per-request timeout misfires (observed on half-closed pooled
     /// connections that hang silently), we always get a clean Err in bounded time.
     pub async fn call(&self, method: &str, params: &Value) -> Result<Value> {
+        // 1-shot retry on HTTP-layer (connection) failures only. Cloudflare
+        // (which fronts Chainstack) silently drops idle HTTP/2 sessions and
+        // reqwest's pool then hands us a half-closed socket that fails on
+        // first use. A single retry with a fresh request usually picks a
+        // different pooled connection or opens a new one, masking the issue
+        // without needing protocol-level keep-alive (which can deadlock the
+        // pool — observed 2026-04-29).
+        //
+        // We DO NOT retry JSON-RPC errors (`code` field set, malformed body,
+        // hard timeout) — those are determinism-relevant and must surface.
+        match self.call_once(method, params).await {
+            Ok(v) => Ok(v),
+            Err(CoreError::Http { .. }) => self.call_once(method, params).await,
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn call_once(&self, method: &str, params: &Value) -> Result<Value> {
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             method,

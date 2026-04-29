@@ -510,18 +510,21 @@ pub async fn run_onchain_pass_lpt(
 
     // Concurrency knob — N events priced in parallel via tokio::JoinSet.
     // Combined with the within-event try_join! (3 reads in parallel), peak
-    // in-flight ≈ N × 3 reads. N=14 keeps in-flight at ~42 (under
-    // Chainstack's 50 max_concurrent cap with safety margin).
+    // in-flight ≈ N × 3 reads. N=16 → 48 in-flight, just under Chainstack's
+    // 50 max_concurrent cap.
     //
     // Empirical history (2026-04-29):
-    //   N=16 (cold-cache, healthy Chainstack):  333/min steady, ~3-4s/call
-    //   N=32:                                   96 conns all blocked, ~0/min
-    //   N=16 post-N=32 burst:                   12/min, ~67s/call (penalty)
-    //   N=8 post-N=32 burst:                    16/min, ~35s/call (still penalty)
+    //   N=16 (cold cache, healthy Chainstack):  333/min, ~3-4s/call
+    //   N=32:                                   96 conns blocked, ~0/min — Chainstack
+    //                                           penalty kicked in
+    //   N=8 / N=14 post-incident:               12-37/min — connection failures dominated
+    //                                           (later identified as HTTP/2 idle drops,
+    //                                           not Chainstack throttle — see Provider::with_timeout
+    //                                           keep-alive config)
     //
-    // Lesson: Chainstack throttles per-IP, not per-connection. Keep peak
-    // in-flight comfortably under 50 and never burst above it.
-    const CONCURRENCY: usize = 14;
+    // After Provider got HTTP/2 + TCP keep-alive (commit TBD), N=16 should
+    // restore ~333/min steady throughput without the connection-drop floor.
+    const CONCURRENCY: usize = 16;
     let mut set: tokio::task::JoinSet<(i64, i64, BigDecimal, anyhow::Result<(LptOutcome, Vec<PriceRow>)>)> = tokio::task::JoinSet::new();
     let mut iter = candidates.into_iter();
 

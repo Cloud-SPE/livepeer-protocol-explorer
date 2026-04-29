@@ -68,8 +68,28 @@ impl Provider {
 
     pub fn with_timeout(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self> {
         let name = name.into();
+        // HTTP/2 keep-alive + TCP keepalive. Cloudflare (which fronts most
+        // archive RPC providers including Chainstack) silently drops idle
+        // HTTP/2 streams after ~30-60s. Without these settings the valuator's
+        // brief between-batch idles caused ~17-20% of subsequent requests to
+        // hit "error sending request" against half-closed sessions.
+        //
+        //  - http2_keep_alive_interval(15s): send a PING frame every 15s,
+        //    well inside Cloudflare's drop window
+        //  - http2_keep_alive_timeout(5s):   if a PING isn't acked in 5s the
+        //    connection is genuinely dead — close it and open a fresh one
+        //    instead of waiting for the 25s timeout to fire
+        //  - http2_keep_alive_while_idle(true): send PINGs even with no
+        //    requests in flight (the critical bit — without it PINGs only
+        //    ride alongside actual traffic, defeating the purpose)
+        //  - tcp_keepalive(30s): TCP-layer fallback for the rare case the L4
+        //    LB drops the connection before HTTP/2 PINGs negotiate
         let client = reqwest::Client::builder()
             .timeout(timeout)
+            .http2_keep_alive_interval(Duration::from_secs(15))
+            .http2_keep_alive_timeout(Duration::from_secs(5))
+            .http2_keep_alive_while_idle(true)
+            .tcp_keepalive(Some(Duration::from_secs(30)))
             .build()
             .map_err(|e| CoreError::Http {
                 provider: name.clone(),

@@ -86,11 +86,15 @@ fn build_client(timeout: Duration, provider_name: &str) -> Result<reqwest::Clien
 
 impl Provider {
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Result<Self> {
-        // 25s timeout — empirically Chainstack archive cold reads usually complete
-        // in <15s. 25s covers the slow tail without burning a whole minute per retry.
-        // The dynamic-batch halving + bounded retry count in the indexer is the
-        // secondary defense.
-        Self::with_timeout(name, url, Duration::from_secs(25))
+        // 60s timeout — Chainstack's dashboard shows ~6% of our requests are
+        // 499s (client-closed) under sustained concurrent load: their archive
+        // backend queues some calls and the slow tail exceeds short timeouts
+        // while they're still processing. Bumping to 60s lets us wait through
+        // the slow tail instead of dropping responses Chainstack is about to
+        // return; should drop the 499 rate to near-zero. The fast common path
+        // is unaffected (most calls return in <500ms regardless of timeout).
+        // See TD-011 — this is the response to the 499-rate finding.
+        Self::with_timeout(name, url, Duration::from_secs(60))
     }
 
     pub fn with_timeout(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self> {
@@ -143,21 +147,18 @@ impl Provider {
     /// reqwest's per-request timeout misfires (observed on half-closed pooled
     /// connections that hang silently), we always get a clean Err in bounded time.
     pub async fn call(&self, method: &str, params: &Value) -> Result<Value> {
-        // 1-shot retry on HTTP-layer (connection) failures only. Cloudflare
-        // (which fronts Chainstack) silently drops idle HTTP/2 sessions and
-        // reqwest's pool then hands us a half-closed socket that fails on
-        // first use. A single retry with a fresh request usually picks a
-        // different pooled connection or opens a new one, masking the issue
-        // without needing protocol-level keep-alive (which can deadlock the
-        // pool — observed 2026-04-29).
+        // No retry. The 1-shot retry that lived here amplified queue pressure
+        // when Chainstack's archive backend was already slow under sustained
+        // concurrent load — every timed-out request became two requests, both
+        // potentially queuing. After bumping the per-request timeout to 60s
+        // and the hard-timeout to 90s, the underlying slow-tail finishes
+        // instead of being abandoned, so retries aren't needed.
         //
-        // We DO NOT retry JSON-RPC errors (`code` field set, malformed body,
-        // hard timeout) — those are determinism-relevant and must surface.
-        match self.call_once(method, params).await {
-            Ok(v) => Ok(v),
-            Err(CoreError::Http { .. }) => self.call_once(method, params).await,
-            Err(e) => Err(e),
-        }
+        // If a request still fails (HTTP error, malformed body, hard timeout,
+        // JSON-RPC error), the caller's outer loop handles it via
+        // `summary.other_skipped` and the next run can re-attempt — same
+        // behavior as before, just one fewer round-trip per real failure.
+        self.call_once(method, params).await
     }
 
     async fn call_once(&self, method: &str, params: &Value) -> Result<Value> {
@@ -173,9 +174,10 @@ impl Provider {
         // already-snapshot client in use for in-flight requests; subsequent
         // calls pick up the fresh client.
         let client = self.client.read().await.clone();
-        // A bit longer than the reqwest client timeout so the inner one usually
-        // fires first; this is the hard floor.
-        let hard_timeout = Duration::from_secs(30);
+        // A bit longer than the reqwest client timeout (60s) so the inner
+        // one usually fires first; this is the hard floor for half-closed
+        // pooled connections that hang silently past reqwest's own timeout.
+        let hard_timeout = Duration::from_secs(90);
         let send_text = async {
             client
                 .post(&self.url)

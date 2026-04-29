@@ -161,39 +161,44 @@ pub async fn run_seed_pass(
     let priced_this_run = result.rows_affected();
 
     // 3. Bulk INSERT a 'priced' valuation_attempts row for every freshly-priced
-    //    event. attempt_number = COALESCE(MAX, 0) + 1 per (event, version, asset).
-    //    Joined to event_valuations to cover both rows we just inserted AND any
-    //    that were skipped via ON CONFLICT (idempotent re-runs).
-    let attempts_sql = r#"
-        WITH priced AS (
-          SELECT v.event_id, v.valuation_version, v.asset
-            FROM event_valuations v
-           WHERE v.valuation_version = $2
-             AND v.source            = $3
-             AND v.chain_id          = $1
-        ),
-        next_n AS (
-          SELECT p.event_id, p.valuation_version, p.asset,
-                 COALESCE(MAX(va.attempt_number), 0) + 1 AS n
-            FROM priced p
-            LEFT JOIN valuation_attempts va
-              ON va.event_id          = p.event_id
-             AND va.valuation_version = p.valuation_version
-             AND va.asset             = p.asset
-           GROUP BY p.event_id, p.valuation_version, p.asset
-        )
-        INSERT INTO valuation_attempts
-            (event_id, valuation_version, asset, attempt_number, result_status, error_detail)
-        SELECT event_id, valuation_version, asset, n, $4, NULL
-          FROM next_n
-        ON CONFLICT (event_id, valuation_version, asset, attempt_number) DO NOTHING"#;
-    sqlx::query(attempts_sql)
-        .bind(ARBITRUM_CHAIN_ID)
-        .bind(valuation_version)
-        .bind(SOURCE)
-        .bind(STATUS_PRICED)
-        .execute(pg)
-        .await?;
+    //    event. Only run if rows were actually inserted in step 2 — on a warm
+    //    DB (resumed run) the INSERT…SELECT above will have inserted 0 rows
+    //    via ON CONFLICT DO NOTHING, and the attempt rows for those events
+    //    already exist from the original run. Re-running this CTE on a warm
+    //    DB scans 1M+ event_valuations × 1M+ valuation_attempts and adds
+    //    nothing useful; it can take minutes on a bloated dataset.
+    if priced_this_run > 0 {
+        let attempts_sql = r#"
+            WITH priced AS (
+              SELECT v.event_id, v.valuation_version, v.asset
+                FROM event_valuations v
+               WHERE v.valuation_version = $2
+                 AND v.source            = $3
+                 AND v.chain_id          = $1
+            ),
+            next_n AS (
+              SELECT p.event_id, p.valuation_version, p.asset,
+                     COALESCE(MAX(va.attempt_number), 0) + 1 AS n
+                FROM priced p
+                LEFT JOIN valuation_attempts va
+                  ON va.event_id          = p.event_id
+                 AND va.valuation_version = p.valuation_version
+                 AND va.asset             = p.asset
+               GROUP BY p.event_id, p.valuation_version, p.asset
+            )
+            INSERT INTO valuation_attempts
+                (event_id, valuation_version, asset, attempt_number, result_status, error_detail)
+            SELECT event_id, valuation_version, asset, n, $4, NULL
+              FROM next_n
+            ON CONFLICT (event_id, valuation_version, asset, attempt_number) DO NOTHING"#;
+        sqlx::query(attempts_sql)
+            .bind(ARBITRUM_CHAIN_ID)
+            .bind(valuation_version)
+            .bind(SOURCE)
+            .bind(STATUS_PRICED)
+            .execute(pg)
+            .await?;
+    }
 
     let summary = SeedRunSummary {
         events_considered: considered as u64,

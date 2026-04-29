@@ -230,8 +230,18 @@ pub(crate) async fn price_eth_amount(
 ) -> Result<PricingOutcome> {
     let block_ts = block_timestamp.timestamp();
 
+    // Fire sequencer + Chainlink reads concurrently. On a cache-warm path
+    // both resolve in microseconds; on a cache-miss path the network roundtrips
+    // overlap so the wall-clock cost is max(seq, cl) instead of seq+cl.
+    // On sequencer outage / not-deployed we waste at most one Chainlink read,
+    // but that read still populates rpc_call_cache — useful for replay.
+    let (seq_res, cl_res) = tokio::try_join!(
+        read_round(pg, archive, &cfg.static_.pricing.l2_sequencer_uptime_feed, block),
+        read_round(pg, archive, &cfg.static_.pricing.chainlink_eth_usd_aggregator, block),
+    )?;
+
     // 1. Sequencer uptime — read at event block. answer == 0 means UP.
-    let Some(seq_round) = read_round(pg, archive, &cfg.static_.pricing.l2_sequencer_uptime_feed, block).await? else {
+    let Some(seq_round) = seq_res else {
         return Ok(PricingOutcome::MissingOracle {
             detail: serde_json::json!({
                 "reason": "L2 sequencer uptime feed not deployed at this block",
@@ -253,7 +263,7 @@ pub(crate) async fn price_eth_amount(
     }
 
     // 2. Chainlink ETH/USD at event block.
-    let Some(cl) = read_round(pg, archive, &cfg.static_.pricing.chainlink_eth_usd_aggregator, block).await? else {
+    let Some(cl) = cl_res else {
         return Ok(PricingOutcome::MissingOracle {
             detail: serde_json::json!({
                 "reason": "Chainlink ETH/USD aggregator not deployed at this block",
@@ -628,8 +638,20 @@ pub(crate) async fn price_lpt_amount(
 ) -> Result<LptOutcome> {
     let block_ts = block_timestamp.timestamp();
 
+    // Fire the three independent reads (sequencer, pool slot0, chainlink) in
+    // parallel. They have no data dependency on each other, so this collapses
+    // 3×roundtrip to max(roundtrip) on cache-miss paths. On the warm-cache
+    // common path each is ~1ms anyway, so the gain is concentrated where it
+    // matters: blocks past the prior runs' watermark, where most calls miss
+    // the cache and hit the network.
+    let (seq_res, slot0_res, cl_res) = tokio::try_join!(
+        read_round(pg, archive, sequencer, block),
+        read_pool_slot0(pg, archive, pool, block),
+        read_round(pg, archive, chainlink, block),
+    )?;
+
     // 1. Sequencer up?
-    let Some(seq) = read_round(pg, archive, sequencer, block).await? else {
+    let Some(seq) = seq_res else {
         return Ok(LptOutcome::MissingOracle {
             detail: serde_json::json!({
                 "reason": "L2 sequencer uptime feed not deployed at this block",
@@ -648,7 +670,7 @@ pub(crate) async fn price_lpt_amount(
     }
 
     // 2. Pool slot0 — check cardinality & whether the pool exists yet at this block.
-    let slot0 = match read_pool_slot0(pg, archive, pool, block).await? {
+    let slot0 = match slot0_res {
         Some(s) => s,
         None => {
             return Ok(LptOutcome::MissingPool {
@@ -669,7 +691,7 @@ pub(crate) async fn price_lpt_amount(
     });
 
     // 3. Chainlink ETH/USD — same path as ETH events.
-    let Some(cl) = read_round(pg, archive, chainlink, block).await? else {
+    let Some(cl) = cl_res else {
         return Ok(LptOutcome::MissingOracle {
             detail: serde_json::json!({
                 "reason": "Chainlink ETH/USD aggregator not deployed at this block",

@@ -510,11 +510,13 @@ pub async fn run_onchain_pass_lpt(
 
     // Concurrency knob — N events priced in parallel via tokio::JoinSet.
     // Combined with the within-event try_join! (3 reads in parallel), the
-    // effective Chainstack concurrency tops out at CONCURRENCY × 3 + observe ≈
-    // 64 in-flight reads at N=16, well under Chainstack's 50 max_concurrent
-    // archive cap (the secondary calls overlap in time, not strictly
-    // simultaneously). 10-conn PG pool is fine because cache lookups are 1ms.
-    const CONCURRENCY: usize = 16;
+    // effective Chainstack concurrency tops out at CONCURRENCY × 3 + observe.
+    // At N=32 peak in-flight ≈ 32 × 3 = 96 reads + ~32 sequential observe
+    // calls. Empirically the saturating bottleneck on cold archive reads is
+    // Chainstack response time (~3-4s/call), not connection count — so
+    // doubling concurrency 16→32 roughly doubles per-second throughput.
+    // 10-conn PG pool is fine because cache lookups are 1ms PK SELECTs.
+    const CONCURRENCY: usize = 32;
     let mut set: tokio::task::JoinSet<(i64, i64, BigDecimal, anyhow::Result<(LptOutcome, Vec<PriceRow>)>)> = tokio::task::JoinSet::new();
     let mut iter = candidates.into_iter();
 

@@ -4,13 +4,28 @@
 use crate::error::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
+use tracing::info;
+
+/// How often the background task replaces the reqwest client with a fresh
+/// instance. Closes the existing connection pool's TCP sockets and forces
+/// new TLS handshakes for the next requests. See TD-011 — Cloudflare appears
+/// to demote long-lived flows from this client over time, and direct curl
+/// from the same host stays fast through the demotion. Replacing the pool
+/// every 30 min is a cheap experiment to test that hypothesis.
+const POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Debug)]
 pub struct Provider {
     name: String,
     url: String,
-    client: reqwest::Client,
+    /// Wrapped in Arc<RwLock<…>> so a background task can swap in a fresh
+    /// reqwest client periodically. `call_once` takes a brief read lock,
+    /// clones the client (cheap — reqwest::Client is internally Arc'd),
+    /// and releases the lock before the actual HTTP work.
+    client: Arc<RwLock<reqwest::Client>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,6 +72,18 @@ struct JsonRpcErrorBody {
     message: String,
 }
 
+/// Build a fresh `reqwest::Client` with the configured timeout. Used both at
+/// startup and by the periodic-refresh background task.
+fn build_client(timeout: Duration, provider_name: &str) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| CoreError::Http {
+            provider: provider_name.to_string(),
+            source: e,
+        })
+}
+
 impl Provider {
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Result<Self> {
         // 25s timeout — empirically Chainstack archive cold reads usually complete
@@ -68,13 +95,35 @@ impl Provider {
 
     pub fn with_timeout(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self> {
         let name = name.into();
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| CoreError::Http {
-                provider: name.clone(),
-                source: e,
-            })?;
+        let client = build_client(timeout, &name)?;
+        let client = Arc::new(RwLock::new(client));
+
+        // Spawn the background pool-refresh task. Holds a Weak reference so
+        // it auto-exits when the last Provider clone drops; no explicit
+        // shutdown signaling needed. Logs each successful rotation for
+        // visibility.
+        let weak = Arc::downgrade(&client);
+        let provider_name = name.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(POOL_REFRESH_INTERVAL).await;
+                let Some(client_arc) = weak.upgrade() else {
+                    return; // Provider has been fully dropped
+                };
+                match build_client(timeout, &provider_name) {
+                    Ok(fresh) => {
+                        *client_arc.write().await = fresh;
+                        info!(provider = %provider_name, "rotated reqwest connection pool (TD-011 experiment)");
+                    }
+                    Err(e) => {
+                        // Log and keep using the existing client — don't crash
+                        // the RPC layer just because a single rebuild failed.
+                        tracing::warn!(provider = %provider_name, error = %e, "reqwest client rebuild failed; retaining previous pool");
+                    }
+                }
+            }
+        });
+
         Ok(Self {
             name,
             url: url.into(),
@@ -118,11 +167,17 @@ impl Provider {
             params,
             id: 1,
         };
+        // Snapshot the current client. reqwest::Client is internally Arc'd,
+        // so cloning is cheap (refcount bump). Releasing the read lock before
+        // the HTTP work means a pool rotation mid-flight just leaves the
+        // already-snapshot client in use for in-flight requests; subsequent
+        // calls pick up the fresh client.
+        let client = self.client.read().await.clone();
         // A bit longer than the reqwest client timeout so the inner one usually
         // fires first; this is the hard floor.
         let hard_timeout = Duration::from_secs(30);
         let send_text = async {
-            self.client
+            client
                 .post(&self.url)
                 .json(&req)
                 .send()

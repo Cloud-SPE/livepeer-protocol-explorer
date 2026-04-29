@@ -9,6 +9,7 @@
 //! plus the cardinality precheck and the `v1_degraded_spot_pre_cardinality`
 //! fallback per Q-OD-9 (~17K events in the pre-cardinality window need it).
 
+use crate::bulk::{BulkBuffers, PriceRow};
 use crate::persist::{insert_attempt, insert_valuation, ARBITRUM_CHAIN_ID, STATUS_PRICED};
 use crate::tick_math;
 use alloy::primitives::U256;
@@ -114,6 +115,7 @@ pub async fn run_onchain_pass_eth(
         events_considered: candidates.len() as u64,
         ..Default::default()
     };
+    let mut buffers = BulkBuffers::new();
 
     for ev in &candidates {
         let asset = ev.asset.as_deref().unwrap_or_default();
@@ -126,65 +128,38 @@ pub async fn run_onchain_pass_eth(
             continue;
         };
 
-        match price_eth_event(pg, archive, cfg, ev, &amount_native).await {
+        match price_eth_event(pg, archive, cfg, ev, &amount_native, &mut buffers).await {
             Ok(PricingOutcome::Priced { native_usd_price, amount_usd, pricing_chain }) => {
-                let mut tx = pg.begin().await?;
-                let inserted = insert_valuation(
-                    &mut tx,
+                buffers.push_priced(
+                    ARBITRUM_CHAIN_ID,
                     ev.event_id,
                     valuation_version,
                     asset,
                     PRICING_METHOD_ETH,
                     SOURCE_ETH,
-                    STATUS_PRICED,
                     ev.block_number,
                     &amount_native,
                     &native_usd_price,
                     &amount_usd,
                     &pricing_chain,
-                )
-                .await?;
-                insert_attempt(&mut tx, ev.event_id, valuation_version, asset, STATUS_PRICED, None).await?;
-                tx.commit().await?;
-                if inserted {
-                    summary.priced += 1;
-                    debug!(
-                        event_id = ev.event_id,
-                        block = ev.block_number,
-                        amount_native = %amount_native,
-                        native_usd_price = %native_usd_price,
-                        amount_usd = %amount_usd,
-                        "priced via Chainlink"
-                    );
-                }
+                    STATUS_PRICED,
+                );
+                summary.priced += 1;
+                debug!(
+                    event_id = ev.event_id, block = ev.block_number,
+                    amount_native = %amount_native,
+                    native_usd_price = %native_usd_price,
+                    amount_usd = %amount_usd,
+                    "priced via Chainlink"
+                );
             }
             Ok(PricingOutcome::SequencerOutage { detail }) => {
-                let mut tx = pg.begin().await?;
-                insert_attempt(
-                    &mut tx,
-                    ev.event_id,
-                    valuation_version,
-                    asset,
-                    "failed_sequencer_outage",
-                    Some(detail),
-                )
-                .await?;
-                tx.commit().await?;
+                buffers.push_failed_attempt(ev.event_id, valuation_version, asset, "failed_sequencer_outage", Some(detail));
                 summary.failed_sequencer_outage += 1;
                 warn!(event_id = ev.event_id, block = ev.block_number, "failed_sequencer_outage");
             }
             Ok(PricingOutcome::MissingOracle { detail }) => {
-                let mut tx = pg.begin().await?;
-                insert_attempt(
-                    &mut tx,
-                    ev.event_id,
-                    valuation_version,
-                    asset,
-                    "failed_missing_oracle",
-                    Some(detail),
-                )
-                .await?;
-                tx.commit().await?;
+                buffers.push_failed_attempt(ev.event_id, valuation_version, asset, "failed_missing_oracle", Some(detail));
                 summary.failed_missing_oracle += 1;
                 warn!(event_id = ev.event_id, block = ev.block_number, "failed_missing_oracle");
             }
@@ -193,7 +168,9 @@ pub async fn run_onchain_pass_eth(
                 warn!(event_id = ev.event_id, error = %e, "on-chain pricing failed; will retry next run");
             }
         }
+        buffers.maybe_flush(pg).await?;
     }
+    buffers.flush(pg).await?;
 
     info!(?summary, "on-chain ETH pass complete");
     Ok(summary)
@@ -219,6 +196,7 @@ async fn price_eth_event(
     cfg: &Config,
     ev: &CandidateEvent,
     amount_native: &BigDecimal,
+    buffers: &mut BulkBuffers,
 ) -> Result<PricingOutcome> {
     price_eth_amount(
         pg,
@@ -228,6 +206,7 @@ async fn price_eth_event(
         &ev.block_hash,
         ev.block_timestamp,
         amount_native,
+        buffers,
     )
     .await
 }
@@ -235,6 +214,10 @@ async fn price_eth_event(
 /// Pure ETH-on-chain pricing helper: same Chainlink+sequencer reads as the
 /// per-event flow, parameterized by `(block, block_hash, block_timestamp, amount_native)`
 /// so the multi-asset path can call it for the ETH portion of an EarningsClaimed.
+///
+/// `buffers` accumulates the `token_prices_by_block` row that mirrors the
+/// priced point. Caller pushes `event_valuations` + `valuation_attempts` to the
+/// same buffer based on the returned outcome.
 pub(crate) async fn price_eth_amount(
     pg: &PgPool,
     archive: &Provider,
@@ -243,6 +226,7 @@ pub(crate) async fn price_eth_amount(
     block_hash: &str,
     block_timestamp: chrono::DateTime<chrono::Utc>,
     amount_native: &BigDecimal,
+    buffers: &mut BulkBuffers,
 ) -> Result<PricingOutcome> {
     let block_ts = block_timestamp.timestamp();
 
@@ -357,22 +341,22 @@ pub(crate) async fn price_eth_amount(
         },
     });
 
-    // Mirror the priced point into token_prices_by_block so the /prices API
-    // can serve the same values the valuator computed. Idempotent via ON CONFLICT.
-    crate::persist::upsert_price(
-        pg,
-        "ETH",
-        "USD",
-        block as i64,
-        block_hash,
+    // Mirror the priced point into token_prices_by_block via the bulk buffer.
+    // Caller flushes; on the same (chain_id, asset, quote, block_number, source)
+    // key the bulk INSERT uses ON CONFLICT DO NOTHING so duplicates are safe.
+    buffers.push_price(PriceRow {
+        chain_id: ARBITRUM_CHAIN_ID,
+        asset: "ETH".into(),
+        quote: "USD".into(),
+        block_number: block as i64,
+        block_hash: block_hash.to_string(),
         block_timestamp,
-        &native_usd_price,
-        "chainlink",
-        None,
-        Some(&cfg.static_.pricing.chainlink_eth_usd_aggregator),
-        Some(&serde_json::json!({"raw_round": chainlink_audit_for_eth(&cl)})),
-    )
-    .await?;
+        price: native_usd_price.clone(),
+        source: "chainlink".into(),
+        pool_address: None,
+        oracle_address: Some(cfg.static_.pricing.chainlink_eth_usd_aggregator.clone()),
+        raw: Some(serde_json::json!({"raw_round": chainlink_audit_for_eth(&cl)})),
+    });
 
     Ok(PricingOutcome::Priced {
         native_usd_price,
@@ -522,6 +506,7 @@ pub async fn run_onchain_pass_lpt(
     let pool = cfg.static_.pricing.uniswap_v3_lpt_weth_pool.clone();
     let chainlink = cfg.static_.pricing.chainlink_eth_usd_aggregator.clone();
     let sequencer = cfg.static_.pricing.l2_sequencer_uptime_feed.clone();
+    let mut buffers = BulkBuffers::new();
 
     for ev in &candidates {
         let asset = ev.asset.as_deref().unwrap_or_default();
@@ -534,62 +519,39 @@ pub async fn run_onchain_pass_lpt(
             continue;
         };
 
-        match price_lpt_event(pg, archive, &pool, &chainlink, &sequencer, ev, &amount_native).await {
+        match price_lpt_event(pg, archive, &pool, &chainlink, &sequencer, ev, &amount_native, &mut buffers).await {
             Ok(LptOutcome::PricedTwap { native_usd_price, amount_usd, pricing_chain, version }) => {
-                commit_priced(
-                    pg,
-                    ev.event_id,
-                    &version,
-                    asset,
-                    PRICING_METHOD_LPT_TWAP,
-                    SOURCE_LPT,
-                    ev.block_number,
-                    &amount_native,
-                    &native_usd_price,
-                    &amount_usd,
-                    &pricing_chain,
-                )
-                .await?;
-                summary.priced_twap += 1;
-                debug!(
-                    event_id = ev.event_id,
-                    amount_usd = %amount_usd,
-                    native_usd_price = %native_usd_price,
-                    "priced LPT via TWAP"
+                buffers.push_priced(
+                    ARBITRUM_CHAIN_ID,
+                    ev.event_id, &version, asset,
+                    PRICING_METHOD_LPT_TWAP, SOURCE_LPT,
+                    ev.block_number, &amount_native, &native_usd_price, &amount_usd,
+                    &pricing_chain, STATUS_PRICED,
                 );
+                summary.priced_twap += 1;
+                debug!(event_id = ev.event_id, amount_usd = %amount_usd, native_usd_price = %native_usd_price, "priced LPT via TWAP");
             }
             Ok(LptOutcome::PricedDegraded { native_usd_price, amount_usd, pricing_chain, version }) => {
-                commit_priced(
-                    pg,
-                    ev.event_id,
-                    &version,
-                    asset,
-                    PRICING_METHOD_LPT_SPOT,
-                    SOURCE_LPT,
-                    ev.block_number,
-                    &amount_native,
-                    &native_usd_price,
-                    &amount_usd,
-                    &pricing_chain,
-                )
-                .await?;
-                summary.priced_degraded += 1;
-                warn!(
-                    event_id = ev.event_id,
-                    amount_usd = %amount_usd,
-                    "priced LPT via DEGRADED spot (cardinality < 144)"
+                buffers.push_priced(
+                    ARBITRUM_CHAIN_ID,
+                    ev.event_id, &version, asset,
+                    PRICING_METHOD_LPT_SPOT, SOURCE_LPT,
+                    ev.block_number, &amount_native, &native_usd_price, &amount_usd,
+                    &pricing_chain, STATUS_PRICED,
                 );
+                summary.priced_degraded += 1;
+                warn!(event_id = ev.event_id, amount_usd = %amount_usd, "priced LPT via DEGRADED spot (cardinality < 144)");
             }
             Ok(LptOutcome::SequencerOutage { detail }) => {
-                attempt_only(pg, ev.event_id, valuation_version, asset, "failed_sequencer_outage", Some(detail)).await?;
+                buffers.push_failed_attempt(ev.event_id, valuation_version, asset, "failed_sequencer_outage", Some(detail));
                 summary.failed_sequencer_outage += 1;
             }
             Ok(LptOutcome::MissingOracle { detail }) => {
-                attempt_only(pg, ev.event_id, valuation_version, asset, "failed_missing_oracle", Some(detail)).await?;
+                buffers.push_failed_attempt(ev.event_id, valuation_version, asset, "failed_missing_oracle", Some(detail));
                 summary.failed_missing_oracle += 1;
             }
             Ok(LptOutcome::MissingPool { detail }) => {
-                attempt_only(pg, ev.event_id, valuation_version, asset, "failed_missing_pool", Some(detail)).await?;
+                buffers.push_failed_attempt(ev.event_id, valuation_version, asset, "failed_missing_pool", Some(detail));
                 summary.failed_missing_pool += 1;
             }
             Err(e) => {
@@ -597,7 +559,9 @@ pub async fn run_onchain_pass_lpt(
                 warn!(event_id = ev.event_id, error = %e, "LPT pricing failed; will retry next run");
             }
         }
+        buffers.maybe_flush(pg).await?;
     }
+    buffers.flush(pg).await?;
 
     info!(?summary, "on-chain LPT pass complete");
     Ok(summary)
@@ -629,6 +593,7 @@ async fn price_lpt_event(
     sequencer: &str,
     ev: &CandidateEvent,
     amount_native: &BigDecimal,
+    buffers: &mut BulkBuffers,
 ) -> Result<LptOutcome> {
     price_lpt_amount(
         pg,
@@ -640,12 +605,14 @@ async fn price_lpt_event(
         &ev.block_hash,
         ev.block_timestamp,
         amount_native,
+        buffers,
     )
     .await
 }
 
 /// Pure LPT-on-chain pricing helper for the multi-asset path. Takes raw
 /// `(block, block_hash, block_timestamp, amount_native)` instead of a CandidateEvent.
+/// `buffers` accumulates the LPT/USD + LPT/WETH `token_prices_by_block` rows.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn price_lpt_amount(
     pg: &PgPool,
@@ -657,6 +624,7 @@ pub(crate) async fn price_lpt_amount(
     block_hash: &str,
     block_timestamp: chrono::DateTime<chrono::Utc>,
     amount_native: &BigDecimal,
+    buffers: &mut BulkBuffers,
 ) -> Result<LptOutcome> {
     let block_ts = block_timestamp.timestamp();
 
@@ -781,15 +749,33 @@ pub(crate) async fn price_lpt_amount(
             "v1",
             DEGRADED_VERSION_SUFFIX
         );
-        // Mirror derived LPT/USD + intermediate LPT/WETH into token_prices_by_block.
-        crate::persist::upsert_price(
-            pg, "LPT", "USD", block as i64, block_hash, block_timestamp,
-            &lpt_usd, "uniswap_v3_spot_x_chainlink", Some(pool), Some(chainlink), None,
-        ).await?;
-        crate::persist::upsert_price(
-            pg, "LPT", "WETH", block as i64, block_hash, block_timestamp,
-            &lpt_per_weth, "uniswap_v3_spot", Some(pool), None, None,
-        ).await?;
+        // Mirror derived LPT/USD + intermediate LPT/WETH into token_prices_by_block via the buffer.
+        buffers.push_price(PriceRow {
+            chain_id: ARBITRUM_CHAIN_ID,
+            asset: "LPT".into(),
+            quote: "USD".into(),
+            block_number: block as i64,
+            block_hash: block_hash.to_string(),
+            block_timestamp,
+            price: lpt_usd.clone(),
+            source: "uniswap_v3_spot_x_chainlink".into(),
+            pool_address: Some(pool.to_string()),
+            oracle_address: Some(chainlink.to_string()),
+            raw: None,
+        });
+        buffers.push_price(PriceRow {
+            chain_id: ARBITRUM_CHAIN_ID,
+            asset: "LPT".into(),
+            quote: "WETH".into(),
+            block_number: block as i64,
+            block_hash: block_hash.to_string(),
+            block_timestamp,
+            price: lpt_per_weth.clone(),
+            source: "uniswap_v3_spot".into(),
+            pool_address: Some(pool.to_string()),
+            oracle_address: None,
+            raw: None,
+        });
         return Ok(LptOutcome::PricedDegraded {
             native_usd_price: lpt_usd,
             amount_usd,
@@ -853,16 +839,33 @@ pub(crate) async fn price_lpt_amount(
 
     let version = "v1_lpt_weth_twap_30min_x_chainlink_eth".to_string();
 
-    // Mirror TWAP-derived LPT/USD + LPT/WETH into token_prices_by_block.
-    crate::persist::upsert_price(
-        pg, "LPT", "USD", block as i64, block_hash, block_timestamp,
-        &lpt_usd, "uniswap_v3_twap_30min_x_chainlink_eth", Some(pool), Some(chainlink), None,
-    ).await?;
-    crate::persist::upsert_price(
-        pg, "LPT", "WETH", block as i64, block_hash, block_timestamp,
-        &lpt_per_weth, "uniswap_v3_twap_30min", Some(pool), None,
-        Some(&serde_json::json!({"meanTick": avg_tick, "sqrtPriceX96": sqrt_price_x96.to_string()})),
-    ).await?;
+    // Mirror TWAP-derived LPT/USD + LPT/WETH into token_prices_by_block via the buffer.
+    buffers.push_price(PriceRow {
+        chain_id: ARBITRUM_CHAIN_ID,
+        asset: "LPT".into(),
+        quote: "USD".into(),
+        block_number: block as i64,
+        block_hash: block_hash.to_string(),
+        block_timestamp,
+        price: lpt_usd.clone(),
+        source: "uniswap_v3_twap_30min_x_chainlink_eth".into(),
+        pool_address: Some(pool.to_string()),
+        oracle_address: Some(chainlink.to_string()),
+        raw: None,
+    });
+    buffers.push_price(PriceRow {
+        chain_id: ARBITRUM_CHAIN_ID,
+        asset: "LPT".into(),
+        quote: "WETH".into(),
+        block_number: block as i64,
+        block_hash: block_hash.to_string(),
+        block_timestamp,
+        price: lpt_per_weth.clone(),
+        source: "uniswap_v3_twap_30min".into(),
+        pool_address: Some(pool.to_string()),
+        oracle_address: None,
+        raw: Some(serde_json::json!({"meanTick": avg_tick, "sqrtPriceX96": sqrt_price_x96.to_string()})),
+    });
 
     Ok(LptOutcome::PricedTwap {
         native_usd_price: lpt_usd,

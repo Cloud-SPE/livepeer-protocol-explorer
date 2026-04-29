@@ -1,3 +1,4 @@
+mod bulk;
 mod multi_asset;
 mod onchain;
 mod persist;

@@ -64,14 +64,14 @@ SELECT md5(string_agg(row_md5, '' ORDER BY chain_id, tx_hash, log_index))
   ) s;" > "$OUT/raw_protocol_events.md5"
 
 psql "$DATABASE_URL" -At -c "
-SELECT md5(string_agg(row_md5, '' ORDER BY chain_id, tx_hash, log_index, asset))
+SELECT md5(string_agg(row_md5, '' ORDER BY event_id, valuation_version, asset))
   FROM (
-    SELECT chain_id, tx_hash, log_index, asset,
+    SELECT event_id, valuation_version, asset,
            md5(concat_ws('§',
-             chain_id::text, tx_hash, log_index::text, asset,
-             COALESCE(usd_value::text,''), COALESCE(amount_native::text,''),
-             COALESCE(price_at_block::text,''), valuation_version,
-             COALESCE(degraded_reason::text,'')
+             chain_id::text, event_id::text, valuation_version, asset,
+             pricing_method, source, status, block_number::text,
+             amount_native::text, native_usd_price::text, amount_usd::text,
+             COALESCE(jsonb_strip_nulls(pricing_chain)::text, '')
            )) AS row_md5
       FROM event_valuations
   ) s;" > "$OUT/event_valuations.md5"

@@ -9,11 +9,12 @@
 //! across the two portions of a single event because `single_call_cached` keys on
 //! `(method, params, block)` — both portions share the same block.
 
+use crate::bulk::BulkBuffers;
 use crate::onchain::{
     price_eth_amount, price_lpt_amount, LptOutcome, PricingOutcome, DEGRADED_VERSION_SUFFIX,
 };
-use crate::persist::{insert_attempt, insert_valuation, ARBITRUM_CHAIN_ID, STATUS_PRICED};
-use anyhow::{Context, Result};
+use crate::persist::{ARBITRUM_CHAIN_ID, STATUS_PRICED};
+use anyhow::Result;
 use bigdecimal::{BigDecimal, Zero};
 use livepeer_core::{config::Config, rpc::Provider};
 use sqlx::{PgPool, Row};
@@ -69,6 +70,7 @@ pub async fn run_multi_asset_pass(
     let pool = cfg.static_.pricing.uniswap_v3_lpt_weth_pool.clone();
     let chainlink = cfg.static_.pricing.chainlink_eth_usd_aggregator.clone();
     let sequencer = cfg.static_.pricing.l2_sequencer_uptime_feed.clone();
+    let mut buffers = BulkBuffers::new();
 
     for ev in &candidates {
         let block = ev.block_number as u64;
@@ -81,41 +83,46 @@ pub async fn run_multi_asset_pass(
 
         // --- LPT portion (rewards) ---
         if rewards_lpt.is_zero() {
-            // Per SPEC §6.8 we still record the row so the event has a complete
-            // valuation set under this version. Skip the on-chain cost; price=0,
-            // amount_usd=0. Source noted as "no_amount" so audit shows we didn't
-            // hit the pool/oracle for it.
-            insert_zero_row(
-                pg, ev.event_id, valuation_version, "LPT",
+            // SPEC §6.8: still record a row so the event has a complete valuation
+            // set; price=0, amount_usd=0, source noted.
+            push_zero_row(
+                &mut buffers, ev.event_id, valuation_version, "LPT",
                 "no_amount", "no_amount", ev.block_number,
                 serde_json::json!({"reason": "EarningsClaimed.rewards == 0"}),
-            )
-            .await?;
+            );
             summary.lpt_zero_amount_rows += 1;
         } else {
-            match price_lpt_amount(pg, archive, &pool, &chainlink, &sequencer, block, &ev.block_hash, ev.block_timestamp, &rewards_lpt).await {
+            match price_lpt_amount(pg, archive, &pool, &chainlink, &sequencer, block, &ev.block_hash, ev.block_timestamp, &rewards_lpt, &mut buffers).await {
                 Ok(LptOutcome::PricedTwap { native_usd_price, amount_usd, pricing_chain, version }) => {
-                    commit(pg, ev.event_id, &version, "LPT", PRICING_METHOD_LPT_TWAP, SOURCE_LPT,
-                           ev.block_number, &rewards_lpt, &native_usd_price, &amount_usd, &pricing_chain).await?;
+                    buffers.push_priced(
+                        ARBITRUM_CHAIN_ID, ev.event_id, &version, "LPT",
+                        PRICING_METHOD_LPT_TWAP, SOURCE_LPT,
+                        ev.block_number, &rewards_lpt, &native_usd_price, &amount_usd,
+                        &pricing_chain, STATUS_PRICED,
+                    );
                     summary.lpt_rows_priced += 1;
                     debug!(event_id = ev.event_id, rewards_lpt = %rewards_lpt, amount_usd = %amount_usd, "EarningsClaimed.rewards priced via TWAP");
                 }
                 Ok(LptOutcome::PricedDegraded { native_usd_price, amount_usd, pricing_chain, version }) => {
-                    commit(pg, ev.event_id, &version, "LPT", PRICING_METHOD_LPT_SPOT, SOURCE_LPT,
-                           ev.block_number, &rewards_lpt, &native_usd_price, &amount_usd, &pricing_chain).await?;
+                    buffers.push_priced(
+                        ARBITRUM_CHAIN_ID, ev.event_id, &version, "LPT",
+                        PRICING_METHOD_LPT_SPOT, SOURCE_LPT,
+                        ev.block_number, &rewards_lpt, &native_usd_price, &amount_usd,
+                        &pricing_chain, STATUS_PRICED,
+                    );
                     summary.lpt_rows_priced += 1;
                     warn!(event_id = ev.event_id, "EarningsClaimed.rewards priced via DEGRADED spot");
                 }
                 Ok(LptOutcome::SequencerOutage { detail }) => {
-                    attempt(pg, ev.event_id, valuation_version, "LPT", "failed_sequencer_outage", Some(detail)).await?;
+                    buffers.push_failed_attempt(ev.event_id, valuation_version, "LPT", "failed_sequencer_outage", Some(detail));
                     summary.failures += 1;
                 }
                 Ok(LptOutcome::MissingOracle { detail }) => {
-                    attempt(pg, ev.event_id, valuation_version, "LPT", "failed_missing_oracle", Some(detail)).await?;
+                    buffers.push_failed_attempt(ev.event_id, valuation_version, "LPT", "failed_missing_oracle", Some(detail));
                     summary.failures += 1;
                 }
                 Ok(LptOutcome::MissingPool { detail }) => {
-                    attempt(pg, ev.event_id, valuation_version, "LPT", "failed_missing_pool", Some(detail)).await?;
+                    buffers.push_failed_attempt(ev.event_id, valuation_version, "LPT", "failed_missing_pool", Some(detail));
                     summary.failures += 1;
                 }
                 Err(e) => {
@@ -127,27 +134,30 @@ pub async fn run_multi_asset_pass(
 
         // --- ETH portion (fees) ---
         if fees_eth.is_zero() {
-            insert_zero_row(
-                pg, ev.event_id, valuation_version, "ETH",
+            push_zero_row(
+                &mut buffers, ev.event_id, valuation_version, "ETH",
                 "no_amount", "no_amount", ev.block_number,
                 serde_json::json!({"reason": "EarningsClaimed.fees == 0"}),
-            )
-            .await?;
+            );
             summary.eth_zero_amount_rows += 1;
         } else {
-            match price_eth_amount(pg, archive, cfg, block, &ev.block_hash, ev.block_timestamp, &fees_eth).await {
+            match price_eth_amount(pg, archive, cfg, block, &ev.block_hash, ev.block_timestamp, &fees_eth, &mut buffers).await {
                 Ok(PricingOutcome::Priced { native_usd_price, amount_usd, pricing_chain }) => {
-                    commit(pg, ev.event_id, valuation_version, "ETH", PRICING_METHOD_ETH, SOURCE_ETH,
-                           ev.block_number, &fees_eth, &native_usd_price, &amount_usd, &pricing_chain).await?;
+                    buffers.push_priced(
+                        ARBITRUM_CHAIN_ID, ev.event_id, valuation_version, "ETH",
+                        PRICING_METHOD_ETH, SOURCE_ETH,
+                        ev.block_number, &fees_eth, &native_usd_price, &amount_usd,
+                        &pricing_chain, STATUS_PRICED,
+                    );
                     summary.eth_rows_priced += 1;
                     debug!(event_id = ev.event_id, fees_eth = %fees_eth, amount_usd = %amount_usd, "EarningsClaimed.fees priced via Chainlink");
                 }
                 Ok(PricingOutcome::SequencerOutage { detail }) => {
-                    attempt(pg, ev.event_id, valuation_version, "ETH", "failed_sequencer_outage", Some(detail)).await?;
+                    buffers.push_failed_attempt(ev.event_id, valuation_version, "ETH", "failed_sequencer_outage", Some(detail));
                     summary.failures += 1;
                 }
                 Ok(PricingOutcome::MissingOracle { detail }) => {
-                    attempt(pg, ev.event_id, valuation_version, "ETH", "failed_missing_oracle", Some(detail)).await?;
+                    buffers.push_failed_attempt(ev.event_id, valuation_version, "ETH", "failed_missing_oracle", Some(detail));
                     summary.failures += 1;
                 }
                 Err(e) => {
@@ -156,7 +166,9 @@ pub async fn run_multi_asset_pass(
                 }
             }
         }
+        buffers.maybe_flush(pg).await?;
     }
+    buffers.flush(pg).await?;
 
     info!(?summary, "multi-asset pass complete");
     Ok(summary)
@@ -217,35 +229,8 @@ async fn fetch_candidates(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn commit(
-    pg: &PgPool,
-    event_id: i64,
-    valuation_version: &str,
-    asset: &str,
-    pricing_method: &str,
-    source: &str,
-    block_number: i64,
-    amount_native: &BigDecimal,
-    native_usd_price: &BigDecimal,
-    amount_usd: &BigDecimal,
-    pricing_chain: &serde_json::Value,
-) -> Result<()> {
-    let mut tx = pg.begin().await?;
-    insert_valuation(
-        &mut tx, event_id, valuation_version, asset,
-        pricing_method, source, STATUS_PRICED,
-        block_number, amount_native, native_usd_price, amount_usd, pricing_chain,
-    )
-    .await
-    .with_context(|| format!("insert_valuation event_id={event_id} asset={asset}"))?;
-    insert_attempt(&mut tx, event_id, valuation_version, asset, STATUS_PRICED, None).await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn insert_zero_row(
-    pg: &PgPool,
+fn push_zero_row(
+    buffers: &mut BulkBuffers,
     event_id: i64,
     valuation_version: &str,
     asset: &str,
@@ -253,24 +238,20 @@ async fn insert_zero_row(
     source: &str,
     block_number: i64,
     pricing_chain: serde_json::Value,
-) -> Result<()> {
+) {
     let zero = BigDecimal::from(0u64);
-    commit(
-        pg, event_id, valuation_version, asset, pricing_method, source,
-        block_number, &zero, &zero, &zero, &pricing_chain,
-    ).await
-}
-
-async fn attempt(
-    pg: &PgPool,
-    event_id: i64,
-    valuation_version: &str,
-    asset: &str,
-    result_status: &str,
-    error_detail: Option<serde_json::Value>,
-) -> Result<()> {
-    let mut tx = pg.begin().await?;
-    insert_attempt(&mut tx, event_id, valuation_version, asset, result_status, error_detail).await?;
-    tx.commit().await?;
-    Ok(())
+    buffers.push_priced(
+        ARBITRUM_CHAIN_ID,
+        event_id,
+        valuation_version,
+        asset,
+        pricing_method,
+        source,
+        block_number,
+        &zero,
+        &zero,
+        &zero,
+        &pricing_chain,
+        STATUS_PRICED,
+    );
 }

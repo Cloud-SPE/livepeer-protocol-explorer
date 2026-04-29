@@ -61,6 +61,8 @@ struct JsonRpcRequest<'a> {
 #[derive(Deserialize)]
 struct JsonRpcResponse {
     #[serde(default)]
+    id: Option<u64>,
+    #[serde(default)]
     result: Option<Value>,
     #[serde(default)]
     error: Option<JsonRpcErrorBody>,
@@ -229,6 +231,121 @@ impl Provider {
             });
         }
         Ok(parsed.result.unwrap_or(Value::Null))
+    }
+
+    /// JSON-RPC batch call. Sends an array of `{method, params}` requests in a
+    /// single HTTP POST and returns one `Result<Value>` per input position.
+    /// Reduces HTTP/TCP/queue overhead by a factor equal to the batch size,
+    /// which empirically matters most against archive RPCs that serialize
+    /// concurrent calls per-IP (TD-011 finding 2026-04-29: 25× per-call
+    /// latency under our concurrent load vs single-curl baseline).
+    ///
+    /// Each batch entry's response is mapped back by id (JSON-RPC servers
+    /// MAY return responses in any order). Position-N response = result for
+    /// position-N input.
+    ///
+    /// Determinism: each individual response is byte-identical to what the
+    /// non-batched `call` would have produced — we just amortize the
+    /// envelope. Cache layer keys on (method, params, block) per call.
+    pub async fn call_batch(&self, batch: &[(String, Value)]) -> Result<Vec<Result<Value>>> {
+        if batch.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build the request array. id is the 1-based index — must be unique
+        // within the batch and stable so we can match responses back.
+        let reqs: Vec<JsonRpcRequest> = batch
+            .iter()
+            .enumerate()
+            .map(|(i, (method, params))| JsonRpcRequest {
+                jsonrpc: "2.0",
+                method,
+                params,
+                id: (i + 1) as u64,
+            })
+            .collect();
+
+        let client = self.client.read().await.clone();
+        let hard_timeout = Duration::from_secs(90);
+        let send_text = async {
+            client
+                .post(&self.url)
+                .json(&reqs)
+                .send()
+                .await
+                .map_err(|e| CoreError::Http {
+                    provider: self.name.clone(),
+                    source: e,
+                })?
+                .error_for_status()
+                .map_err(|e| CoreError::Http {
+                    provider: self.name.clone(),
+                    source: e,
+                })?
+                .text()
+                .await
+                .map_err(|e| CoreError::Http {
+                    provider: self.name.clone(),
+                    source: e,
+                })
+        };
+        let resp_text = match tokio::time::timeout(hard_timeout, send_text).await {
+            Ok(r) => r?,
+            Err(_) => {
+                return Err(CoreError::JsonRpc {
+                    provider: self.name.clone(),
+                    method: "call_batch".to_string(),
+                    code: -32001,
+                    message: format!("hard timeout {}s exceeded for batch of {}", hard_timeout.as_secs(), batch.len()),
+                });
+            }
+        };
+
+        // Parse the response array. Some servers (incorrectly) return a
+        // single object for a single-element batch — handle both shapes.
+        let parsed: Vec<JsonRpcResponse> = match serde_json::from_str::<Vec<JsonRpcResponse>>(&resp_text) {
+            Ok(v) => v,
+            Err(_) => match serde_json::from_str::<JsonRpcResponse>(&resp_text) {
+                Ok(single) => vec![single],
+                Err(_) => {
+                    return Err(CoreError::JsonRpc {
+                        provider: self.name.clone(),
+                        method: "call_batch".to_string(),
+                        code: -32700,
+                        message: format!("malformed batch response: {}", resp_text.chars().take(500).collect::<String>()),
+                    });
+                }
+            },
+        };
+
+        // Map responses back to input positions by id. Default each slot to
+        // a "missing response" error; overwrite as responses come in.
+        let mut results: Vec<Result<Value>> = (0..batch.len())
+            .map(|i| {
+                Err(CoreError::JsonRpc {
+                    provider: self.name.clone(),
+                    method: batch[i].0.clone(),
+                    code: -32603,
+                    message: "no response for batch entry".to_string(),
+                })
+            })
+            .collect();
+        for resp in parsed {
+            let Some(id) = resp.id else { continue };
+            let idx = (id as usize).checked_sub(1);
+            let Some(idx) = idx.filter(|&i| i < batch.len()) else { continue };
+            results[idx] = if let Some(err) = resp.error {
+                Err(CoreError::JsonRpc {
+                    provider: self.name.clone(),
+                    method: batch[idx].0.clone(),
+                    code: err.code,
+                    message: err.message,
+                })
+            } else {
+                Ok(resp.result.unwrap_or(Value::Null))
+            };
+        }
+        Ok(results)
     }
 
     pub async fn eth_chain_id(&self) -> Result<u64> {

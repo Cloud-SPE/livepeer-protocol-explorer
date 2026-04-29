@@ -214,15 +214,30 @@ pub(crate) async fn price_eth_amount(
     let block_ts = block_timestamp.timestamp();
     let mut prices: Vec<PriceRow> = Vec::new();
 
-    // Fire sequencer + Chainlink reads concurrently. On a cache-warm path
-    // both resolve in microseconds; on a cache-miss path the network roundtrips
-    // overlap so the wall-clock cost is max(seq, cl) instead of seq+cl.
-    // On sequencer outage / not-deployed we waste at most one Chainlink read,
-    // but that read still populates rpc_call_cache — useful for replay.
-    let (seq_res, cl_res) = tokio::try_join!(
-        read_round(pg, archive, &cfg.static_.pricing.l2_sequencer_uptime_feed, block),
-        read_round(pg, archive, &cfg.static_.pricing.chainlink_eth_usd_aggregator, block),
-    )?;
+    // Send sequencer + Chainlink reads as a single JSON-RPC batch (one HTTP
+    // POST). Halves the per-event request count vs the prior `tokio::try_join!`
+    // approach. Cache hits are served from rpc_call_cache without contacting
+    // the upstream; misses go in one batched request.
+    let calldata = AggregatorV3::latestRoundDataCall {}.abi_encode();
+    let data_hex = format!("0x{}", alloy::hex::encode(&calldata));
+    let seq_aggregator = &cfg.static_.pricing.l2_sequencer_uptime_feed;
+    let cl_aggregator = &cfg.static_.pricing.chainlink_eth_usd_aggregator;
+    let block_param = format!("0x{:x}", block);
+    let batch = vec![
+        (
+            "eth_call".to_string(),
+            serde_json::json!([{ "to": seq_aggregator, "data": data_hex }, block_param.clone()]),
+            Some(block as i64),
+        ),
+        (
+            "eth_call".to_string(),
+            serde_json::json!([{ "to": cl_aggregator, "data": data_hex }, block_param.clone()]),
+            Some(block as i64),
+        ),
+    ];
+    let outcomes = cross_check::batch_call_cached(pg, archive, &batch).await?;
+    let seq_res = decode_round_outcome(outcomes[0].as_ref())?;
+    let cl_res = decode_round_outcome(outcomes[1].as_ref())?;
 
     // 1. Sequencer uptime — read at event block. answer == 0 means UP.
     let Some(seq_round) = seq_res else {
@@ -412,6 +427,74 @@ async fn read_round(
         updated_at: ret.updatedAt.to_string(),
         answered_in_round: ret.answeredInRound.to_string(),
     }))
+}
+
+/// Decode a `latestRoundData()` response from a `batch_call_cached` outcome.
+/// `Err(e)` from the batch propagates; `Ok` with empty bytes → `None`
+/// (contract not deployed at this block, same semantic as `read_round`).
+fn decode_round_outcome(
+    outcome: std::result::Result<&livepeer_core::rpc::cross_check::CrossCheckOutcome, &livepeer_core::error::CoreError>,
+) -> Result<Option<DecodedRound>> {
+    let outcome = outcome.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let s = std::str::from_utf8(&outcome.response_bytes).unwrap_or_default();
+    let hex_str = s.trim_matches('"').trim_start_matches("0x");
+    let raw = alloy::hex::decode(hex_str).context("decoding eth_call return hex")?;
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let ret = AggregatorV3::latestRoundDataCall::abi_decode_returns(&raw, true)
+        .context("ABI-decoding latestRoundData return tuple")?;
+    Ok(Some(DecodedRound {
+        round_id: ret.roundId.to_string(),
+        answer: ret.answer.to_string(),
+        started_at: ret.startedAt.to_string(),
+        updated_at: ret.updatedAt.to_string(),
+        answered_in_round: ret.answeredInRound.to_string(),
+    }))
+}
+
+/// Decode a Uniswap V3 `slot0()` response from a batch outcome.
+fn decode_slot0_outcome(
+    outcome: std::result::Result<&livepeer_core::rpc::cross_check::CrossCheckOutcome, &livepeer_core::error::CoreError>,
+) -> Result<Option<PoolSlot0>> {
+    let outcome = outcome.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let s = std::str::from_utf8(&outcome.response_bytes).unwrap_or_default();
+    let hex_str = s.trim_matches('"').trim_start_matches("0x");
+    if hex_str.is_empty() {
+        return Ok(None);
+    }
+    let raw = alloy::hex::decode(hex_str).context("decoding slot0() return hex")?;
+    let ret = UniswapV3Pool::slot0Call::abi_decode_returns(&raw, true)
+        .context("ABI-decoding slot0() return tuple")?;
+    let tick_i32: i32 = ret.tick.to_string().parse().context("tick to i32")?;
+    Ok(Some(PoolSlot0 {
+        sqrt_price_x96: U256::from(ret.sqrtPriceX96),
+        tick: tick_i32,
+        observation_cardinality: ret.observationCardinality as u32,
+    }))
+}
+
+/// Decode a Uniswap V3 `observe()` response from a batch outcome.
+fn decode_observe_outcome(
+    outcome: std::result::Result<&livepeer_core::rpc::cross_check::CrossCheckOutcome, &livepeer_core::error::CoreError>,
+) -> Result<Option<PoolObservation>> {
+    let outcome = outcome.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let s = std::str::from_utf8(&outcome.response_bytes).unwrap_or_default();
+    let hex_str = s.trim_matches('"').trim_start_matches("0x");
+    if hex_str.is_empty() {
+        return Ok(None);
+    }
+    let raw = alloy::hex::decode(hex_str).context("decoding observe() return hex")?;
+    let ret = match UniswapV3Pool::observeCall::abi_decode_returns(&raw, true) {
+        Ok(r) => r,
+        Err(_) => return Ok(None), // pool may revert (OLD) for windows it can't serve
+    };
+    if ret.tickCumulatives.len() < 2 {
+        return Ok(None);
+    }
+    let cumulative_then: i128 = ret.tickCumulatives[0].to_string().parse().context("tickCumulative[0]")?;
+    let cumulative_now: i128 = ret.tickCumulatives[1].to_string().parse().context("tickCumulative[1]")?;
+    Ok(Some(PoolObservation { cumulative_then, cumulative_now }))
 }
 
 async fn fetch_eth_candidates(
@@ -683,17 +766,36 @@ pub(crate) async fn price_lpt_amount(
     let block_ts = block_timestamp.timestamp();
     let mut prices: Vec<PriceRow> = Vec::new();
 
-    // Fire the three independent reads (sequencer, pool slot0, chainlink) in
-    // parallel. They have no data dependency on each other, so this collapses
-    // 3×roundtrip to max(roundtrip) on cache-miss paths. On the warm-cache
-    // common path each is ~1ms anyway, so the gain is concentrated where it
-    // matters: blocks past the prior runs' watermark, where most calls miss
-    // the cache and hit the network.
-    let (seq_res, slot0_res, cl_res) = tokio::try_join!(
-        read_round(pg, archive, sequencer, block),
-        read_pool_slot0(pg, archive, pool, block),
-        read_round(pg, archive, chainlink, block),
-    )?;
+    // Send the three independent reads (sequencer, pool slot0, chainlink) as
+    // a single JSON-RPC batch in one HTTP POST. Reduces per-event upstream
+    // request count 3→1 vs the prior `tokio::try_join!` approach. Each entry
+    // still has its own deterministic call_hash and rpc_call_cache row.
+    let round_calldata = AggregatorV3::latestRoundDataCall {}.abi_encode();
+    let round_data_hex = format!("0x{}", alloy::hex::encode(&round_calldata));
+    let slot0_calldata = UniswapV3Pool::slot0Call {}.abi_encode();
+    let slot0_data_hex = format!("0x{}", alloy::hex::encode(&slot0_calldata));
+    let block_param = format!("0x{:x}", block);
+    let batch = vec![
+        (
+            "eth_call".to_string(),
+            serde_json::json!([{ "to": sequencer, "data": round_data_hex }, block_param.clone()]),
+            Some(block as i64),
+        ),
+        (
+            "eth_call".to_string(),
+            serde_json::json!([{ "to": pool, "data": slot0_data_hex }, block_param.clone()]),
+            Some(block as i64),
+        ),
+        (
+            "eth_call".to_string(),
+            serde_json::json!([{ "to": chainlink, "data": round_data_hex }, block_param.clone()]),
+            Some(block as i64),
+        ),
+    ];
+    let outcomes = cross_check::batch_call_cached(pg, archive, &batch).await?;
+    let seq_res = decode_round_outcome(outcomes[0].as_ref())?;
+    let slot0_res = decode_slot0_outcome(outcomes[1].as_ref())?;
+    let cl_res = decode_round_outcome(outcomes[2].as_ref())?;
 
     // 1. Sequencer up?
     let Some(seq) = seq_res else {
@@ -851,8 +953,20 @@ pub(crate) async fn price_lpt_amount(
         }, prices));
     }
 
-    // TWAP path.
-    let twap = match read_pool_observe(pg, archive, pool, block, TWAP_WINDOW_SECS).await? {
+    // TWAP path. observe() runs as a 1-element batch — keeps the same code
+    // path (cache lookup → batch fallback) without needing a separate solo
+    // helper. On cache hit it's just a PG SELECT; on miss it's one HTTP POST.
+    let observe_calldata = UniswapV3Pool::observeCall {
+        secondsAgos: vec![TWAP_WINDOW_SECS, 0],
+    }.abi_encode();
+    let observe_data_hex = format!("0x{}", alloy::hex::encode(&observe_calldata));
+    let observe_batch = vec![(
+        "eth_call".to_string(),
+        serde_json::json!([{ "to": pool, "data": observe_data_hex }, block_param.clone()]),
+        Some(block as i64),
+    )];
+    let observe_outcomes = cross_check::batch_call_cached(pg, archive, &observe_batch).await?;
+    let twap = match decode_observe_outcome(observe_outcomes[0].as_ref())? {
         Some(t) => t,
         None => {
             return Ok((LptOutcome::MissingPool {

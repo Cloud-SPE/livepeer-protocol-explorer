@@ -212,3 +212,100 @@ pub async fn single_call_cached(
         response_hash: hash,
     })
 }
+
+/// Single-provider BATCH call with cache write. Walks the request list,
+/// satisfies whichever entries are already cached from a single bulk SELECT,
+/// then sends only the misses as a JSON-RPC batch in one HTTP POST.
+///
+/// Returns one `CrossCheckOutcome` per input position (preserves order).
+/// Failed individual entries within the batch propagate as `Result::Err` per
+/// entry — caller decides whether to fail the whole batch or skip just the
+/// failed ones.
+///
+/// Determinism: each call's `call_hash` and `response_bytes` are
+/// byte-identical to what `single_call_cached` would produce for the same
+/// `(method, params, block_number)`. Cache keys and stored bytes do not
+/// depend on whether the call was sent solo or as part of a batch.
+pub async fn batch_call_cached(
+    pg: &PgPool,
+    p: &Provider,
+    requests: &[(String, Value, Option<i64>)],
+) -> Result<Vec<Result<CrossCheckOutcome>>> {
+    let n = requests.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Compute call_hashes upfront so we can both check the cache and key
+    // the cache writes deterministically.
+    let call_hashes: Vec<String> = requests
+        .iter()
+        .map(|(method, params, block)| cache::compute_call_hash(method, params, *block))
+        .collect();
+
+    // Cache lookup, position-by-position. (A bulk SELECT with WHERE
+    // call_hash = ANY would be slightly cheaper but the per-key SELECT is
+    // already a PK lookup at ~1ms each — not the bottleneck.)
+    let mut outcomes: Vec<Option<Result<CrossCheckOutcome>>> = (0..n).map(|_| None).collect();
+    let mut miss_indices: Vec<usize> = Vec::new();
+    for (i, hash) in call_hashes.iter().enumerate() {
+        if let Some((bytes, response_hash, _provider)) = cache::get(pg, hash).await? {
+            outcomes[i] = Some(Ok(CrossCheckOutcome {
+                call_hash: hash.clone(),
+                response_bytes: bytes,
+                response_hash,
+            }));
+        } else {
+            miss_indices.push(i);
+        }
+    }
+
+    // If everything was cached, we're done — no HTTP call needed.
+    if !miss_indices.is_empty() {
+        // Build the batch in MISS order; we'll map results back via miss_indices.
+        let miss_batch: Vec<(String, Value)> = miss_indices
+            .iter()
+            .map(|&i| (requests[i].0.clone(), requests[i].1.clone()))
+            .collect();
+        let batch_results = p.call_batch(&miss_batch).await?;
+
+        // Each batch entry's result corresponds to position `miss_indices[k]`
+        // in the original request list. Store successful entries to cache;
+        // surface errors through the outcome vector.
+        for (k, result) in batch_results.into_iter().enumerate() {
+            let orig_idx = miss_indices[k];
+            let hash = &call_hashes[orig_idx];
+            let (method, params, block_number) = &requests[orig_idx];
+            match result {
+                Ok(value) => {
+                    let bytes = serde_json::to_vec(&value).unwrap_or_default();
+                    let response_hash = cache::hash_response_bytes(&bytes);
+                    cache::store(
+                        pg,
+                        hash,
+                        method,
+                        params,
+                        *block_number,
+                        &bytes,
+                        &response_hash,
+                        p.name(),
+                        None,
+                        None,
+                    )
+                    .await?;
+                    outcomes[orig_idx] = Some(Ok(CrossCheckOutcome {
+                        call_hash: hash.clone(),
+                        response_bytes: bytes,
+                        response_hash,
+                    }));
+                }
+                Err(e) => {
+                    outcomes[orig_idx] = Some(Err(e));
+                }
+            }
+        }
+    }
+
+    // Unwrap — every position has been filled either from cache or batch.
+    Ok(outcomes.into_iter().map(|o| o.expect("all positions filled")).collect())
+}

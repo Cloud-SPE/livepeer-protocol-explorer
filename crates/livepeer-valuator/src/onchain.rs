@@ -424,6 +424,7 @@ async fn fetch_eth_candidates(
     } else {
         "AND r.finality = 'finalized'"
     };
+    // Also exclude events with prior failed attempts. See note in fetch_lpt_candidates.
     let sql = format!(
         r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp, r.asset, r.amount_normalized
              FROM raw_protocol_events r
@@ -431,12 +432,18 @@ async fn fetch_eth_candidates(
                ON v.event_id          = r.id
               AND v.valuation_version = $2
               AND (v.asset = r.asset OR (v.asset IS NULL AND r.asset IS NULL))
+             LEFT JOIN valuation_attempts a
+               ON a.event_id          = r.id
+              AND a.valuation_version = $2
+              AND a.asset             = r.asset
+              AND a.result_status     LIKE 'failed_%'
             WHERE r.chain_id      = $1
               AND r.is_valuable   = TRUE
               AND r.is_canonical  = TRUE
               AND r.asset         = 'ETH'
               {finality_filter}
               AND v.event_id IS NULL
+              AND a.event_id IS NULL
             ORDER BY r.block_number, r.log_index"#
     );
     let rows = sqlx::query(&sql)
@@ -1041,6 +1048,10 @@ async fn fetch_lpt_candidates(
     // Match either the canonical version OR its degraded sibling — once an event has
     // been priced under either, it's done.
     let degraded = format!("v1{DEGRADED_VERSION_SUFFIX}");
+    // Also exclude events with prior failed attempts (e.g., dead-band events
+    // pre-oracle-deployment). Given determinism over the rpc_call_cache, a
+    // prior failed attempt will fail again with the same details — no value
+    // in re-trying within a single run.
     let sql = format!(
         r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp, r.asset, r.amount_normalized
              FROM raw_protocol_events r
@@ -1048,12 +1059,18 @@ async fn fetch_lpt_candidates(
                ON v.event_id  = r.id
               AND v.asset     = r.asset
               AND v.valuation_version IN ($2, $3)
+             LEFT JOIN valuation_attempts a
+               ON a.event_id          = r.id
+              AND a.asset             = r.asset
+              AND a.valuation_version IN ($2, $3)
+              AND a.result_status     LIKE 'failed_%'
             WHERE r.chain_id     = $1
               AND r.is_valuable  = TRUE
               AND r.is_canonical = TRUE
               AND r.asset        = 'LPT'
               {finality_filter}
               AND v.event_id IS NULL
+              AND a.event_id IS NULL
             ORDER BY r.block_number, r.log_index"#
     );
     let rows = sqlx::query(&sql)

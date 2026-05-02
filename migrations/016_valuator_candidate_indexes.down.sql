@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS idx_attempts_failed_version_asset_event;
+DROP INDEX IF EXISTS idx_valuations_version_asset_event;
+DROP INDEX IF EXISTS idx_events_earnings_claimed_candidates;
+DROP INDEX IF EXISTS idx_events_valuable_asset_finalized_order;

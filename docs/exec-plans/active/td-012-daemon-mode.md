@@ -54,6 +54,88 @@ This document is the plan for fixing that. **It is a plan only — no code yet.*
 - **Observability**: every loop iteration emits structured `tracing` events
   + Prometheus counters/gauges/histograms; alerts on the metrics that matter.
 
+## Operating modes
+
+This repo needs **three distinct operating modes** with different contracts.
+Treating them as one mode would blur determinism, steady-state scheduling, and
+historical catch-up in ways that are hard to reason about.
+
+### 1. `bootstrap` — first run / historical catch-up
+
+Use for an empty database or a partially-complete historical backfill.
+
+Example:
+
+```bash
+livepeer bootstrap \
+  --from-block 6072093 \
+  --to-block 457212919 \
+  --source-sqlite /seed/sqlite-4.0.db \
+  --version v1_lpt_weth_twap_30min_x_chainlink_eth
+```
+
+Contract:
+
+- Finite job, not a daemon.
+- Resumable from checkpoints.
+- Allowed to populate `rpc_call_cache` from live RPC on cache miss.
+- Runs the full bounded pipeline: migrations/bootstrap checks → seed import →
+  indexer backfill → finality promotion → valuator → staker → optional
+  cross-check / replay validation.
+- Safe to rerun idempotently.
+
+This is the correct mode for the **first production backfill** and for
+operator-driven catch-up after long downtime. It is **not** the daemon.
+
+### 2. `replay` — deterministic rerun from cached inputs
+
+Use for byte-deterministic replay from `rpc_call_cache` + seeded SQLite.
+
+Example:
+
+```bash
+livepeer replay \
+  --from-block 6072093 \
+  --to-block 32000000 \
+  --source-sqlite /seed/sqlite-4.0.db \
+  --version v1_lpt_weth_twap_30min_x_chainlink_eth \
+  --cache-only
+```
+
+Contract:
+
+- Finite job, not a daemon.
+- Must **not** use live RPC as a fallback.
+- Any missing cached RPC call is a hard failure.
+- Runs against a fresh DB or freshly-reset derived state.
+- Emits or validates expected table-content hashes.
+
+This is the mode used by determinism CI and by operators when validating that a
+cached replay reproduces the original database exactly.
+
+### 3. `follow` — steady-state near-head processing
+
+Use only after the system has already caught up enough that it should keep pace
+with the moving chain head.
+
+Example:
+
+```bash
+livepeer-daemon follow \
+  --max-start-lag-blocks 50000 \
+  --version v1_lpt_weth_twap_30min_x_chainlink_eth
+```
+
+Contract:
+
+- Infinite long-running service.
+- Uses shared RPC budgets, coordinated shutdown, metrics, and alerts.
+- Refuses to start when current lag exceeds a configured threshold.
+- Optimized for bounded incremental work, not million-block historical backfill.
+
+`follow` is the daemon mode covered by this plan. It should never be the
+primary engine for first-time backfill or determinism replay.
+
 ## Non-goals
 
 - **HA/multi-instance**: v1 daemon is single-instance. Multiple daemons against
@@ -65,122 +147,84 @@ This document is the plan for fixing that. **It is a plan only — no code yet.*
 - **Catch-up parallelism beyond what's already in
   `full-run-parallel.sh`**. Backfill stays a separate code path; daemon mode
   is for incremental work after the initial backfill is caught up.
+- **Using daemon mode as the first historical backfill path.** First run and
+  deterministic replay stay batch-oriented (`bootstrap` / `replay`), even
+  after daemon mode exists.
 
 ## Three-phase rollout
 
-### Phase 1 — minimum viable `--follow` mode (~1 day)
+### Phase 1 — orchestration modes for bounded runs (~1-2 days)
 
-**Goal: each existing binary grows a `--follow` flag that loops internally
-instead of exiting. No new binaries, no shared state between them. Operator
-runs each as a separate systemd service.**
+**Goal: introduce explicit `bootstrap` and `replay` orchestration modes for
+bounded runs, while keeping daemon work out of the first historical backfill
+path.**
 
-Why this first: it's the smallest diff that gets us off cron, preserves the
-existing CLIs unchanged for backfill use, and reuses the loop shape that
-`reorg-watcher` and `finality-watcher` already ship with.
+Why this first: the repo already has the right shape for batch work, and
+deterministic replay is a core invariant. The first implementation step should
+clarify the operator contract for finite runs before adding a scheduler for
+steady-state mode.
 
-#### Per-binary spec
+#### New top-level CLI contract
 
-**`livepeer-indexer`**
+Introduce a small orchestration binary (name TBD; examples below use
+`livepeer`) with these subcommands:
+
 ```
-livepeer-indexer follow [--interval 12s] [--head-depth 10]
-```
-- Loops: read `indexer_checkpoints`, fetch `eth_blockNumber`, advance up to
-  `head − head_depth` blocks, commit checkpoint, sleep `interval`.
-- `head_depth=10` (~2min on Arbitrum) keeps indexer behind the reorg horizon
-  so we don't index blocks that vanish in the next minute. Reorg-watcher
-  handles deeper reorgs.
-- Reuses existing `backfill::drive_backfill(... from, to ...)` per iteration.
-  Internal range chunking (1000-block windows) is unchanged.
-- On RPC divergence: emit metric, log, **stop** (don't auto-skip — TD-011
-  posture).
-
-**`livepeer-valuator`**
-```
-livepeer-valuator follow [--interval 60s] [--lag-blocks 1]
-```
-- Loops: pick up unvalued events from `raw_protocol_events` whose
-  `block_number ≤ indexer_checkpoint − lag_blocks`, run seed → ETH → LPT
-  passes (each is already idempotent per `valuation_attempts` skip filter).
-- `lag_blocks=1` is the soft contract with the indexer: never try to value
-  the very latest indexed block, in case the indexer is mid-commit.
-- Each pass uses the bulk shape from TD-009 (when shipped) so a 60s loop
-  doing ~50 events worth of work stays under 1s of compute.
-- On HTTP wedge symptoms (TD-011): single retry, then back off and emit
-  alert; don't auto-recreate the provider pool inside the loop.
-
-**`livepeer-staker`**
-```
-livepeer-staker follow [--interval 300s] [--include-tentative=false]
-```
-- Loops: run `flow::run_flow_backfill` (already idempotent — uses
-  `pending_stake_refresh_cursor` + dedupe). Runs less often because
-  per-round refresh is the natural cadence (rounds are ~1 day on Livepeer
-  Arbitrum).
-- Flag default `--include-tentative=false` matches steady-state safety; flip
-  to true only during live-edge debugging.
-
-**`livepeer-reorg-watcher`**, **`livepeer-finality-watcher`**: already
-follow-shape; no changes needed for Phase 1.
-
-#### systemd unit examples (operator-facing)
-
-Drop these as templates; we don't ship distro packaging in Phase 1. Living
-location: `docs/operator/systemd-units/` — to be created when Phase 1 lands.
-
-```ini
-# livepeer-indexer-follow.service
-[Unit]
-Description=Livepeer indexer (follow mode)
-After=network.target postgresql.service
-
-[Service]
-Type=simple
-User=livepeer
-EnvironmentFile=/etc/livepeer/daemon.env
-ExecStart=/usr/local/bin/livepeer-indexer follow --interval 12s --head-depth 10
-Restart=on-failure
-RestartSec=10s
-# Send SIGTERM, give 30s grace before SIGKILL — indexer commits per chunk
-# so 30s is enough to finish the current 1000-block window.
-KillSignal=SIGTERM
-TimeoutStopSec=30s
-
-[Install]
-WantedBy=multi-user.target
+livepeer bootstrap ...
+livepeer replay ...
 ```
 
-Five units total: indexer, valuator, staker, reorg-watcher, finality-watcher.
-The API is already a long-running process and ships independently.
+`bootstrap` responsibilities:
+
+- Runs migrations and boot checks.
+- Imports the seed if requested.
+- Runs bounded indexer/finality/valuator/staker work over the requested range.
+- May populate `rpc_call_cache` from live RPC on cache miss.
+- Resumes from checkpoints by default.
+
+`replay` responsibilities:
+
+- Recreates derived state from a known input set.
+- Requires `--cache-only` / `--fail-on-missing-cache`.
+- Fails immediately on missing cached RPC inputs.
+- Emits or verifies deterministic output hashes.
+
+#### Existing binaries stay bounded
+
+The current binaries remain the building blocks for historical work:
+
+- `livepeer-indexer`: bounded block-range run
+- `livepeer-finality-watcher`: bounded promotion pass
+- `livepeer-valuator`: bounded valuation pass
+- `livepeer-staker`: bounded stake refresh/backfill pass
+
+The new orchestration CLI should call into shared library functions from these
+crates rather than shelling out to subprocesses.
 
 #### Determinism check for Phase 1
 
-After Phase 1 lands, validate that 24h of daemon-mode operation produces the
-same `event_valuations` / `token_prices_by_block` rows as a 24h batch
-re-run from the same indexer checkpoint range, on the same
-`rpc_call_cache`. Acceptance: `bash scripts/validate-vs-baseline.sh
-<daemon-baseline>` reports MATCH.
+After Phase 1 lands, validate that `replay` against the same
+`rpc_call_cache` + seed reproduces the same `raw_protocol_events`,
+`event_valuations`, `token_prices_by_block`, and stake tables as the original
+bounded run. Acceptance: `bash scripts/validate-vs-baseline.sh <baseline-dir>`
+reports MATCH.
 
 #### What Phase 1 deliberately does NOT do
 
-- No shared RPC pool between processes — each binary keeps its own
-  `core::rpc::Provider`. Means total in-flight RPC = sum of per-process
-  budgets. We pick conservative per-process concurrency (`indexer=8`,
-  `valuator=14`, `staker=4`) so the sum stays under TD-011's empirical
-  ceiling of ~50.
-- No cross-process backpressure — valuator can lag, staker can lag,
-  alerting catches it. No need for IPC plumbing yet.
-- No new metrics surface beyond what `tracing` already emits as JSON to
-  stdout. Operator parses logs (or pipes to Loki/Vector) until Phase 3.
+- No long-running daemon yet.
+- No per-binary `--follow` mode as the primary operational interface.
+- No multi-process pseudo-daemon with separate RPC pools. That would worsen the
+  pressure pattern that TD-011 is trying to stabilize.
 
 ### Phase 2 — single `livepeer-daemon` binary (~3–5 days)
 
-**Goal: collapse the five follow-loops into one process so we can share the
-RPC pool, coordinate checkpoints, and make graceful shutdown trivial.**
+**Goal: introduce `livepeer-daemon follow` for steady-state near-head
+processing only, with shared RPC budgets, coordinated checkpoints, and graceful
+shutdown.**
 
-Why next: Phase 1 leaves five independent processes each holding 8–16 TCP
-connections to Chainstack. That's 40–80 sockets total against a per-IP
-archive limit we know is around 50 (TD-011). Sharing one provider pool
-lets us right-size at the daemon level.
+Why next: once bounded orchestration is explicit, the daemon can focus on the
+single thing batch mode is bad at: near-head steady-state scheduling. This also
+avoids entangling first-time backfill with the still-open TD-011 RPC ceiling.
 
 #### New crate: `crates/livepeer-daemon/`
 
@@ -199,14 +243,23 @@ livepeer-daemon/
       finality_task.rs          # wraps livepeer_finality_watcher::watcher::run_once
 ```
 
-Each existing crate must expose its current per-iteration logic as a
+Each existing crate must expose its current bounded-work logic as a
 **library function** taking `(pg: &PgPool, provider: Arc<Provider>, ctx:
 &IterCtx) -> Result<IterSummary>`. The current `main.rs` wrappers stay,
-parsing CLI and calling that same library function once per `--follow`
-loop iteration — so the binaries continue to work standalone.
+parsing CLI and calling that same library function for one bounded run.
+The daemon will call those same library functions repeatedly under a scheduler.
 
 The daemon wraps each library function inside its own
 `tokio::spawn(async move { loop { ... } })` task.
+
+The first daemon scope should be intentionally narrow:
+
+- Required in daemon v1: indexer, finality watcher, valuator
+- Defer or keep separate initially: reorg watcher, staker
+
+Reasoning: keeping the initial daemon focused on ingestion + finalization +
+valuation minimizes failure-surface while solving the highest-value
+steady-state problem first.
 
 #### Async task topology
 
@@ -233,9 +286,9 @@ The daemon wraps each library function inside its own
                      └──────────────────────┘
 ```
 
-#### Shared RPC pool
+#### Shared RPC manager
 
-- Single `Arc<Provider>` constructed at boot, given to every task.
+- Single shared RPC manager constructed at boot and given to every task.
 - One `tokio::sync::Semaphore` with N permits gates the **total** in-flight
   cross-checked RPC calls across all tasks. N defaults to 24 (well below
   TD-011's empirical 50 ceiling, leaves headroom for the API server's
@@ -243,9 +296,9 @@ The daemon wraps each library function inside its own
 - Per-task soft caps via separate semaphores so one runaway task can't
   starve the others (`indexer ≤ 8`, `valuator ≤ 14`, `staker ≤ 4`,
   watchers ≤ 1 each).
-- Pool refresh (TD-011 next-experiment list, item 1): keep the existing
-  `Arc<RwLock<reqwest::Client>>` background refresh, hidden inside
-  `Provider`. Tasks see it as a stable handle.
+- Client refresh / rotation policy (TD-011 mitigation) lives inside this
+  manager, not in daemon task code. Tasks should depend on a stable handle and
+  remain unaware of connection-pool refreshes.
 
 #### Graceful shutdown
 
@@ -279,6 +332,10 @@ loop {
     }
 }
 ```
+
+Each task must process **small resumable bounded units** and return an
+`IterSummary`. The daemon should not hide long opaque loops inside worker
+tasks; scheduling and cancellation belong at the supervisor layer.
 
 Key invariants:
 - An iteration **never spans a shutdown** — `run_one_iteration` runs to

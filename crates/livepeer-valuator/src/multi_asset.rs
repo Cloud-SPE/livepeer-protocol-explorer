@@ -86,45 +86,119 @@ pub async fn run_multi_asset_pass(
             // SPEC §6.8: still record a row so the event has a complete valuation
             // set; price=0, amount_usd=0, source noted.
             push_zero_row(
-                &mut buffers, ev.event_id, valuation_version, "LPT",
-                "no_amount", "no_amount", ev.block_number,
+                &mut buffers,
+                ev.event_id,
+                valuation_version,
+                "LPT",
+                "no_amount",
+                "no_amount",
+                ev.block_number,
                 serde_json::json!({"reason": "EarningsClaimed.rewards == 0"}),
             );
             summary.lpt_zero_amount_rows += 1;
         } else {
-            match price_lpt_amount(pg, archive, &pool, &chainlink, &sequencer, block, &ev.block_hash, ev.block_timestamp, &rewards_lpt).await {
-                Ok((LptOutcome::PricedTwap { native_usd_price, amount_usd, pricing_chain, version }, prices)) => {
-                    for p in prices { buffers.push_price(p); }
+            match price_lpt_amount(
+                pg,
+                archive,
+                &pool,
+                &chainlink,
+                &sequencer,
+                block,
+                &ev.block_hash,
+                ev.block_timestamp,
+                &rewards_lpt,
+            )
+            .await
+            {
+                Ok((
+                    LptOutcome::PricedTwap {
+                        native_usd_price,
+                        amount_usd,
+                        pricing_chain,
+                        version,
+                    },
+                    prices,
+                )) => {
+                    for p in prices {
+                        buffers.push_price(p);
+                    }
                     buffers.push_priced(
-                        ARBITRUM_CHAIN_ID, ev.event_id, &version, "LPT",
-                        PRICING_METHOD_LPT_TWAP, SOURCE_LPT,
-                        ev.block_number, &rewards_lpt, &native_usd_price, &amount_usd,
-                        &pricing_chain, STATUS_PRICED,
+                        ARBITRUM_CHAIN_ID,
+                        ev.event_id,
+                        &version,
+                        "LPT",
+                        PRICING_METHOD_LPT_TWAP,
+                        SOURCE_LPT,
+                        ev.block_number,
+                        &rewards_lpt,
+                        &native_usd_price,
+                        &amount_usd,
+                        &pricing_chain,
+                        STATUS_PRICED,
                     );
                     summary.lpt_rows_priced += 1;
                     debug!(event_id = ev.event_id, rewards_lpt = %rewards_lpt, amount_usd = %amount_usd, "EarningsClaimed.rewards priced via TWAP");
                 }
-                Ok((LptOutcome::PricedDegraded { native_usd_price, amount_usd, pricing_chain, version }, prices)) => {
-                    for p in prices { buffers.push_price(p); }
+                Ok((
+                    LptOutcome::PricedDegraded {
+                        native_usd_price,
+                        amount_usd,
+                        pricing_chain,
+                        version,
+                    },
+                    prices,
+                )) => {
+                    for p in prices {
+                        buffers.push_price(p);
+                    }
                     buffers.push_priced(
-                        ARBITRUM_CHAIN_ID, ev.event_id, &version, "LPT",
-                        PRICING_METHOD_LPT_SPOT, SOURCE_LPT,
-                        ev.block_number, &rewards_lpt, &native_usd_price, &amount_usd,
-                        &pricing_chain, STATUS_PRICED,
+                        ARBITRUM_CHAIN_ID,
+                        ev.event_id,
+                        &version,
+                        "LPT",
+                        PRICING_METHOD_LPT_SPOT,
+                        SOURCE_LPT,
+                        ev.block_number,
+                        &rewards_lpt,
+                        &native_usd_price,
+                        &amount_usd,
+                        &pricing_chain,
+                        STATUS_PRICED,
                     );
                     summary.lpt_rows_priced += 1;
-                    warn!(event_id = ev.event_id, "EarningsClaimed.rewards priced via DEGRADED spot");
+                    warn!(
+                        event_id = ev.event_id,
+                        "EarningsClaimed.rewards priced via DEGRADED spot"
+                    );
                 }
                 Ok((LptOutcome::SequencerOutage { detail }, _)) => {
-                    buffers.push_failed_attempt(ev.event_id, valuation_version, "LPT", "failed_sequencer_outage", Some(detail));
+                    buffers.push_failed_attempt(
+                        ev.event_id,
+                        valuation_version,
+                        "LPT",
+                        "failed_sequencer_outage",
+                        Some(detail),
+                    );
                     summary.failures += 1;
                 }
                 Ok((LptOutcome::MissingOracle { detail }, _)) => {
-                    buffers.push_failed_attempt(ev.event_id, valuation_version, "LPT", "failed_missing_oracle", Some(detail));
+                    buffers.push_failed_attempt(
+                        ev.event_id,
+                        valuation_version,
+                        "LPT",
+                        "failed_missing_oracle",
+                        Some(detail),
+                    );
                     summary.failures += 1;
                 }
                 Ok((LptOutcome::MissingPool { detail }, _)) => {
-                    buffers.push_failed_attempt(ev.event_id, valuation_version, "LPT", "failed_missing_pool", Some(detail));
+                    buffers.push_failed_attempt(
+                        ev.event_id,
+                        valuation_version,
+                        "LPT",
+                        "failed_missing_pool",
+                        Some(detail),
+                    );
                     summary.failures += 1;
                 }
                 Err(e) => {
@@ -137,30 +211,74 @@ pub async fn run_multi_asset_pass(
         // --- ETH portion (fees) ---
         if fees_eth.is_zero() {
             push_zero_row(
-                &mut buffers, ev.event_id, valuation_version, "ETH",
-                "no_amount", "no_amount", ev.block_number,
+                &mut buffers,
+                ev.event_id,
+                valuation_version,
+                "ETH",
+                "no_amount",
+                "no_amount",
+                ev.block_number,
                 serde_json::json!({"reason": "EarningsClaimed.fees == 0"}),
             );
             summary.eth_zero_amount_rows += 1;
         } else {
-            match price_eth_amount(pg, archive, cfg, block, &ev.block_hash, ev.block_timestamp, &fees_eth).await {
-                Ok((PricingOutcome::Priced { native_usd_price, amount_usd, pricing_chain }, prices)) => {
-                    for p in prices { buffers.push_price(p); }
+            match price_eth_amount(
+                pg,
+                archive,
+                cfg,
+                block,
+                &ev.block_hash,
+                ev.block_timestamp,
+                &fees_eth,
+            )
+            .await
+            {
+                Ok((
+                    PricingOutcome::Priced {
+                        native_usd_price,
+                        amount_usd,
+                        pricing_chain,
+                    },
+                    prices,
+                )) => {
+                    for p in prices {
+                        buffers.push_price(p);
+                    }
                     buffers.push_priced(
-                        ARBITRUM_CHAIN_ID, ev.event_id, valuation_version, "ETH",
-                        PRICING_METHOD_ETH, SOURCE_ETH,
-                        ev.block_number, &fees_eth, &native_usd_price, &amount_usd,
-                        &pricing_chain, STATUS_PRICED,
+                        ARBITRUM_CHAIN_ID,
+                        ev.event_id,
+                        valuation_version,
+                        "ETH",
+                        PRICING_METHOD_ETH,
+                        SOURCE_ETH,
+                        ev.block_number,
+                        &fees_eth,
+                        &native_usd_price,
+                        &amount_usd,
+                        &pricing_chain,
+                        STATUS_PRICED,
                     );
                     summary.eth_rows_priced += 1;
                     debug!(event_id = ev.event_id, fees_eth = %fees_eth, amount_usd = %amount_usd, "EarningsClaimed.fees priced via Chainlink");
                 }
                 Ok((PricingOutcome::SequencerOutage { detail }, _)) => {
-                    buffers.push_failed_attempt(ev.event_id, valuation_version, "ETH", "failed_sequencer_outage", Some(detail));
+                    buffers.push_failed_attempt(
+                        ev.event_id,
+                        valuation_version,
+                        "ETH",
+                        "failed_sequencer_outage",
+                        Some(detail),
+                    );
                     summary.failures += 1;
                 }
                 Ok((PricingOutcome::MissingOracle { detail }, _)) => {
-                    buffers.push_failed_attempt(ev.event_id, valuation_version, "ETH", "failed_missing_oracle", Some(detail));
+                    buffers.push_failed_attempt(
+                        ev.event_id,
+                        valuation_version,
+                        "ETH",
+                        "failed_missing_oracle",
+                        Some(detail),
+                    );
                     summary.failures += 1;
                 }
                 Err(e) => {
@@ -191,25 +309,32 @@ async fn fetch_candidates(
     // valuations (LPT + ETH); we consider it "complete" only when both rows exist.
     let degraded = format!("v1{DEGRADED_VERSION_SUFFIX}");
     let sql = format!(
-        r#"WITH coverage AS (
-              SELECT event_id,
-                     bool_or(asset = 'LPT' AND valuation_version IN ($2, $3)) AS has_lpt,
-                     bool_or(asset = 'ETH' AND valuation_version IN ($2, $3)) AS has_eth
-                FROM event_valuations
-               GROUP BY event_id
-            )
-            SELECT r.id, r.block_number, r.block_hash, r.block_timestamp,
+        r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp,
                    COALESCE(r.raw_event -> 'decoded' ->> 'rewards', '0') AS rewards_wei,
                    COALESCE(r.raw_event -> 'decoded' ->> 'fees',    '0') AS fees_wei
               FROM raw_protocol_events r
-              LEFT JOIN coverage c ON c.event_id = r.id
              WHERE r.chain_id      = $1
                AND r.is_valuable   = TRUE
                AND r.is_canonical  = TRUE
                AND r.event_name    = 'EarningsClaimed'
                AND r.asset         IS NULL
                {finality_filter}
-               AND (c.has_lpt IS NOT TRUE OR c.has_eth IS NOT TRUE)
+               AND (
+                    NOT EXISTS (
+                        SELECT 1
+                          FROM event_valuations v
+                         WHERE v.event_id          = r.id
+                           AND v.asset             = 'LPT'
+                           AND v.valuation_version IN ($2, $3)
+                    )
+                    OR NOT EXISTS (
+                        SELECT 1
+                          FROM event_valuations v
+                         WHERE v.event_id          = r.id
+                           AND v.asset             = 'ETH'
+                           AND v.valuation_version IN ($2, $3)
+                    )
+               )
              ORDER BY r.block_number, r.log_index"#
     );
     let rows = sqlx::query(&sql)

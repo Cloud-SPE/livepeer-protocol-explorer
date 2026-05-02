@@ -58,24 +58,31 @@ pub async fn run_seed_pass(
     //    (events_considered / seed_hits / seed_misses / multi_asset_skipped) the
     //    same way the per-event implementation did.
     let inventory_sql = format!(
-        r#"SELECT
-              COUNT(*) FILTER (WHERE r.is_valuable AND r.is_canonical {finality_filter_inv})                   AS considered,
-              COUNT(*) FILTER (WHERE r.is_valuable AND r.is_canonical AND r.asset IS NULL {finality_filter_inv}) AS multi_asset,
-              COUNT(*) FILTER (WHERE r.is_valuable AND r.is_canonical AND r.asset IS NOT NULL
-                                AND s.tx_hash IS NOT NULL {finality_filter_inv})                                 AS seed_hits,
-              COUNT(*) FILTER (WHERE r.is_valuable AND r.is_canonical AND r.asset IS NOT NULL
-                                AND s.tx_hash IS NULL    {finality_filter_inv})                                  AS seed_misses
-            FROM raw_protocol_events r
-            LEFT JOIN event_valuations v
-              ON v.event_id          = r.id
-             AND v.valuation_version = $2
-             AND (v.asset = r.asset OR (v.asset IS NULL AND r.asset IS NULL))
+        r#"WITH candidates AS (
+              SELECT r.id, r.chain_id, r.tx_hash, r.asset
+                FROM raw_protocol_events r
+               WHERE r.chain_id = $1
+                 AND r.is_valuable = TRUE
+                 AND r.is_canonical = TRUE
+                 {finality_filter_inv}
+                 AND NOT EXISTS (
+                       SELECT 1
+                         FROM event_valuations v
+                        WHERE v.event_id          = r.id
+                          AND v.valuation_version = $2
+                          AND v.asset IS NOT DISTINCT FROM r.asset
+                   )
+            )
+            SELECT
+              COUNT(*)                                                                        AS considered,
+              COUNT(*) FILTER (WHERE c.asset IS NULL)                                         AS multi_asset,
+              COUNT(*) FILTER (WHERE c.asset IS NOT NULL AND s.tx_hash IS NOT NULL)           AS seed_hits,
+              COUNT(*) FILTER (WHERE c.asset IS NOT NULL AND s.tx_hash IS NULL)               AS seed_misses
+              FROM candidates c
             LEFT JOIN seeded_event_prices s
-              ON s.chain_id = r.chain_id
-             AND s.tx_hash  = r.tx_hash
-             AND s.asset    = r.asset
-            WHERE r.chain_id = $1
-              AND v.event_id IS NULL"#,
+              ON s.chain_id = c.chain_id
+             AND s.tx_hash  = c.tx_hash
+             AND s.asset    = c.asset"#,
         finality_filter_inv = finality_filter.replace("r.finality", "r.finality"),
     );
     let row: (i64, i64, i64, i64) = sqlx::query_as(&inventory_sql)
@@ -87,8 +94,11 @@ pub async fn run_seed_pass(
 
     info!(
         candidates = considered,
-        seed_hits, seed_misses, multi_asset_skipped = multi_asset,
-        valuation_version, include_tentative,
+        seed_hits,
+        seed_misses,
+        multi_asset_skipped = multi_asset,
+        valuation_version,
+        include_tentative,
         "seed-pass starting (bulk)"
     );
 
@@ -137,17 +147,19 @@ pub async fn run_seed_pass(
               ON s.chain_id = r.chain_id
              AND s.tx_hash  = r.tx_hash
              AND s.asset    = r.asset
-            LEFT JOIN event_valuations v
-              ON v.event_id          = r.id
-             AND v.valuation_version = $2
-             AND v.asset             = r.asset
             WHERE r.chain_id     = $1
               AND r.is_valuable  = TRUE
               AND r.is_canonical = TRUE
               AND r.asset IS NOT NULL
               AND r.amount_normalized IS NOT NULL
               {finality_filter}
-              AND v.event_id IS NULL
+              AND NOT EXISTS (
+                    SELECT 1
+                      FROM event_valuations v
+                     WHERE v.event_id          = r.id
+                       AND v.valuation_version = $2
+                       AND v.asset             = r.asset
+                )
            ON CONFLICT (event_id, valuation_version, asset) DO NOTHING"#,
     );
     let result = sqlx::query(&insert_sql)

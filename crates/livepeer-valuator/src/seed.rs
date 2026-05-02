@@ -53,56 +53,9 @@ pub async fn run_seed_pass(
     } else {
         "AND r.finality = 'finalized'"
     };
+    info!(valuation_version, include_tentative, "seed-pass starting (bulk)");
 
-    // 1. Inventory the candidate set so we can report meaningful summary fields
-    //    (events_considered / seed_hits / seed_misses / multi_asset_skipped) the
-    //    same way the per-event implementation did.
-    let inventory_sql = format!(
-        r#"WITH candidates AS (
-              SELECT r.id, r.chain_id, r.tx_hash, r.asset
-                FROM raw_protocol_events r
-               WHERE r.chain_id = $1
-                 AND r.is_valuable = TRUE
-                 AND r.is_canonical = TRUE
-                 {finality_filter_inv}
-                 AND NOT EXISTS (
-                       SELECT 1
-                         FROM event_valuations v
-                        WHERE v.event_id          = r.id
-                          AND v.valuation_version = $2
-                          AND v.asset IS NOT DISTINCT FROM r.asset
-                   )
-            )
-            SELECT
-              COUNT(*)                                                                        AS considered,
-              COUNT(*) FILTER (WHERE c.asset IS NULL)                                         AS multi_asset,
-              COUNT(*) FILTER (WHERE c.asset IS NOT NULL AND s.tx_hash IS NOT NULL)           AS seed_hits,
-              COUNT(*) FILTER (WHERE c.asset IS NOT NULL AND s.tx_hash IS NULL)               AS seed_misses
-              FROM candidates c
-            LEFT JOIN seeded_event_prices s
-              ON s.chain_id = c.chain_id
-             AND s.tx_hash  = c.tx_hash
-             AND s.asset    = c.asset"#,
-        finality_filter_inv = finality_filter.replace("r.finality", "r.finality"),
-    );
-    let row: (i64, i64, i64, i64) = sqlx::query_as(&inventory_sql)
-        .bind(ARBITRUM_CHAIN_ID)
-        .bind(valuation_version)
-        .fetch_one(pg)
-        .await?;
-    let (considered, multi_asset, seed_hits, seed_misses) = row;
-
-    info!(
-        candidates = considered,
-        seed_hits,
-        seed_misses,
-        multi_asset_skipped = multi_asset,
-        valuation_version,
-        include_tentative,
-        "seed-pass starting (bulk)"
-    );
-
-    // 2. Bulk INSERT priced rows. Construct pricing_chain JSONB inline; matches
+    // 1. Bulk INSERT priced rows. Construct pricing_chain JSONB inline; matches
     //    what the per-event loop used to build for the same fields. Idempotent
     //    via ON CONFLICT (event_id, valuation_version, asset).
     let insert_sql = format!(
@@ -172,8 +125,8 @@ pub async fn run_seed_pass(
         .await?;
     let priced_this_run = result.rows_affected();
 
-    // 3. Bulk INSERT a 'priced' valuation_attempts row for every freshly-priced
-    //    event. Only run if rows were actually inserted in step 2 — on a warm
+    // 2. Bulk INSERT a 'priced' valuation_attempts row for every freshly-priced
+    //    event. Only run if rows were actually inserted in step 1 — on a warm
     //    DB (resumed run) the INSERT…SELECT above will have inserted 0 rows
     //    via ON CONFLICT DO NOTHING, and the attempt rows for those events
     //    already exist from the original run. Re-running this CTE on a warm
@@ -212,12 +165,16 @@ pub async fn run_seed_pass(
             .await?;
     }
 
+    // Detailed seed inventory is intentionally omitted from the critical path.
+    // On full-history datasets the upfront summary query was taking tens of
+    // seconds before the pass did any real work. The operationally useful
+    // signal is how many rows we priced this run.
     let summary = SeedRunSummary {
-        events_considered: considered as u64,
-        seed_hits: seed_hits as u64,
-        seed_misses: seed_misses as u64,
+        events_considered: 0,
+        seed_hits: 0,
+        seed_misses: 0,
         priced_this_run,
-        multi_asset_skipped: multi_asset as u64,
+        multi_asset_skipped: 0,
     };
     info!(?summary, "seed-pass complete (bulk)");
     Ok(summary)

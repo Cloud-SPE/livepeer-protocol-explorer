@@ -31,18 +31,16 @@ phase "finality-watcher (single pass)"
 target/release/livepeer-finality-watcher --once 2>&1 | tail -3 || true
 
 phase "valuator (backfill-all)"
-target/release/livepeer-valuator backfill-all 2>&1 \
-  | grep -E '"message":"(seed pass summary|on-chain ETH pass summary|on-chain LPT pass summary|multi-asset pass summary)"' || true
+# Keep the valuator's full output in the main log. The previous grep-only
+# view hid slow progress and early failures, making the stage look dead.
+target/release/livepeer-valuator backfill-all 2>&1 || true
 
 phase "staker (flow + refresh-pending)"
-target/release/livepeer-staker backfill 2>&1 \
-  | grep '"message":"staker flow backfill summary"' || true
-target/release/livepeer-staker refresh-pending 2>&1 \
-  | grep '"message":"staker pending refresh summary"' || true
+target/release/livepeer-staker backfill 2>&1 || true
+target/release/livepeer-staker refresh-pending 2>&1 || true
 
 phase "cross-check"
-target/release/livepeer-seed-migrator cross-check --source-sqlite "$SOURCE_SQLITE" 2>&1 \
-  | grep '"message":"cross-check report"' || true
+target/release/livepeer-seed-migrator cross-check --source-sqlite "$SOURCE_SQLITE" 2>&1 || true
 
 phase "final summary"
 psql "$DATABASE_URL" -c "

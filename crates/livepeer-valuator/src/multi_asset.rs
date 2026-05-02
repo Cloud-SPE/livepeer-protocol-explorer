@@ -11,7 +11,8 @@
 
 use crate::bulk::BulkBuffers;
 use crate::onchain::{
-    price_eth_amount, price_lpt_amount, LptOutcome, PricingOutcome, DEGRADED_VERSION_SUFFIX,
+    permanent_lpt_failure_detail, price_eth_amount, price_lpt_amount, LptOutcome, PricingOutcome,
+    DEGRADED_VERSION_SUFFIX,
 };
 use crate::persist::{ARBITRUM_CHAIN_ID, STATUS_PRICED};
 use anyhow::Result;
@@ -202,6 +203,15 @@ pub async fn run_multi_asset_pass(
                     summary.failures += 1;
                 }
                 Err(e) => {
+                    if let Some(detail) = permanent_lpt_failure_detail(&e) {
+                        buffers.push_failed_attempt(
+                            ev.event_id,
+                            valuation_version,
+                            "LPT",
+                            "failed_missing_pool",
+                            Some(detail),
+                        );
+                    }
                     summary.failures += 1;
                     warn!(event_id = ev.event_id, error = %e, "EarningsClaimed.rewards pricing errored");
                 }
@@ -320,19 +330,39 @@ async fn fetch_candidates(
                AND r.asset         IS NULL
                {finality_filter}
                AND (
-                    NOT EXISTS (
-                        SELECT 1
-                          FROM event_valuations v
-                         WHERE v.event_id          = r.id
-                           AND v.asset             = 'LPT'
-                           AND v.valuation_version IN ($2, $3)
+                    (
+                        NOT EXISTS (
+                            SELECT 1
+                              FROM event_valuations v
+                             WHERE v.event_id          = r.id
+                               AND v.asset             = 'LPT'
+                               AND v.valuation_version IN ($2, $3)
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1
+                              FROM valuation_attempts a
+                             WHERE a.event_id          = r.id
+                               AND a.asset             = 'LPT'
+                               AND a.valuation_version IN ($2, $3)
+                               AND a.result_status     LIKE 'failed_%'
+                        )
                     )
-                    OR NOT EXISTS (
-                        SELECT 1
-                          FROM event_valuations v
-                         WHERE v.event_id          = r.id
-                           AND v.asset             = 'ETH'
-                           AND v.valuation_version IN ($2, $3)
+                    OR (
+                        NOT EXISTS (
+                            SELECT 1
+                              FROM event_valuations v
+                             WHERE v.event_id          = r.id
+                               AND v.asset             = 'ETH'
+                               AND v.valuation_version IN ($2, $3)
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1
+                              FROM valuation_attempts a
+                             WHERE a.event_id          = r.id
+                               AND a.asset             = 'ETH'
+                               AND a.valuation_version IN ($2, $3)
+                               AND a.result_status     LIKE 'failed_%'
+                        )
                     )
                )
              ORDER BY r.block_number, r.log_index"#

@@ -648,6 +648,26 @@ pub struct LptRunSummary {
     pub other_skipped: u64,
 }
 
+pub(crate) fn permanent_lpt_failure_detail(error: &anyhow::Error) -> Option<serde_json::Value> {
+    let s = error.to_string();
+    let lower = s.to_ascii_lowercase();
+    if lower.contains("execution reverted: old") {
+        return Some(serde_json::json!({
+            "reason": "observe() cannot serve the requested TWAP window at this block",
+            "classification": "failed_missing_pool",
+            "error": s,
+        }));
+    }
+    if lower.contains("execution reverted") {
+        return Some(serde_json::json!({
+            "reason": "deterministic eth_call revert while pricing LPT at this finalized block",
+            "classification": "failed_missing_pool",
+            "error": s,
+        }));
+    }
+    None
+}
+
 pub async fn run_onchain_pass_lpt(
     pg: &PgPool,
     archive: &Provider,
@@ -855,8 +875,20 @@ pub async fn run_onchain_pass_lpt(
                 summary.failed_missing_pool += 1;
             }
             Err(e) => {
-                summary.other_skipped += 1;
-                warn!(event_id, error = %e, "LPT pricing failed; will retry next run");
+                if let Some(detail) = permanent_lpt_failure_detail(&e) {
+                    buffers.push_failed_attempt(
+                        event_id,
+                        valuation_version,
+                        "LPT",
+                        "failed_missing_pool",
+                        Some(detail),
+                    );
+                    summary.failed_missing_pool += 1;
+                    warn!(event_id, error = %e, "LPT pricing failed deterministically; suppressing future retries");
+                } else {
+                    summary.other_skipped += 1;
+                    warn!(event_id, error = %e, "LPT pricing failed; will retry next run");
+                }
             }
         }
         buffers.maybe_flush(pg).await?;

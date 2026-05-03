@@ -29,6 +29,7 @@ use tracing::info;
 
 const PRICING_METHOD: &str = "seed_lookup";
 const SOURCE: &str = "trusted_historical_seed_v1";
+const SEED_BATCH_SIZE: i64 = 100_000;
 
 #[derive(Debug, Default)]
 pub struct SeedRunSummary {
@@ -106,114 +107,123 @@ pub async fn run_seed_pass(
         return Ok(summary);
     }
 
-    // 1. Bulk INSERT priced rows. Construct pricing_chain JSONB inline; matches
-    //    what the per-event loop used to build for the same fields. Idempotent
-    //    via ON CONFLICT (event_id, valuation_version, asset).
-    let insert_sql = format!(
-        r#"INSERT INTO event_valuations
-              (event_id, valuation_version, asset, pricing_method,
-               chain_id, block_number,
-               amount_native, native_usd_price, amount_usd,
-               pricing_chain, status, source)
-           SELECT
-              r.id,
-              $2 AS valuation_version,
-              r.asset,
-              $3 AS pricing_method,
-              r.chain_id,
-              r.block_number,
-              r.amount_normalized,
-              s.asset_usd_price,
-              r.amount_normalized * s.asset_usd_price,
-              jsonb_build_object(
-                'steps', jsonb_build_array(jsonb_build_object(
-                  'asset',        r.asset,
-                  'quote',        'USD',
-                  'price',        s.asset_usd_price::text,
-                  'source',       $4::text,
-                  'block_number', r.block_number,
-                  'raw_seed',     s.raw,
-                  'note',         'amount_native re-derived from chain per SPEC §8.7 / Q-OD-1; price + amount_usd_authoritative_for_seed_only fields from SQLite seed'
-                )),
-                'result', jsonb_build_object(
-                  'asset',         r.asset,
-                  'quote',         'USD',
-                  'price',         s.asset_usd_price::text,
-                  'amount_native', r.amount_normalized::text,
-                  'amount_usd',    (r.amount_normalized * s.asset_usd_price)::text
-                ),
-                '_seed_amount_usd_for_audit', s.amount_usd::text
-              ) AS pricing_chain,
-              $5 AS status,
-              $4 AS source
-            FROM raw_protocol_events r
-            JOIN seeded_event_prices s
-              ON s.chain_id = r.chain_id
-             AND s.tx_hash  = r.tx_hash
-             AND s.asset    = r.asset
-            WHERE r.chain_id     = $1
-              AND r.is_valuable  = TRUE
-              AND r.is_canonical = TRUE
-              AND r.asset IS NOT NULL
-              AND r.amount_normalized IS NOT NULL
-              {finality_filter}
-              AND NOT EXISTS (
-                    SELECT 1
-                      FROM event_valuations v
-                     WHERE v.event_id          = r.id
-                       AND v.valuation_version = $2
-                       AND v.asset             = r.asset
-                )
-           ON CONFLICT (event_id, valuation_version, asset) DO NOTHING"#,
+    // 1. Bulk INSERT priced rows in deterministic chunks so the cold path can
+    //    make visible progress instead of holding one giant transaction open.
+    //    The candidate ordering is stable across replays.
+    let batch_sql = format!(
+        r#"WITH candidate AS (
+               SELECT
+                  r.id,
+                  r.asset,
+                  r.chain_id,
+                  r.block_number,
+                  r.amount_normalized,
+                  s.asset_usd_price,
+                  s.raw,
+                  s.amount_usd
+                FROM raw_protocol_events r
+                JOIN seeded_event_prices s
+                  ON s.chain_id = r.chain_id
+                 AND s.tx_hash  = r.tx_hash
+                 AND s.asset    = r.asset
+               WHERE r.chain_id     = $1
+                 AND r.is_valuable  = TRUE
+                 AND r.is_canonical = TRUE
+                 AND r.asset IS NOT NULL
+                 AND r.amount_normalized IS NOT NULL
+                 {finality_filter}
+                 AND NOT EXISTS (
+                       SELECT 1
+                         FROM event_valuations v
+                        WHERE v.event_id          = r.id
+                          AND v.valuation_version = $2
+                          AND v.asset             = r.asset
+                   )
+               ORDER BY r.block_number, r.log_index, r.id
+               LIMIT $6
+           ),
+           inserted AS (
+               INSERT INTO event_valuations
+                   (event_id, valuation_version, asset, pricing_method,
+                    chain_id, block_number,
+                    amount_native, native_usd_price, amount_usd,
+                    pricing_chain, status, source)
+               SELECT
+                  c.id,
+                  $2 AS valuation_version,
+                  c.asset,
+                  $3 AS pricing_method,
+                  c.chain_id,
+                  c.block_number,
+                  c.amount_normalized,
+                  c.asset_usd_price,
+                  c.amount_normalized * c.asset_usd_price,
+                  jsonb_build_object(
+                    'steps', jsonb_build_array(jsonb_build_object(
+                      'asset',        c.asset,
+                      'quote',        'USD',
+                      'price',        c.asset_usd_price::text,
+                      'source',       $4::text,
+                      'block_number', c.block_number,
+                      'raw_seed',     c.raw,
+                      'note',         'amount_native re-derived from chain per SPEC §8.7 / Q-OD-1; price + amount_usd_authoritative_for_seed_only fields from SQLite seed'
+                    )),
+                    'result', jsonb_build_object(
+                      'asset',         c.asset,
+                      'quote',         'USD',
+                      'price',         c.asset_usd_price::text,
+                      'amount_native', c.amount_normalized::text,
+                      'amount_usd',    (c.amount_normalized * c.asset_usd_price)::text
+                    ),
+                    '_seed_amount_usd_for_audit', c.amount_usd::text
+                  ) AS pricing_chain,
+                  $5 AS status,
+                  $4 AS source
+                 FROM candidate c
+                ON CONFLICT (event_id, valuation_version, asset) DO NOTHING
+                RETURNING event_id, valuation_version, asset
+           ),
+           next_n AS (
+               SELECT i.event_id, i.valuation_version, i.asset,
+                      COALESCE(MAX(va.attempt_number), 0) + 1 AS n
+                 FROM inserted i
+                 LEFT JOIN valuation_attempts va
+                   ON va.event_id          = i.event_id
+                  AND va.valuation_version = i.valuation_version
+                  AND va.asset             = i.asset
+                GROUP BY i.event_id, i.valuation_version, i.asset
+           ),
+           attempts AS (
+               INSERT INTO valuation_attempts
+               (event_id, valuation_version, asset, attempt_number, result_status, error_detail)
+               SELECT event_id, valuation_version, asset, n, $5, NULL
+                 FROM next_n
+               ON CONFLICT (event_id, valuation_version, asset, attempt_number) DO NOTHING
+           )
+           SELECT COUNT(*)::bigint FROM inserted"#,
     );
-    let result = sqlx::query(&insert_sql)
-        .bind(ARBITRUM_CHAIN_ID)
-        .bind(valuation_version)
-        .bind(PRICING_METHOD)
-        .bind(SOURCE)
-        .bind(STATUS_PRICED)
-        .execute(pg)
-        .await?;
-    let priced_this_run = result.rows_affected();
 
-    // 2. Bulk INSERT a 'priced' valuation_attempts row for every freshly-priced
-    //    event. Only run if rows were actually inserted in step 1 — on a warm
-    //    DB (resumed run) the INSERT…SELECT above will have inserted 0 rows
-    //    via ON CONFLICT DO NOTHING, and the attempt rows for those events
-    //    already exist from the original run. Re-running this CTE on a warm
-    //    DB scans 1M+ event_valuations × 1M+ valuation_attempts and adds
-    //    nothing useful; it can take minutes on a bloated dataset.
-    if priced_this_run > 0 {
-        let attempts_sql = r#"
-            WITH priced AS (
-              SELECT v.event_id, v.valuation_version, v.asset
-                FROM event_valuations v
-               WHERE v.valuation_version = $2
-                 AND v.source            = $3
-                 AND v.chain_id          = $1
-            ),
-            next_n AS (
-              SELECT p.event_id, p.valuation_version, p.asset,
-                     COALESCE(MAX(va.attempt_number), 0) + 1 AS n
-                FROM priced p
-                LEFT JOIN valuation_attempts va
-                  ON va.event_id          = p.event_id
-                 AND va.valuation_version = p.valuation_version
-                 AND va.asset             = p.asset
-               GROUP BY p.event_id, p.valuation_version, p.asset
-            )
-            INSERT INTO valuation_attempts
-                (event_id, valuation_version, asset, attempt_number, result_status, error_detail)
-            SELECT event_id, valuation_version, asset, n, $4, NULL
-              FROM next_n
-            ON CONFLICT (event_id, valuation_version, asset, attempt_number) DO NOTHING"#;
-        sqlx::query(attempts_sql)
+    let mut priced_this_run = 0u64;
+    loop {
+        let inserted_this_batch: i64 = sqlx::query_scalar(&batch_sql)
             .bind(ARBITRUM_CHAIN_ID)
             .bind(valuation_version)
+            .bind(PRICING_METHOD)
             .bind(SOURCE)
             .bind(STATUS_PRICED)
-            .execute(pg)
+            .bind(SEED_BATCH_SIZE)
+            .fetch_one(pg)
             .await?;
+        if inserted_this_batch == 0 {
+            break;
+        }
+        priced_this_run += inserted_this_batch as u64;
+        info!(
+            valuation_version,
+            batch_rows = inserted_this_batch,
+            priced_this_run,
+            "seed-pass chunk committed"
+        );
     }
 
     // Detailed seed inventory is intentionally omitted from the critical path.

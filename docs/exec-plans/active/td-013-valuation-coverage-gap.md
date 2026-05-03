@@ -10,7 +10,7 @@ links:
 
 ## Goal
 
-Resolve the mismatch between the spec's "value every monetary event" contract and the current valuator implementation, which finishes with zero active candidates but leaves a large residual set of `is_valuable = TRUE` events without `event_valuations` rows.
+Resolve the mismatch between the spec's "value every monetary event" contract and the current end-state accounting. Initial investigation suggested a large residual set of unvalued `is_valuable = TRUE` events; deeper analysis showed most of that set is actually valued under the degraded LPT version. The real remaining gap is the handling/acceptance semantics for terminal valuation failures.
 
 ## Problem statement
 
@@ -25,11 +25,30 @@ On a full fresh rerun against committed code through `1cf0cb8`, the pipeline rea
   - ETH on-chain pass
   - LPT on-chain pass
   - multi-asset pass
-- but the broad residual query still returns `226,256` finalized, canonical, `is_valuable = TRUE` rows with no valuation row at `valuation_version = 'v1_lpt_weth_twap_30min_x_chainlink_eth'`
+- the broad residual query still returns `226,256` finalized, canonical, `is_valuable = TRUE` rows with no valuation row at `valuation_version = 'v1_lpt_weth_twap_30min_x_chainlink_eth'`
 
-This is not active backlog. It is a coverage/scope mismatch.
+That `226,256` figure is misleading by itself because it ignores degraded-version valuations.
 
-## Why this is a correctness issue
+## Corrected diagnosis
+
+`event_valuations` by version on the fresh rerun:
+
+- `v1_lpt_weth_twap_30min_x_chainlink_eth`: `2,143,953`
+- `v1_degraded_spot_pre_cardinality`: `225,920`
+
+When the residual query is widened to count either valuation version, the apparent gap collapses from `226,256` to `3,572`.
+
+Those `3,572` rows are not unattempted backlog. They are all explained by terminal `valuation_attempts`:
+
+- `failed_missing_oracle`: `3,518`
+- `failed_missing_pool`: `36`
+- `failed_sequencer_outage`: `18`
+
+There are `0` residual rows with no attempt record under either version.
+
+So the main issue is not broad missing coverage for `Transfer` / `Bond` / etc. The real issue is that the current spec / acceptance wording expects a valuation row for every valuable event, while the implementation intentionally models some terminal outcomes as failed attempts without an `event_valuations` row.
+
+## Why this is still a correctness issue
 
 The spec says:
 
@@ -55,18 +74,18 @@ The event catalog marks these as monetary / `is_valuable = TRUE`:
 - `Burn`
 - `EarningsClaimed` (multi-asset)
 
-The implementation today only has explicit valuation coverage for:
+The implementation today does have coverage for the monetary classes under the two-version model:
 
 - single-asset seed-hit rows
 - ETH on-chain rows
 - LPT on-chain rows
 - `EarningsClaimed` split rows
 
-That leaves other `is_valuable = TRUE` classes with no valuation path.
+The remaining mismatch is that terminal failures currently count as "missing valuations" if you only inspect `event_valuations`, even though the system has fully processed them and recorded the outcome in `valuation_attempts`.
 
 ## Residual set shape
 
-The residual set observed during the 2026-05-03 investigation is dominated by:
+If you ignore degraded-version valuations, the apparent residual set is dominated by:
 
 - `Transfer|LPT`
 - `Bond|LPT`
@@ -76,101 +95,86 @@ The residual set observed during the 2026-05-03 investigation is dominated by:
 - `TransferBond|LPT`
 - `WithdrawStake|LPT`
 - `WithdrawFees|ETH`
-- `EarningsClaimed|NULL` was previously present during partial runs, but the completed fresh rerun's active candidate selectors for the multi-asset pass returned `0`
 
-The overwhelming majority is plain LPT transfer/stake-flow classes.
+But those rows are mostly explained by the degraded-version path, not missing implementation coverage.
+
+The true residual set after counting both versions is only `3,572` rows, all of which already have terminal attempt statuses.
 
 ## Decision that must be made first
 
-Before more code is written, we need an explicit product decision on these event classes:
+Before more code is written, we need an explicit product/spec decision on terminal failures:
 
-1. `Transfer`
-2. `Mint`
-3. `Burn`
+### Model A — strict row completeness
 
-There are two coherent models:
-
-### Model A — spec literal
-
-`is_valuable = TRUE` means "must produce at least one `event_valuations` row".
+Every `is_valuable = TRUE` event must produce at least one `event_valuations` row, even for failure outcomes.
 
 Implication:
 
-- add valuation coverage for every residual monetary class
-- valuator must eventually drive the broad residual query to 0 for the active version
+- introduce a failure-valued row shape or placeholder-valued row shape
+- redefine how failed oracle / failed pool / sequencer outage outcomes are stored in `event_valuations`
 
-### Model B — narrower valuation scope
+### Model B — attempt completeness
 
-Some events may be economically meaningful but intentionally excluded from `event_valuations` in v1.
+Every `is_valuable = TRUE` event must produce either:
+
+- an `event_valuations` row, or
+- a terminal `valuation_attempts` outcome explaining why no valuation row exists
 
 Implication:
 
-- narrow spec language
-- narrow acceptance criteria
-- narrow `is_valuable` tagging semantics or add a second flag separating:
-  - "monetary / economically relevant"
-  - "must be valued in v1"
+- keep the current storage model
+- adjust spec wording and acceptance criteria to count terminal attempts as complete processing
 
-Current repo state does not support Model B cleanly. The spec and tags currently encode Model A.
+Current implementation already behaves like Model B.
 
 ## Recommendation
 
-Treat the spec as authoritative and implement Model A unless the user explicitly approves a spec change.
+Treat the current storage model as intentional and update the acceptance semantics toward Model B unless there is a strong reason to force synthetic failure rows into `event_valuations`.
 
 That means:
 
-1. keep `is_valuable` semantics as "must be valued"
-2. add missing valuation coverage for the residual classes
-3. only change the spec if we intentionally decide some classes should remain unvalued in v1
+1. keep valuator candidate logic as-is for the now-covered monetary classes
+2. define completion as "valuation row or terminal attempt"
+3. adjust dashboards / residual queries / acceptance criteria accordingly
 
 ## Proposed implementation order
 
-### Phase 1 — clarify intended pricing semantics per class
+### Phase 1 — update completion semantics
 
-For each residual class, define the intended pricing source:
+Clarify in spec/docs that a valuable event is considered fully processed when it has either:
 
-- `Transfer` / `Bond` / `Unbond` / `Rebond` / `TransferBond` / `WithdrawStake` / `Mint` / `Burn`
-  - LPT/USD at event block
-  - should be priceable by the same seed / on-chain LPT paths already used elsewhere
-- `WithdrawFees`
-  - ETH/USD at event block
-  - should be priceable by the same ETH path already used elsewhere
+- a valuation row under the active or degraded version, or
+- a terminal failure attempt under the applicable version(s)
 
-Expected result: these are not new pricing primitives; they are new candidate classes for existing primitives.
+### Phase 2 — update residual/backlog queries
 
-### Phase 2 — widen candidate selection
+Replace the current broad "unvalued valuable events" query in runbooks/debugging with:
 
-Update valuator candidate fetches so existing pricing paths pick up all eligible event classes rather than an accidental subset.
-
-Likely work:
-
-- audit `seed.rs` candidate shape for which event families are actually entering the single-asset path
-- audit `onchain.rs` `fetch_eth_candidates` / `fetch_lpt_candidates`
-- verify whether residual rows are being filtered by event-name assumptions, prior-failure assumptions, or asset/null handling
+- active backlog query = no valuation row under either version AND no terminal attempt
+- completed-with-terminal-failure query = no valuation row under either version BUT has terminal failure attempt
 
 ### Phase 3 — deterministic replay validation
 
-After widening coverage:
+After semantics/query updates:
 
 1. clean rerun from preserved inputs
-2. confirm residual broad query drops materially or reaches 0
+2. confirm true active backlog query reaches 0
 3. compare final DB against baseline expectations
 4. ensure no new retry loops or misclassified permanent failures appear
 
 ## Acceptance criteria
 
-- The intended scope decision is explicit and documented.
-- If spec remains unchanged:
-  - the broad residual query for finalized, canonical, `is_valuable = TRUE` rows without valuations is 0 for the active version, except for explicitly documented permanent-failure statuses that still create valuation-attempt evidence.
-- If scope is narrowed:
-  - spec language and acceptance criteria are updated
-  - `is_valuable` semantics are made internally consistent
-  - residual rows outside scope are no longer counted as missing expected valuations
+- The intended completion semantics are explicit and documented.
+- A true active-backlog query returns 0 after a completed rerun.
+- Terminal-failure rows are separately queryable and reported by status.
+- Acceptance criteria no longer misclassify degraded-version rows or terminal-failure rows as unfinished backlog.
 
 ## Progress log
 
 ### 2026-05-03
 
-- Confirmed via completed fresh rerun that the valuator finishes with zero active candidates but leaves a large residual set of `is_valuable = TRUE` rows without valuations.
-- Confirmed this is not a runtime throughput issue.
-- Confirmed the spec currently requires complete coverage for finalized valuable events, so the mismatch is real unless the spec is intentionally changed.
+- Confirmed via completed fresh rerun that the broad one-version residual query overstated the problem.
+- Measured `225,920` rows under the degraded valuation version.
+- Measured true residual after counting both versions: `3,572`.
+- Measured terminal attempt breakdown for those residual rows: `3,518 missing_oracle`, `36 missing_pool`, `18 sequencer_outage`, `0 no-attempt`.
+- Conclusion: this is primarily a spec / acceptance / observability mismatch around terminal failures, not a missing event-class coverage gap.

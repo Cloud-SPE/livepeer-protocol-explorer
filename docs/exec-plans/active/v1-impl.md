@@ -167,7 +167,7 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] Chainlink `latestRoundData()` at event block via `cross_check::single_call_cached` — cached forever per SPEC §13.5
 - [x] Mandatory checks: `answeredInRound >= roundId`, staleness ≤ 86400s; WARN at > 14400s
 - [x] `pricing_chain` JSONB with full provenance (oracle address, raw_round, checks block, result)
-- [x] Status routing: `priced` / `failed_sequencer_outage` / `failed_missing_oracle` (rows in `valuation_attempts` regardless)
+- [x] Status routing: `priced` / `failed_sequencer_outage` / `failed_missing_oracle`; terminal failures are recorded in `valuation_attempts` and now also persisted as `event_valuations` outcome rows with nullable USD fields
 - [x] Refactored `persist.rs` so seed.rs and onchain.rs share `insert_valuation` / `insert_attempt`
 - [x] **Live verification:** 6 ETH candidates → 6 priced. WithdrawFees 0.184 ETH × $2,390.62 = $439.87 ✓. Tiny-amount precision check: 0.00000517... ETH × $2378.51 = $0.01230... ✓. Idempotent.
 

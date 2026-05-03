@@ -102,7 +102,7 @@ The true residual set after counting both versions is only `3,572` rows, all of 
 
 ## Decision
 
-Before more code is written, we need an explicit product/spec decision on terminal failures:
+The product/spec decision on terminal failures is now made and implemented:
 
 ### Model A — strict row completeness
 
@@ -137,25 +137,16 @@ That means:
 2. `valuation_attempts` remains the append-only audit log
 3. failure outcome rows carry nullable USD price fields and terminal `status`
 
-## Proposed implementation order
+## Remaining work
 
-### Phase 1 — schema + write-path changes
-
-Update `event_valuations` to support terminal failure rows:
-
-- widen `status`
-- allow nullable `native_usd_price` / `amount_usd`
-- write failure outcomes from the on-chain valuator passes
-- backfill existing terminal failures from `valuation_attempts`
-
-### Phase 2 — update residual/backlog queries
+### Phase 1 — update residual/backlog queries
 
 Replace the current broad "unvalued valuable events" query in runbooks/debugging with:
 
-- active backlog query = no valuation row under either version AND no terminal attempt
-- completed-with-terminal-failure query = no valuation row under either version BUT has terminal failure attempt
+- active backlog query = no valuation row under either version
+- completed-with-terminal-failure query = `event_valuations.status LIKE 'failed_%'`
 
-### Phase 3 — deterministic replay validation
+### Phase 2 — deterministic replay validation
 
 After semantics/query updates:
 
@@ -182,3 +173,7 @@ After semantics/query updates:
 - Chose Model A: every valuable event must have an `event_valuations` row.
 - Implemented migration `017_event_valuations_terminal_failures` to widen `event_valuations.status`, make USD price fields nullable, and backfill existing terminal failures from `valuation_attempts`.
 - Updated valuator bulk/on-chain write paths so `failed_missing_oracle`, `failed_missing_pool`, and `failed_sequencer_outage` now persist immutable `event_valuations` outcome rows in addition to `valuation_attempts`.
+- Applied migration `017` to the replay DB and verified:
+  - terminal failure rows now exist in `event_valuations`
+  - latest terminal attempts missing a matching outcome row: `0`
+  - true active backlog under the two-version model: `0`

@@ -1,12 +1,17 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.6
+## Technical Specification v1.7
 
 **Status:** Draft, ready for implementation
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.6
+**Document version:** 1.7
+
+### Changes since v1.6 (2026-05-03)
+
+- §1 / §10 / §11 / §14 / §24 — `event_valuations` is now the canonical **valuation outcome** table, not a success-only table. Terminal outcomes (`failed_missing_pool`, `failed_missing_oracle`, `failed_sequencer_outage`) also get immutable rows there, with nullable `native_usd_price` / `amount_usd` and full `pricing_chain` detail. This aligns the spec with the shipped Option A implementation and migration `017_event_valuations_terminal_failures`.
+- §24.1 — acceptance criteria clarified for the two-version LPT model: completion means every finalized, valuable event has an `event_valuations` row under the applicable valuation version (`v1_lpt_weth_twap_30min_x_chainlink_eth` or `v1_degraded_spot_pre_cardinality`), not only the primary version.
 
 ### Changes since v1.5 (2026-04-27)
 
@@ -51,7 +56,7 @@
 This specification defines the design, behavior, and operational contract for a system that:
 
 1. Indexes all critical Livepeer protocol events from Arbitrum.
-2. Computes USD valuations at block-level precision for every monetary event.
+2. Computes USD valuations at block-level precision for every monetary event when possible, otherwise persists an explicit terminal valuation outcome.
 3. Tracks delegator stake balances at event-touching blocks.
 4. Persists all data immutably with full audit provenance.
 5. Exposes the resulting data via HTTP API.
@@ -98,7 +103,7 @@ This specification is the authoritative source for v1 implementation. Material c
 The system shall:
 
 - Index every critical Livepeer protocol event from Livepeer's Arbitrum deployment (Feb 2022) onward.
-- Compute USD valuations for every monetary event at block-level precision, using on-chain pricing and trusted historical seed data.
+- Compute a valuation outcome for every monetary event: either a USD valuation at block-level precision, or an explicit terminal failure row explaining why no USD price was available.
 - Compute stake balances for every active delegator at every event-touching block.
 - Persist all data immutably with full audit provenance, including the intermediate pricing chain for every valuation.
 - Provide HTTP API access to events, valuations, prices, and stake balances.
@@ -754,6 +759,11 @@ Reports declare which version they used; pre-event reports remain self-consisten
 
 - `priced` — Successfully valued.
 - `priced_with_warning` — Valued, but with a flag (e.g., TWAP-vs-spot deviation outside tolerance).
+- `failed_missing_pool` — Terminal outcome row; the pool did not exist or could not serve the required window at this block.
+- `failed_missing_oracle` — Terminal outcome row; Chainlink data was unavailable or stale after policy-defined retries.
+- `failed_sequencer_outage` — Terminal outcome row; the L2 sequencer outage policy exhausted without a safe valuation window.
+
+For the three terminal failure statuses above, `event_valuations.native_usd_price` and `event_valuations.amount_usd` are `NULL`; `pricing_chain` contains the failure detail/provenance.
 
 `valuation_attempts.result_status` values include all of the above plus:
 
@@ -761,9 +771,6 @@ Reports declare which version they used; pre-event reports remain self-consisten
 - `not_applicable` — Non-monetary event, will never be valued.
 - `failed_rpc` — Transient RPC error.
 - `failed_rpc_divergence` — Two providers disagreed.
-- `failed_missing_pool` — Pool didn't exist at this block.
-- `failed_missing_oracle` — Chainlink data unavailable or stale.
-- `failed_sequencer_outage` — L2 sequencer was down at event block.
 - `failed_decode` — ABI decode failed.
 - `failed_invalid_event` — Event semantics violated (manual review).
 
@@ -1038,7 +1045,7 @@ CREATE INDEX idx_token_prices_lookup ON token_prices_by_block (chain_id, asset, 
 
 ### 11.7 `event_valuations`
 
-Immutable per `(event_id, valuation_version, asset)`. The asset column in the PK supports multi-asset events (e.g., `EarningsClaimed` produces two rows per version).
+Immutable per `(event_id, valuation_version, asset)`. The asset column in the PK supports multi-asset events (e.g., `EarningsClaimed` produces two rows per version). This table records the terminal valuation **outcome** for each priced asset slice: successful prices have numeric USD fields; terminal failures carry `NULL` USD fields plus failure provenance in `pricing_chain`.
 
 ```sql
 CREATE TABLE event_valuations (
@@ -1051,18 +1058,26 @@ CREATE TABLE event_valuations (
   block_number BIGINT NOT NULL,
   
   amount_native NUMERIC(38, 18) NOT NULL,
-  native_usd_price NUMERIC(38, 18) NOT NULL,
-  amount_usd NUMERIC(38, 18) NOT NULL,
+  native_usd_price NUMERIC(38, 18),
+  amount_usd NUMERIC(38, 18),
   
   pricing_chain JSONB NOT NULL,
   
-  status TEXT NOT NULL,                  -- 'priced' | 'priced_with_warning'
+  status TEXT NOT NULL,                  -- 'priced' | 'priced_with_warning' | 'failed_missing_pool' | 'failed_missing_oracle' | 'failed_sequencer_outage'
   source TEXT NOT NULL,                  -- 'trusted_historical_seed_v1' | 'uniswap_v3_dual_rpc' | 'chainlink_dual_rpc'
   
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   
   PRIMARY KEY (event_id, valuation_version, asset),
-  CHECK (status IN ('priced', 'priced_with_warning'))
+  CHECK (
+    status IN (
+      'priced',
+      'priced_with_warning',
+      'failed_missing_pool',
+      'failed_missing_oracle',
+      'failed_sequencer_outage'
+    )
+  )
 );
 
 CREATE INDEX idx_valuations_version_block ON event_valuations (valuation_version, block_number);
@@ -1542,6 +1557,13 @@ GET /valuations?from=&to=&version=&asset=
 ```
 
 Returns valuation rows. Multi-asset events return an array of valuations.
+
+Terminal failure rows are returned from the same endpoints. For those rows:
+
+- `status` is one of `failed_missing_pool`, `failed_missing_oracle`, `failed_sequencer_outage`
+- `native_usd_price` is `null`
+- `amount_usd` is `null`
+- `pricing_chain` / `source` / `pricing_method` still explain how the outcome was derived
 
 #### 14.3.3 Prices
 
@@ -2088,8 +2110,9 @@ The system is ready for v1 production declaration when **all** of the following 
 - [ ] Indexer backfills all events from Livepeer Arbitrum genesis to current finalized head, with zero `decode_failures` on critical-events allowlist.
 - [ ] Every backfilled event has `chain_id`, `tx_hash`, `log_index`, `block_number`, `block_hash`, `block_timestamp`, `contract_name`, `event_name`, `event_signature`, `is_valuable`, `finality`, `is_canonical`, `abi_hash_used` populated correctly.
 - [ ] Seed migrator imports all `payout` and `reward` rows from SQLite into `seeded_event_prices` without loss.
-- [ ] Valuator produces `event_valuations` rows for every finalized, valuable event under `valuation_version = 'v1_lpt_weth_twap_30min_x_chainlink_eth'`.
+- [ ] Valuator produces `event_valuations` rows for every finalized, valuable event under the applicable valuation version: `v1_lpt_weth_twap_30min_x_chainlink_eth` or `v1_degraded_spot_pre_cardinality`.
 - [ ] `EarningsClaimed` events produce two rows in `event_valuations` (LPT + ETH) per version.
+- [ ] Terminal valuation failures still produce `event_valuations` rows, with nullable `native_usd_price` / `amount_usd` and `status IN ('failed_missing_pool', 'failed_missing_oracle', 'failed_sequencer_outage')`.
 - [ ] Stake-worker produces `stake_balances_by_block` rows for every stake-touching event, with both `bonded_principal` and `pending_stake`/`pending_fees` populated.
 - [ ] API exposes all endpoints listed in §14.3, with conditional GET (`ETag`) support working.
 - [ ] Seed/canonical event cross-check pass completes with a discrepancy report (`livepeer-test cross-check`). For every `(tx_hash, log_index)` present in both the SQLite `events` table and `raw_protocol_events` after backfill, decoded field values match. Discrepancies must be triaged and either resolved or explicitly accepted before v1 sign-off. (Resolves TD-004.)

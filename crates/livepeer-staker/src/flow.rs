@@ -22,6 +22,7 @@ use tracing::{info, warn};
 
 const ARBITRUM_CHAIN_ID: i64 = 42161;
 const SOURCE_FLOW: &str = "flow_derived";
+const SOURCE_EARNINGS_BOOTSTRAP: &str = "earnings_claimed_bootstrap";
 
 #[derive(Debug, Default, Serialize)]
 pub struct FlowSummary {
@@ -138,10 +139,6 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                     Some(a) => a.to_lowercase(),
                     None => continue,
                 };
-                if !registered.contains(&delegator) {
-                    summary.skipped_unregistered += 1;
-                    continue;
-                }
                 let rewards_wei: Option<&str> = ev
                     .raw_event
                     .get("decoded")
@@ -157,9 +154,25 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                     .clone()
                     .map(|s| s.to_lowercase())
                     .or_else(|| delegates.get(&delegator).cloned())
-                    .unwrap_or_default();
-                upsert_registry(pg, &delegator, ev.block_number, ev.event_id, false).await?;
-                upsert_stake_row(pg, &delegator, &delegate, ev, &balances[&delegator]).await?;
+                    .unwrap_or_else(|| "0x0000000000000000000000000000000000000000".to_string());
+                if registered.contains(&delegator) {
+                    upsert_registry(pg, &delegator, ev.block_number, ev.event_id, false).await?;
+                    upsert_stake_row(pg, &delegator, &delegate, ev, &balances[&delegator]).await?;
+                } else {
+                    // Pre-first-bond claims are observable on-chain and need a base
+                    // row so pending refresh has something to update later. Keep the
+                    // row auditable via a distinct source and do not fabricate a
+                    // delegator_registry entry before the first real Bond arrives.
+                    upsert_stake_row_source(
+                        pg,
+                        &delegator,
+                        &delegate,
+                        ev,
+                        &balances[&delegator],
+                        SOURCE_EARNINGS_BOOTSTRAP,
+                    )
+                    .await?;
+                }
                 summary.stake_rows_written += 1;
             }
             "TransferBond" => {
@@ -310,6 +323,17 @@ async fn upsert_stake_row(
     ev: &StakeEvent,
     balance: &BigDecimal,
 ) -> Result<()> {
+    upsert_stake_row_source(pg, delegator, delegate, ev, balance, SOURCE_FLOW).await
+}
+
+async fn upsert_stake_row_source(
+    pg: &PgPool,
+    delegator: &str,
+    delegate: &str,
+    ev: &StakeEvent,
+    balance: &BigDecimal,
+    source: &str,
+) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO stake_balances_by_block
               (chain_id, delegator_address, delegate_address, block_number, block_timestamp,
@@ -330,10 +354,9 @@ async fn upsert_stake_row(
     .bind(ev.block_timestamp)
     .bind(&ev.block_hash)
     .bind(balance)
-    .bind(SOURCE_FLOW)
+    .bind(source)
     .bind(ev.event_id)
     .execute(pg)
     .await?;
     Ok(())
 }
-

@@ -39,6 +39,51 @@ pub struct SeedRunSummary {
     pub multi_asset_skipped: u64,
 }
 
+async fn has_seed_candidates(
+    pg: &PgPool,
+    valuation_version: &str,
+    include_tentative: bool,
+) -> Result<bool> {
+    let finality_filter = if include_tentative {
+        ""
+    } else {
+        "AND r.finality = 'finalized'"
+    };
+    let exists_sql = format!(
+        r#"SELECT EXISTS (
+             SELECT 1
+               FROM raw_protocol_events r
+              WHERE r.chain_id = $1
+                AND r.is_valuable = TRUE
+                AND r.is_canonical = TRUE
+                AND r.asset IS NOT NULL
+                AND r.amount_normalized IS NOT NULL
+                {finality_filter}
+                AND EXISTS (
+                      SELECT 1
+                        FROM seeded_event_prices s
+                       WHERE s.chain_id = r.chain_id
+                         AND s.tx_hash = r.tx_hash
+                         AND s.asset = r.asset
+                  )
+                AND NOT EXISTS (
+                      SELECT 1
+                        FROM event_valuations v
+                       WHERE v.event_id = r.id
+                         AND v.valuation_version = $2
+                         AND v.asset = r.asset
+                  )
+              LIMIT 1
+           )"#,
+    );
+    let exists = sqlx::query_scalar::<_, bool>(&exists_sql)
+        .bind(ARBITRUM_CHAIN_ID)
+        .bind(valuation_version)
+        .fetch_one(pg)
+        .await?;
+    Ok(exists)
+}
+
 /// Walk all unvalued, valuable, canonical events at the given valuation_version
 /// and price each via seed lookup. Skips events without seed coverage and
 /// multi-asset events. Bulk SQL — single INSERT…SELECT for valuations, paired
@@ -54,6 +99,12 @@ pub async fn run_seed_pass(
         "AND r.finality = 'finalized'"
     };
     info!(valuation_version, include_tentative, "seed-pass starting (bulk)");
+
+    if !has_seed_candidates(pg, valuation_version, include_tentative).await? {
+        let summary = SeedRunSummary::default();
+        info!(?summary, "seed-pass skipped (no candidates)");
+        return Ok(summary);
+    }
 
     // 1. Bulk INSERT priced rows. Construct pricing_chain JSONB inline; matches
     //    what the per-event loop used to build for the same fields. Idempotent

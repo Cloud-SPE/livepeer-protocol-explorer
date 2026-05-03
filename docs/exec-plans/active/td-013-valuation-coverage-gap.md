@@ -100,7 +100,7 @@ But those rows are mostly explained by the degraded-version path, not missing im
 
 The true residual set after counting both versions is only `3,572` rows, all of which already have terminal attempt statuses.
 
-## Decision that must be made first
+## Decision
 
 Before more code is written, we need an explicit product/spec decision on terminal failures:
 
@@ -125,26 +125,28 @@ Implication:
 - keep the current storage model
 - adjust spec wording and acceptance criteria to count terminal attempts as complete processing
 
-Current implementation already behaves like Model B.
+Current implementation originally behaved like Model B.
 
-## Recommendation
+## Chosen direction
 
-Treat the current storage model as intentional and update the acceptance semantics toward Model B unless there is a strong reason to force synthetic failure rows into `event_valuations`.
+Operator decision on 2026-05-03: **Model A**.
 
 That means:
 
-1. keep valuator candidate logic as-is for the now-covered monetary classes
-2. define completion as "valuation row or terminal attempt"
-3. adjust dashboards / residual queries / acceptance criteria accordingly
+1. every terminal valuation failure must also emit an immutable `event_valuations` row
+2. `valuation_attempts` remains the append-only audit log
+3. failure outcome rows carry nullable USD price fields and terminal `status`
 
 ## Proposed implementation order
 
-### Phase 1 — update completion semantics
+### Phase 1 — schema + write-path changes
 
-Clarify in spec/docs that a valuable event is considered fully processed when it has either:
+Update `event_valuations` to support terminal failure rows:
 
-- a valuation row under the active or degraded version, or
-- a terminal failure attempt under the applicable version(s)
+- widen `status`
+- allow nullable `native_usd_price` / `amount_usd`
+- write failure outcomes from the on-chain valuator passes
+- backfill existing terminal failures from `valuation_attempts`
 
 ### Phase 2 — update residual/backlog queries
 
@@ -164,7 +166,7 @@ After semantics/query updates:
 
 ## Acceptance criteria
 
-- The intended completion semantics are explicit and documented.
+- Every terminal valuation failure also has an `event_valuations` row.
 - A true active-backlog query returns 0 after a completed rerun.
 - Terminal-failure rows are separately queryable and reported by status.
 - Acceptance criteria no longer misclassify degraded-version rows or terminal-failure rows as unfinished backlog.
@@ -177,4 +179,6 @@ After semantics/query updates:
 - Measured `225,920` rows under the degraded valuation version.
 - Measured true residual after counting both versions: `3,572`.
 - Measured terminal attempt breakdown for those residual rows: `3,518 missing_oracle`, `36 missing_pool`, `18 sequencer_outage`, `0 no-attempt`.
-- Conclusion: this is primarily a spec / acceptance / observability mismatch around terminal failures, not a missing event-class coverage gap.
+- Chose Model A: every valuable event must have an `event_valuations` row.
+- Implemented migration `017_event_valuations_terminal_failures` to widen `event_valuations.status`, make USD price fields nullable, and backfill existing terminal failures from `valuation_attempts`.
+- Updated valuator bulk/on-chain write paths so `failed_missing_oracle`, `failed_missing_pool`, and `failed_sequencer_outage` now persist immutable `event_valuations` outcome rows in addition to `valuation_attempts`.

@@ -1,7 +1,10 @@
 //! Valuations endpoints. SPEC §14.3.2.
 
 use crate::{error::ApiError, routes::events::ValuationInline, state::AppState};
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use bigdecimal::BigDecimal;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -27,8 +30,8 @@ pub struct ValuationRow {
     pub asset: String,
     pub block_number: String,
     pub amount_native: String,
-    pub native_usd_price: String,
-    pub amount_usd: String,
+    pub native_usd_price: Option<String>,
+    pub amount_usd: Option<String>,
     pub source: String,
     pub pricing_method: String,
     pub status: String,
@@ -47,7 +50,11 @@ pub async fn for_event(
             WHERE event_id = $1
               {filter}
             ORDER BY asset"#,
-        filter = if version_filter { "AND valuation_version = $2" } else { "" }
+        filter = if version_filter {
+            "AND valuation_version = $2"
+        } else {
+            ""
+        }
     );
     let mut query = sqlx::query(&sql).bind(event_id);
     if let Some(v) = q.version.as_ref() {
@@ -55,7 +62,9 @@ pub async fn for_event(
     }
     let rows = query.fetch_all(&state.pg).await?;
     if rows.is_empty() {
-        return Err(ApiError::not_found(format!("no valuations for event {event_id}")));
+        return Err(ApiError::not_found(format!(
+            "no valuations for event {event_id}"
+        )));
     }
     Ok(Json(
         rows.iter()
@@ -63,8 +72,8 @@ pub async fn for_event(
                 asset: r.get(0),
                 valuation_version: r.get(1),
                 amount_native: r.get::<BigDecimal, _>(2).to_string(),
-                native_usd_price: r.get::<BigDecimal, _>(3).to_string(),
-                amount_usd: r.get::<BigDecimal, _>(4).to_string(),
+                native_usd_price: r.get::<Option<BigDecimal>, _>(3).map(|v| v.to_string()),
+                amount_usd: r.get::<Option<BigDecimal>, _>(4).map(|v| v.to_string()),
                 source: r.get(5),
                 pricing_method: r.get(6),
                 status: r.get(7),
@@ -131,8 +140,8 @@ pub async fn list(
                 asset: r.get(2),
                 block_number: r.get::<i64, _>(3).to_string(),
                 amount_native: r.get::<BigDecimal, _>(4).to_string(),
-                native_usd_price: r.get::<BigDecimal, _>(5).to_string(),
-                amount_usd: r.get::<BigDecimal, _>(6).to_string(),
+                native_usd_price: r.get::<Option<BigDecimal>, _>(5).map(|v| v.to_string()),
+                amount_usd: r.get::<Option<BigDecimal>, _>(6).map(|v| v.to_string()),
                 source: r.get(7),
                 pricing_method: r.get(8),
                 status: r.get(9),

@@ -66,8 +66,8 @@ pub struct ValuationInline {
     pub asset: String,
     pub valuation_version: String,
     pub amount_native: String,
-    pub native_usd_price: String,
-    pub amount_usd: String,
+    pub native_usd_price: Option<String>,
+    pub amount_usd: Option<String>,
     pub source: String,
     pub pricing_method: String,
     pub status: String,
@@ -96,7 +96,9 @@ pub async fn get_one(
     .bind(id)
     .fetch_optional(&state.pg)
     .await?;
-    let Some(row) = row else { return Err(ApiError::not_found(format!("event id {id}"))) };
+    let Some(row) = row else {
+        return Err(ApiError::not_found(format!("event id {id}")));
+    };
     let mut event = row_to_event(&row);
     if q.with_valuations {
         event.valuations = Some(load_valuations(&state, id).await?);
@@ -116,7 +118,11 @@ pub async fn list(
     let (sort_clause, sort_dir_asc) = match sort {
         "block_asc" => ("ORDER BY block_number ASC, log_index ASC", true),
         "block_desc" => ("ORDER BY block_number DESC, log_index DESC", false),
-        other => return Err(ApiError::bad_request(format!("unsupported sort: {other}; use block_asc | block_desc | amount_usd_desc"))),
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "unsupported sort: {other}; use block_asc | block_desc | amount_usd_desc"
+            )))
+        }
     };
 
     let event_name = q.event_name.clone().or_else(|| q.event_type.clone());
@@ -153,12 +159,24 @@ pub async fn list(
     add_filter!(q.to_block.map(Bind::I64), "block_number <= ${idx}");
     add_filter!(q.contract.map(Bind::Str), "contract_name = ${idx}");
     add_filter!(event_name.map(Bind::Str), "event_name = ${idx}");
-    add_filter!(q.asset.map(|s| Bind::Str(s.to_uppercase())), "asset = ${idx}");
-    add_filter!(q.from_address.map(|s| Bind::Str(s.to_lowercase())), "from_address = ${idx}");
-    add_filter!(q.to_address.map(|s| Bind::Str(s.to_lowercase())), "to_address = ${idx}");
+    add_filter!(
+        q.asset.map(|s| Bind::Str(s.to_uppercase())),
+        "asset = ${idx}"
+    );
+    add_filter!(
+        q.from_address.map(|s| Bind::Str(s.to_lowercase())),
+        "from_address = ${idx}"
+    );
+    add_filter!(
+        q.to_address.map(|s| Bind::Str(s.to_lowercase())),
+        "to_address = ${idx}"
+    );
     if let Some(addr) = q.address.as_ref() {
         let lower = addr.to_lowercase();
-        where_clauses.push(format!("(from_address = ${idx} OR to_address = ${idx})", idx = next_idx));
+        where_clauses.push(format!(
+            "(from_address = ${idx} OR to_address = ${idx})",
+            idx = next_idx
+        ));
         binds.push(Bind::Str(lower));
         next_idx += 1;
     }
@@ -218,8 +236,8 @@ pub async fn list(
                 asset: r.get(1),
                 valuation_version: r.get(2),
                 amount_native: r.get::<BigDecimal, _>(3).to_string(),
-                native_usd_price: r.get::<BigDecimal, _>(4).to_string(),
-                amount_usd: r.get::<BigDecimal, _>(5).to_string(),
+                native_usd_price: r.get::<Option<BigDecimal>, _>(4).map(|v| v.to_string()),
+                amount_usd: r.get::<Option<BigDecimal>, _>(5).map(|v| v.to_string()),
                 source: r.get(6),
                 pricing_method: r.get(7),
                 status: r.get(8),
@@ -287,7 +305,10 @@ fn row_to_event(r: &sqlx::postgres::PgRow) -> EventRow {
     }
 }
 
-async fn load_valuations(state: &AppState, event_id: i64) -> Result<Vec<ValuationInline>, ApiError> {
+async fn load_valuations(
+    state: &AppState,
+    event_id: i64,
+) -> Result<Vec<ValuationInline>, ApiError> {
     let rows = sqlx::query(
         r#"SELECT asset, valuation_version, amount_native, native_usd_price,
                   amount_usd, source, pricing_method, status
@@ -303,8 +324,8 @@ async fn load_valuations(state: &AppState, event_id: i64) -> Result<Vec<Valuatio
             asset: r.get(0),
             valuation_version: r.get(1),
             amount_native: r.get::<BigDecimal, _>(2).to_string(),
-            native_usd_price: r.get::<BigDecimal, _>(3).to_string(),
-            amount_usd: r.get::<BigDecimal, _>(4).to_string(),
+            native_usd_price: r.get::<Option<BigDecimal>, _>(3).map(|v| v.to_string()),
+            amount_usd: r.get::<Option<BigDecimal>, _>(4).map(|v| v.to_string()),
             source: r.get(5),
             pricing_method: r.get(6),
             status: r.get(7),
@@ -332,8 +353,12 @@ async fn list_by_amount_usd_desc(
         "r.chain_id = $1".to_string(),
         "r.is_valuable = TRUE".to_string(),
     ];
-    if !q.include_reorged { where_clauses.push("r.is_canonical = TRUE".to_string()); }
-    if !q.include_tentative { where_clauses.push("r.finality = 'finalized'".to_string()); }
+    if !q.include_reorged {
+        where_clauses.push("r.is_canonical = TRUE".to_string());
+    }
+    if !q.include_tentative {
+        where_clauses.push("r.finality = 'finalized'".to_string());
+    }
 
     // We don't take filters on this path beyond the basics + valuation_version. Most
     // callers using amount_usd_desc want "top N most valuable events" — a thin slice.
@@ -381,8 +406,12 @@ async fn list_by_amount_usd_desc(
                 asset: r.get(1),
                 valuation_version: r.get(2),
                 amount_native: r.get::<bigdecimal::BigDecimal, _>(3).to_string(),
-                native_usd_price: r.get::<bigdecimal::BigDecimal, _>(4).to_string(),
-                amount_usd: r.get::<bigdecimal::BigDecimal, _>(5).to_string(),
+                native_usd_price: r
+                    .get::<Option<bigdecimal::BigDecimal>, _>(4)
+                    .map(|v| v.to_string()),
+                amount_usd: r
+                    .get::<Option<bigdecimal::BigDecimal>, _>(5)
+                    .map(|v| v.to_string()),
                 source: r.get(6),
                 pricing_method: r.get(7),
                 status: r.get(8),
@@ -394,5 +423,9 @@ async fn list_by_amount_usd_desc(
         }
     }
 
-    Ok(Json(EventListResponse { data: events, next_cursor: None, last_finalized_block: None }))
+    Ok(Json(EventListResponse {
+        data: events,
+        next_cursor: None,
+        last_finalized_block: None,
+    }))
 }

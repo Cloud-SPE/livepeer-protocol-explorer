@@ -10,7 +10,10 @@
 //! fallback per Q-OD-9 (~17K events in the pre-cardinality window need it).
 
 use crate::bulk::{BulkBuffers, PriceRow};
-use crate::persist::{insert_attempt, insert_valuation, ARBITRUM_CHAIN_ID, STATUS_PRICED};
+use crate::persist::{
+    insert_attempt, insert_valuation, ARBITRUM_CHAIN_ID, STATUS_FAILED_MISSING_ORACLE,
+    STATUS_FAILED_MISSING_POOL, STATUS_FAILED_SEQUENCER_OUTAGE, STATUS_PRICED,
+};
 use crate::tick_math;
 use alloy::primitives::U256;
 use alloy::sol;
@@ -156,12 +159,17 @@ pub async fn run_onchain_pass_eth(
                 debug!(event_id = ev.event_id, block = ev.block_number, amount_native = %amount_native, native_usd_price = %native_usd_price, amount_usd = %amount_usd, "priced via Chainlink");
             }
             Ok((PricingOutcome::SequencerOutage { detail }, _)) => {
-                buffers.push_failed_attempt(
+                buffers.push_failed_outcome(
+                    ARBITRUM_CHAIN_ID,
                     ev.event_id,
                     valuation_version,
                     asset,
-                    "failed_sequencer_outage",
-                    Some(detail),
+                    PRICING_METHOD_ETH,
+                    SOURCE_ETH,
+                    ev.block_number,
+                    &amount_native,
+                    STATUS_FAILED_SEQUENCER_OUTAGE,
+                    detail,
                 );
                 summary.failed_sequencer_outage += 1;
                 warn!(
@@ -171,12 +179,17 @@ pub async fn run_onchain_pass_eth(
                 );
             }
             Ok((PricingOutcome::MissingOracle { detail }, _)) => {
-                buffers.push_failed_attempt(
+                buffers.push_failed_outcome(
+                    ARBITRUM_CHAIN_ID,
                     ev.event_id,
                     valuation_version,
                     asset,
-                    "failed_missing_oracle",
-                    Some(detail),
+                    PRICING_METHOD_ETH,
+                    SOURCE_ETH,
+                    ev.block_number,
+                    &amount_native,
+                    STATUS_FAILED_MISSING_ORACLE,
+                    detail,
                 );
                 summary.failed_missing_oracle += 1;
                 warn!(
@@ -845,43 +858,63 @@ pub async fn run_onchain_pass_lpt(
                 warn!(event_id, amount_usd = %amount_usd, "priced LPT via DEGRADED spot (cardinality < 144)");
             }
             Ok((LptOutcome::SequencerOutage { detail }, _)) => {
-                buffers.push_failed_attempt(
+                buffers.push_failed_outcome(
+                    ARBITRUM_CHAIN_ID,
                     event_id,
                     valuation_version,
                     "LPT",
-                    "failed_sequencer_outage",
-                    Some(detail),
+                    PRICING_METHOD_LPT_TWAP,
+                    SOURCE_LPT,
+                    block_number,
+                    &amount_native,
+                    STATUS_FAILED_SEQUENCER_OUTAGE,
+                    detail,
                 );
                 summary.failed_sequencer_outage += 1;
             }
             Ok((LptOutcome::MissingOracle { detail }, _)) => {
-                buffers.push_failed_attempt(
+                buffers.push_failed_outcome(
+                    ARBITRUM_CHAIN_ID,
                     event_id,
                     valuation_version,
                     "LPT",
-                    "failed_missing_oracle",
-                    Some(detail),
+                    PRICING_METHOD_LPT_TWAP,
+                    SOURCE_LPT,
+                    block_number,
+                    &amount_native,
+                    STATUS_FAILED_MISSING_ORACLE,
+                    detail,
                 );
                 summary.failed_missing_oracle += 1;
             }
             Ok((LptOutcome::MissingPool { detail }, _)) => {
-                buffers.push_failed_attempt(
+                buffers.push_failed_outcome(
+                    ARBITRUM_CHAIN_ID,
                     event_id,
                     valuation_version,
                     "LPT",
-                    "failed_missing_pool",
-                    Some(detail),
+                    PRICING_METHOD_LPT_TWAP,
+                    SOURCE_LPT,
+                    block_number,
+                    &amount_native,
+                    STATUS_FAILED_MISSING_POOL,
+                    detail,
                 );
                 summary.failed_missing_pool += 1;
             }
             Err(e) => {
                 if let Some(detail) = permanent_lpt_failure_detail(&e) {
-                    buffers.push_failed_attempt(
+                    buffers.push_failed_outcome(
+                        ARBITRUM_CHAIN_ID,
                         event_id,
                         valuation_version,
                         "LPT",
-                        "failed_missing_pool",
-                        Some(detail),
+                        PRICING_METHOD_LPT_TWAP,
+                        SOURCE_LPT,
+                        block_number,
+                        &amount_native,
+                        STATUS_FAILED_MISSING_POOL,
+                        detail,
                     );
                     summary.failed_missing_pool += 1;
                     warn!(event_id, error = %e, "LPT pricing failed deterministically; suppressing future retries");
@@ -1508,8 +1541,8 @@ async fn commit_priced(
         STATUS_PRICED,
         block_number,
         amount_native,
-        native_usd_price,
-        amount_usd,
+        Some(native_usd_price),
+        Some(amount_usd),
         pricing_chain,
     )
     .await?;

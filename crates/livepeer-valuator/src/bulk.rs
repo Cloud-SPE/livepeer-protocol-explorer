@@ -31,8 +31,8 @@ pub struct ValuationRow {
     pub chain_id: i64,
     pub block_number: i64,
     pub amount_native: BigDecimal,
-    pub native_usd_price: BigDecimal,
-    pub amount_usd: BigDecimal,
+    pub native_usd_price: Option<BigDecimal>,
+    pub amount_usd: Option<BigDecimal>,
     pub pricing_chain: serde_json::Value,
 }
 
@@ -113,8 +113,8 @@ impl BulkBuffers {
             chain_id,
             block_number,
             amount_native: amount_native.clone(),
-            native_usd_price: native_usd_price.clone(),
-            amount_usd: amount_usd.clone(),
+            native_usd_price: Some(native_usd_price.clone()),
+            amount_usd: Some(amount_usd.clone()),
             pricing_chain: pricing_chain.clone(),
         });
         self.attempts.push(AttemptRow {
@@ -126,23 +126,44 @@ impl BulkBuffers {
         });
     }
 
-    /// Convenience: enqueue a failed-attempt-only row (no valuation written).
-    /// Used for `failed_sequencer_outage`, `failed_missing_oracle`,
-    /// `failed_missing_pool` outcomes.
-    pub fn push_failed_attempt(
+    /// Convenience: enqueue a terminal failure outcome row plus its paired
+    /// `valuation_attempts` row. Under Option A, every valuable event must have
+    /// an `event_valuations` outcome row even when no numeric USD valuation is
+    /// available.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_failed_outcome(
         &mut self,
+        chain_id: i64,
         event_id: i64,
         valuation_version: &str,
         asset: &str,
+        pricing_method: &str,
+        source: &str,
+        block_number: i64,
+        amount_native: &BigDecimal,
         result_status: &str,
-        error_detail: Option<serde_json::Value>,
+        pricing_chain: serde_json::Value,
     ) {
+        self.valuations.push(ValuationRow {
+            event_id,
+            valuation_version: valuation_version.to_string(),
+            asset: asset.to_string(),
+            pricing_method: pricing_method.to_string(),
+            source: source.to_string(),
+            status: result_status.to_string(),
+            chain_id,
+            block_number,
+            amount_native: amount_native.clone(),
+            native_usd_price: None,
+            amount_usd: None,
+            pricing_chain: pricing_chain.clone(),
+        });
         self.attempts.push(AttemptRow {
             event_id,
             valuation_version: valuation_version.to_string(),
             asset: asset.to_string(),
             result_status: result_status.to_string(),
-            error_detail,
+            error_detail: Some(pricing_chain),
         });
     }
 

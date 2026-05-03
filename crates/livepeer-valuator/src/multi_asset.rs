@@ -14,7 +14,10 @@ use crate::onchain::{
     permanent_lpt_failure_detail, price_eth_amount, price_lpt_amount, LptOutcome, PricingOutcome,
     DEGRADED_VERSION_SUFFIX,
 };
-use crate::persist::{ARBITRUM_CHAIN_ID, STATUS_PRICED};
+use crate::persist::{
+    ARBITRUM_CHAIN_ID, STATUS_FAILED_MISSING_ORACLE, STATUS_FAILED_MISSING_POOL,
+    STATUS_FAILED_SEQUENCER_OUTAGE, STATUS_PRICED,
+};
 use anyhow::Result;
 use bigdecimal::{BigDecimal, Zero};
 use livepeer_core::{config::Config, rpc::Provider};
@@ -173,43 +176,63 @@ pub async fn run_multi_asset_pass(
                     );
                 }
                 Ok((LptOutcome::SequencerOutage { detail }, _)) => {
-                    buffers.push_failed_attempt(
+                    buffers.push_failed_outcome(
+                        ARBITRUM_CHAIN_ID,
                         ev.event_id,
                         valuation_version,
                         "LPT",
-                        "failed_sequencer_outage",
-                        Some(detail),
+                        PRICING_METHOD_LPT_TWAP,
+                        SOURCE_LPT,
+                        ev.block_number,
+                        &rewards_lpt,
+                        STATUS_FAILED_SEQUENCER_OUTAGE,
+                        detail,
                     );
                     summary.failures += 1;
                 }
                 Ok((LptOutcome::MissingOracle { detail }, _)) => {
-                    buffers.push_failed_attempt(
+                    buffers.push_failed_outcome(
+                        ARBITRUM_CHAIN_ID,
                         ev.event_id,
                         valuation_version,
                         "LPT",
-                        "failed_missing_oracle",
-                        Some(detail),
+                        PRICING_METHOD_LPT_TWAP,
+                        SOURCE_LPT,
+                        ev.block_number,
+                        &rewards_lpt,
+                        STATUS_FAILED_MISSING_ORACLE,
+                        detail,
                     );
                     summary.failures += 1;
                 }
                 Ok((LptOutcome::MissingPool { detail }, _)) => {
-                    buffers.push_failed_attempt(
+                    buffers.push_failed_outcome(
+                        ARBITRUM_CHAIN_ID,
                         ev.event_id,
                         valuation_version,
                         "LPT",
-                        "failed_missing_pool",
-                        Some(detail),
+                        PRICING_METHOD_LPT_TWAP,
+                        SOURCE_LPT,
+                        ev.block_number,
+                        &rewards_lpt,
+                        STATUS_FAILED_MISSING_POOL,
+                        detail,
                     );
                     summary.failures += 1;
                 }
                 Err(e) => {
                     if let Some(detail) = permanent_lpt_failure_detail(&e) {
-                        buffers.push_failed_attempt(
+                        buffers.push_failed_outcome(
+                            ARBITRUM_CHAIN_ID,
                             ev.event_id,
                             valuation_version,
                             "LPT",
-                            "failed_missing_pool",
-                            Some(detail),
+                            PRICING_METHOD_LPT_TWAP,
+                            SOURCE_LPT,
+                            ev.block_number,
+                            &rewards_lpt,
+                            STATUS_FAILED_MISSING_POOL,
+                            detail,
                         );
                     }
                     summary.failures += 1;
@@ -272,22 +295,32 @@ pub async fn run_multi_asset_pass(
                     debug!(event_id = ev.event_id, fees_eth = %fees_eth, amount_usd = %amount_usd, "EarningsClaimed.fees priced via Chainlink");
                 }
                 Ok((PricingOutcome::SequencerOutage { detail }, _)) => {
-                    buffers.push_failed_attempt(
+                    buffers.push_failed_outcome(
+                        ARBITRUM_CHAIN_ID,
                         ev.event_id,
                         valuation_version,
                         "ETH",
-                        "failed_sequencer_outage",
-                        Some(detail),
+                        PRICING_METHOD_ETH,
+                        SOURCE_ETH,
+                        ev.block_number,
+                        &fees_eth,
+                        STATUS_FAILED_SEQUENCER_OUTAGE,
+                        detail,
                     );
                     summary.failures += 1;
                 }
                 Ok((PricingOutcome::MissingOracle { detail }, _)) => {
-                    buffers.push_failed_attempt(
+                    buffers.push_failed_outcome(
+                        ARBITRUM_CHAIN_ID,
                         ev.event_id,
                         valuation_version,
                         "ETH",
-                        "failed_missing_oracle",
-                        Some(detail),
+                        PRICING_METHOD_ETH,
+                        SOURCE_ETH,
+                        ev.block_number,
+                        &fees_eth,
+                        STATUS_FAILED_MISSING_ORACLE,
+                        detail,
                     );
                     summary.failures += 1;
                 }

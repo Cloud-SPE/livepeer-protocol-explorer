@@ -7,6 +7,10 @@ use tracing::error;
 
 pub const ARBITRUM_CHAIN_ID: i64 = 42161;
 pub const STATUS_PRICED: &str = "priced";
+pub const STATUS_PRICED_WITH_WARNING: &str = "priced_with_warning";
+pub const STATUS_FAILED_MISSING_ORACLE: &str = "failed_missing_oracle";
+pub const STATUS_FAILED_MISSING_POOL: &str = "failed_missing_pool";
+pub const STATUS_FAILED_SEQUENCER_OUTAGE: &str = "failed_sequencer_outage";
 pub const STATUS_DETERMINISM_VIOLATION: &str = "failed_determinism_violation";
 
 /// Idempotent UPSERT into `token_prices_by_block`. PK is
@@ -61,8 +65,8 @@ pub async fn insert_valuation(
     status: &str,
     block_number: i64,
     amount_native: &BigDecimal,
-    native_usd_price: &BigDecimal,
-    amount_usd: &BigDecimal,
+    native_usd_price: Option<&BigDecimal>,
+    amount_usd: Option<&BigDecimal>,
     pricing_chain: &serde_json::Value,
 ) -> Result<bool> {
     let result = sqlx::query(
@@ -117,8 +121,8 @@ pub async fn insert_valuation_checked(
     status: &str,
     block_number: i64,
     amount_native: &BigDecimal,
-    native_usd_price: &BigDecimal,
-    amount_usd: &BigDecimal,
+    native_usd_price: Option<&BigDecimal>,
+    amount_usd: Option<&BigDecimal>,
     pricing_chain: &serde_json::Value,
 ) -> Result<DeterminismOutcome> {
     let existing: Option<StoredValuation> = sqlx::query(
@@ -144,7 +148,12 @@ pub async fn insert_valuation_checked(
     match existing {
         Some(stored) => {
             let diff = stored.diff(
-                pricing_method, source, status, amount_native, native_usd_price, amount_usd,
+                pricing_method,
+                source,
+                status,
+                amount_native,
+                native_usd_price,
+                amount_usd,
             );
             if diff.is_null() {
                 return Ok(DeterminismOutcome::Idempotent);
@@ -173,8 +182,18 @@ pub async fn insert_valuation_checked(
         None => {
             let mut tx = pg.begin().await?;
             insert_valuation(
-                &mut tx, event_id, valuation_version, asset, pricing_method, source, status,
-                block_number, amount_native, native_usd_price, amount_usd, pricing_chain,
+                &mut tx,
+                event_id,
+                valuation_version,
+                asset,
+                pricing_method,
+                source,
+                status,
+                block_number,
+                amount_native,
+                native_usd_price,
+                amount_usd,
+                pricing_chain,
             )
             .await?;
             insert_attempt(&mut tx, event_id, valuation_version, asset, status, None).await?;
@@ -197,8 +216,8 @@ struct StoredValuation {
     source: String,
     status: String,
     amount_native: BigDecimal,
-    native_usd_price: BigDecimal,
-    amount_usd: BigDecimal,
+    native_usd_price: Option<BigDecimal>,
+    amount_usd: Option<BigDecimal>,
 }
 
 impl StoredValuation {
@@ -208,8 +227,8 @@ impl StoredValuation {
         source: &str,
         status: &str,
         amount_native: &BigDecimal,
-        native_usd_price: &BigDecimal,
-        amount_usd: &BigDecimal,
+        native_usd_price: Option<&BigDecimal>,
+        amount_usd: Option<&BigDecimal>,
     ) -> serde_json::Value {
         let mut entries = serde_json::Map::new();
         if self.pricing_method != pricing_method {
@@ -239,21 +258,21 @@ impl StoredValuation {
                 }),
             );
         }
-        if &self.native_usd_price != native_usd_price {
+        if self.native_usd_price.as_ref() != native_usd_price {
             entries.insert(
                 "native_usd_price".to_string(),
                 serde_json::json!({
-                    "stored": self.native_usd_price.to_string(),
-                    "recomputed": native_usd_price.to_string(),
+                    "stored": self.native_usd_price.as_ref().map(ToString::to_string),
+                    "recomputed": native_usd_price.map(ToString::to_string),
                 }),
             );
         }
-        if &self.amount_usd != amount_usd {
+        if self.amount_usd.as_ref() != amount_usd {
             entries.insert(
                 "amount_usd".to_string(),
                 serde_json::json!({
-                    "stored": self.amount_usd.to_string(),
-                    "recomputed": amount_usd.to_string(),
+                    "stored": self.amount_usd.as_ref().map(ToString::to_string),
+                    "recomputed": amount_usd.map(ToString::to_string),
                 }),
             );
         }
@@ -277,8 +296,8 @@ mod determinism_tests {
             source: "trusted_historical_seed_v1".to_string(),
             status: "priced".to_string(),
             amount_native: BigDecimal::from_str("18.199267584391068228").unwrap(),
-            native_usd_price: BigDecimal::from_str("2.191").unwrap(),
-            amount_usd: BigDecimal::from_str("39.882633471224994").unwrap(),
+            native_usd_price: Some(BigDecimal::from_str("2.191").unwrap()),
+            amount_usd: Some(BigDecimal::from_str("39.882633471224994").unwrap()),
         }
     }
 
@@ -290,8 +309,8 @@ mod determinism_tests {
             &s.source,
             &s.status,
             &s.amount_native,
-            &s.native_usd_price,
-            &s.amount_usd,
+            s.native_usd_price.as_ref(),
+            s.amount_usd.as_ref(),
         );
         assert!(d.is_null(), "expected no diff, got: {d}");
     }
@@ -305,8 +324,8 @@ mod determinism_tests {
             &s.source,
             &s.status,
             &s.amount_native,
-            &s.native_usd_price,
-            &new_amount_usd,
+            s.native_usd_price.as_ref(),
+            Some(&new_amount_usd),
         );
         let obj = d.as_object().expect("diff is an object");
         assert!(obj.contains_key("amount_usd"));
@@ -324,8 +343,8 @@ mod determinism_tests {
             other_source,
             &s.status,
             &s.amount_native,
-            &new_price,
-            &s.amount_usd,
+            Some(&new_price),
+            s.amount_usd.as_ref(),
         );
         let obj = d.as_object().expect("diff is an object");
         assert!(obj.contains_key("pricing_method"));

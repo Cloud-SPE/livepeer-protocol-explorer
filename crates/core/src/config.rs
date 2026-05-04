@@ -66,9 +66,23 @@ pub struct EnvConfig {
     pub log_level: String,
     pub postgres: PostgresConfig,
     pub rpc: RpcEndpoints,
+    #[serde(default)]
+    pub alerting: Option<AlertingConfig>,
     /// Optional. Required when the finality-watcher runs.
     #[serde(default)]
     pub l1: Option<L1Endpoint>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AlertingConfig {
+    pub telegram: TelegramAlertingConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TelegramAlertingConfig {
+    pub bot_token_env: String,
+    pub chat_id_env: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -99,6 +113,38 @@ impl Config {
 
     pub fn secondary_rpc_url(&self) -> Result<String> {
         env_var(&self.env.rpc.secondary.url_env)
+    }
+
+    pub fn telegram_alerting_enabled(&self) -> bool {
+        self.env
+            .alerting
+            .as_ref()
+            .map(|a| a.telegram.enabled)
+            .unwrap_or(false)
+    }
+
+    pub fn telegram_bot_token(&self) -> Result<String> {
+        env_var(
+            &self
+                .env
+                .alerting
+                .as_ref()
+                .ok_or_else(|| CoreError::MissingEnv("alerting.telegram".to_string()))?
+                .telegram
+                .bot_token_env,
+        )
+    }
+
+    pub fn telegram_chat_id(&self) -> Result<String> {
+        env_var(
+            &self
+                .env
+                .alerting
+                .as_ref()
+                .ok_or_else(|| CoreError::MissingEnv("alerting.telegram".to_string()))?
+                .telegram
+                .chat_id_env,
+        )
     }
 }
 

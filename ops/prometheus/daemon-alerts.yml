@@ -1,0 +1,39 @@
+groups:
+  - name: livepeer-daemon
+    rules:
+      - alert: LivepeerRpcDivergenceDetected
+        expr: increase(livepeer_rpc_divergence_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "RPC divergence detected"
+          description: "At least one RPC cross-check divergence was recorded in the last 5 minutes. Treat this as determinism-risk until explained."
+
+      - alert: LivepeerIndexerLagHigh
+        expr: max_over_time(livepeer_task_lag_blocks{task="indexer"}[5m]) > 1000
+        for: 5m
+        labels:
+          severity: warn
+          task: indexer
+        annotations:
+          summary: "Indexer lag is elevated"
+          description: "Indexer lag has stayed above 1000 blocks for at least 5 minutes."
+
+      - alert: LivepeerIterationFailuresHigh
+        expr: sum by (task) (increase(livepeer_iteration_failures_total[10m])) > 3
+        for: 0m
+        labels:
+          severity: warn
+        annotations:
+          summary: "Daemon iteration failures are accumulating"
+          description: "Task {{ $labels.task }} has recorded more than 3 failed iterations in the last 10 minutes."
+
+      - alert: LivepeerRpcTaskSoftCapSaturated
+        expr: livepeer_task_rpc_limit > 0 and livepeer_task_rpc_in_flight / livepeer_task_rpc_limit > 0.95
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "RPC soft cap is saturated"
+          description: "Task {{ $labels.task }} has been above 95% of its soft RPC cap for at least 10 minutes."

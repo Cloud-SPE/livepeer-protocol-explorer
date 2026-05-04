@@ -11,6 +11,7 @@ members = [
     "crates/livepeer-seed-migrator",
     "crates/livepeer-orchestrator",
     "crates/livepeer-daemon",
+    "crates/livepeer-alert-bot",
 ]
 
 [workspace.package]

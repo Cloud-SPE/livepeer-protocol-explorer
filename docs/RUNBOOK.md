@@ -16,6 +16,7 @@ Authoritative reference: [SPEC §19](product-specs/v1-livepeer-indexer.md#19-ope
 Primary processes:
 - `livepeer-daemon follow`
 - `livepeer-api`
+- `livepeer-alert-bot` (when Telegram alerting is enabled)
 - Postgres
 
 Health checks:
@@ -23,6 +24,7 @@ Health checks:
 - daemon metrics: `curl http://127.0.0.1:9107/metrics`
 - api: `curl http://127.0.0.1:8080/health`
 - api metrics: `curl http://127.0.0.1:8080/metrics`
+- alert-bot: `curl http://127.0.0.1:9111/health`
 
 Healthy indicators:
 - daemon `/health` returns `ok`
@@ -31,6 +33,7 @@ Healthy indicators:
 - `livepeer_task_lag_blocks{task="indexer"}` stays bounded
 - `livepeer_iterations_total{task=...}` increases over time
 - `livepeer_iteration_failures_total` remains flat or near-flat
+- `livepeer_rpc_divergence_total` remains flat
 
 Useful SQL checks:
 
@@ -128,6 +131,31 @@ Behavior:
 Current defaults:
 - metrics bind: `0.0.0.0:9107`
 - process-wide RPC concurrency ceiling: `24`
+- per-task soft caps:
+  - indexer `8`
+  - finality `2`
+  - reorg `2`
+  - valuator `16`
+  - staker `6`
+
+## 4.1 Alerting
+
+Repo-managed alerting artifacts:
+- Prometheus rules: `ops/prometheus/daemon-alerts.yml`
+- Alertmanager receiver config: `ops/alertmanager/alertmanager.yml`
+- Telegram bridge binary: `livepeer-alert-bot`
+
+Alert flow:
+1. Prometheus scrapes daemon `/metrics`
+2. Prometheus evaluates `ops/prometheus/daemon-alerts.yml`
+3. Alertmanager posts grouped alerts to `livepeer-alert-bot`
+4. `livepeer-alert-bot` formats and forwards them to Telegram
+
+Current alert classes:
+- `LivepeerRpcDivergenceDetected`
+- `LivepeerIndexerLagHigh`
+- `LivepeerIterationFailuresHigh`
+- `LivepeerRpcTaskSoftCapSaturated`
 
 ## 5. Recovery procedures
 
@@ -195,6 +223,51 @@ Action:
 - inspect `indexer_checkpoints`
 - inspect `livepeer_iteration_failures_total`
 - if valuator lags specifically, re-check TD-011 symptoms
+
+### Telegram alert: `LivepeerRpcDivergenceDetected`
+
+Meaning:
+- provider cross-check disagreement occurred
+- treat as determinism-risk until explained
+
+Action:
+1. inspect daemon logs around the alert timestamp
+2. inspect `livepeer_rpc_divergence_total`
+3. inspect `rpc_divergence_failures` if present in the current environment
+4. do not auto-clear by restart alone; confirm whether the issue is transient provider disagreement or a deeper decoding/cache problem
+
+### Telegram alert: `LivepeerIndexerLagHigh`
+
+Meaning:
+- indexer lag stayed above threshold for at least 5 minutes
+
+Action:
+1. inspect `livepeer_task_lag_blocks{task="indexer"}`
+2. inspect `indexer_checkpoints`
+3. inspect `livepeer_iteration_failures_total{task="indexer"}`
+4. if iterations are succeeding but lag still grows, inspect RPC provider latency / TD-011 symptoms
+
+### Telegram alert: `LivepeerIterationFailuresHigh`
+
+Meaning:
+- a daemon task recorded repeated failed iterations in a short window
+
+Action:
+1. identify the task label from the alert payload
+2. inspect daemon logs for that task
+3. inspect database reachability / provider reachability depending on `error_kind`
+4. if failures are persistent, stop assuming self-heal and intervene
+
+### Telegram alert: `LivepeerRpcTaskSoftCapSaturated`
+
+Meaning:
+- one daemon task has spent sustained time near its RPC soft cap
+
+Action:
+1. inspect `livepeer_task_rpc_in_flight{task=...}`
+2. compare against `livepeer_task_rpc_limit{task=...}`
+3. determine whether the pressure is expected steady-state load or a pathology
+4. if the same task also shows lag/failures, treat this as a real bottleneck rather than noise
 
 ## 7. Schema changes
 

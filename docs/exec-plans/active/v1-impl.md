@@ -297,8 +297,12 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
   - `livepeer_rpc_calls_total{provider,method,result}`
   - `livepeer_rpc_call_duration_seconds{provider,method}`
   - `livepeer_rpc_divergence_total{method}`
+- [x] Alerting scaffold landed:
+  - repo-managed Prometheus rules at `ops/prometheus/daemon-alerts.yml`
+  - Alertmanager receiver config at `ops/alertmanager/alertmanager.yml`
+  - `livepeer-alert-bot` binary for Alertmanager → Telegram delivery
 - [ ] Additional lag / circuit gauges (`valuator_pending_events`, `rpc_provider_circuit_state`)
-- [ ] Telegram alerter — last priority per SPEC §10.6, behind a feature flag
+- [ ] Full prod alert wiring / routing validation in a real Alertmanager deployment
 
 ## Progress log
 
@@ -329,6 +333,7 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-05-04** S12.2 follow-up — daemon now enforces a process-wide RPC concurrency ceiling (`24`) inside `core::rpc::Provider`, so the shared-provider design has a real in-process request budget rather than relying on topology alone.
 - **2026-05-04** S12.2 follow-up — daemon metrics now also emit indexed/decode/valuation/reorg counters from live worker summaries, so the metrics surface is operationally useful without scraping logs for row counts.
 - **2026-05-04** S12.2 follow-up — provider-level RPC metrics now live in `core::rpc` and are exported through daemon `/metrics`: per-provider/method call counts, duration histograms, and divergence counters.
+- **2026-05-04** S12.2 follow-up — alerting scaffold landed: repo-managed Prometheus rules, Alertmanager webhook config, and a `livepeer-alert-bot` Telegram bridge using the existing `alerting.telegram` env contract.
 - **2026-05-04** TD-012 Phase 1 tightened — `livepeer-orchestrator replay` is now strict by default: it requires explicit `--to-block`, routes indexer `eth_getLogs` through `rpc_call_cache`, records finality replay inputs during live runs, and fails on missing cached RPC inputs unless `--allow-live-rpc` is explicitly requested.
 - **2026-05-03** S9.2 strengthened — pending refresh is now bulk and exact-state-aware. `refresh-pending` first reconciles every stored stake row against `BondingManager.getDelegator()` and then bulk-refreshes `pendingStake` / `pendingFees` for every `EarningsClaimed` row from cached RPC inputs. Fresh rerun validation: `no_stake_row = 0`, self-delegated orchestrator spot-checks match on-chain `bondedAmount`.
 - **2026-05-04** S10.4 done — transcoder context API shipped: params/history, lifecycle/history, point-in-time profile, and delegators-at-block. Migration `021_api_transcoder_indexes` added the required raw-event expression index plus stake covering index; measured route latencies dropped to ~1ms for params/lifecycle/profile and ~42ms for delegators-at-block.

@@ -1,0 +1,12 @@
+route:
+  receiver: livepeer-telegram
+  group_by: ['alertname', 'task', 'provider']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: livepeer-telegram
+    webhook_configs:
+      - url: http://livepeer-alert-bot:9111/alertmanager
+        send_resolved: true

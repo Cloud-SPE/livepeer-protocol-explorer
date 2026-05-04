@@ -1,4 +1,4 @@
-# Multi-stage Rust build. One image, all six service binaries + the seed migrator.
+# Multi-stage Rust build. One image, all service binaries + the seed migrator.
 # Selected at runtime via `command:` in docker-compose.yml.
 
 FROM rust:1.94.1-slim-bookworm AS builder
@@ -21,11 +21,15 @@ COPY crates/livepeer-valuator/Cargo.toml crates/livepeer-valuator/
 COPY crates/livepeer-staker/Cargo.toml crates/livepeer-staker/
 COPY crates/livepeer-api/Cargo.toml crates/livepeer-api/
 COPY crates/livepeer-seed-migrator/Cargo.toml crates/livepeer-seed-migrator/
+COPY crates/livepeer-orchestrator/Cargo.toml crates/livepeer-orchestrator/
+COPY crates/livepeer-daemon/Cargo.toml crates/livepeer-daemon/
+COPY crates/livepeer-alert-bot/Cargo.toml crates/livepeer-alert-bot/
 
 # Stub out src so cargo can build the dependency graph.
 RUN mkdir -p crates/core/src && echo "" > crates/core/src/lib.rs && \
     for c in livepeer-indexer livepeer-reorg-watcher livepeer-finality-watcher \
-             livepeer-valuator livepeer-staker livepeer-api livepeer-seed-migrator; do \
+             livepeer-valuator livepeer-staker livepeer-api livepeer-seed-migrator \
+             livepeer-orchestrator livepeer-daemon livepeer-alert-bot; do \
       mkdir -p crates/$c/src && echo "fn main() {}" > crates/$c/src/main.rs; \
     done && \
     cargo build --release --workspace && \
@@ -51,6 +55,9 @@ COPY --from=builder /build/target/release/livepeer-valuator           /usr/local
 COPY --from=builder /build/target/release/livepeer-staker             /usr/local/bin/
 COPY --from=builder /build/target/release/livepeer-api                /usr/local/bin/
 COPY --from=builder /build/target/release/livepeer-seed-migrator      /usr/local/bin/
+COPY --from=builder /build/target/release/livepeer-orchestrator       /usr/local/bin/
+COPY --from=builder /build/target/release/livepeer-daemon             /usr/local/bin/
+COPY --from=builder /build/target/release/livepeer-alert-bot          /usr/local/bin/
 
 COPY --chown=livepeer:livepeer abi/    /opt/livepeer/abi/
 COPY --chown=livepeer:livepeer config/ /opt/livepeer/config/

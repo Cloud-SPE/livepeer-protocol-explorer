@@ -84,6 +84,15 @@ services:
       - "8080:8080"
       - "9106:9106"
 
+  livepeer-alert-bot:
+    image: livepeer-valuation-system:latest
+    command: livepeer-alert-bot
+    restart: unless-stopped
+    env_file: .env
+    profiles: ["ops"]
+    ports:
+      - "9111:9111"
+
   # livepeer-seed-migrator is a one-shot, not a long-running service (SPEC §15.2).
   # Run via:
   #   docker compose run --rm livepeer-seed-migrator livepeer-seed-migrator --source-sqlite /seed/sqlite-4.0.db

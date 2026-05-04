@@ -57,10 +57,27 @@ pub async fn backfill_status(State(state): State<AppState>) -> Result<Json<Backf
         })
         .collect();
 
-    let raw_event_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM raw_protocol_events").fetch_one(&state.pg).await?;
-    let valuation_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM event_valuations").fetch_one(&state.pg).await?;
+    // Operational status favors low latency over exactness on the two largest tables.
+    // reltuples is refreshed by VACUUM/ANALYZE and is good enough for an ops dashboard.
+    let approx_rows = sqlx::query(
+        r#"SELECT relname, GREATEST(reltuples::bigint, 0)
+             FROM pg_class
+            WHERE relname = ANY($1)"#,
+    )
+    .bind(vec!["raw_protocol_events", "event_valuations"])
+    .fetch_all(&state.pg)
+    .await?;
+    let mut raw_event_count = 0i64;
+    let mut valuation_count = 0i64;
+    for r in &approx_rows {
+        let relname: String = r.get(0);
+        let count: i64 = r.get(1);
+        match relname.as_str() {
+            "raw_protocol_events" => raw_event_count = count,
+            "event_valuations" => valuation_count = count,
+            _ => {}
+        }
+    }
     let decode_failure_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM decode_failures WHERE resolved_at IS NULL")
             .fetch_one(&state.pg)

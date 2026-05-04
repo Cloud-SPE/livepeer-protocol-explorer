@@ -9,4 +9,4 @@ pub mod cross_check;
 pub mod metrics;
 pub mod provider;
 
-pub use provider::{BlockTag, Provider};
+pub use provider::{with_rpc_task_label, BlockTag, Provider, TaskRpcSnapshot};

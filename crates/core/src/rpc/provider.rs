@@ -5,6 +5,8 @@ use crate::error::{CoreError, Result};
 use crate::rpc::metrics;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
@@ -19,6 +21,23 @@ use std::sync::OnceLock;
 /// every 30 min is a cheap experiment to test that hypothesis.
 const POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 static GLOBAL_RPC_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static TASK_RPC_LIMITERS: OnceLock<std::sync::RwLock<HashMap<&'static str, TaskRpcLimiter>>> =
+    OnceLock::new();
+tokio::task_local! {
+    static RPC_TASK_LABEL: &'static str;
+}
+
+#[derive(Clone)]
+struct TaskRpcLimiter {
+    limit: usize,
+    semaphore: Arc<Semaphore>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TaskRpcSnapshot {
+    pub limit: usize,
+    pub in_flight: usize,
+}
 
 #[derive(Clone, Debug)]
 pub struct Provider {
@@ -106,6 +125,32 @@ impl Provider {
         Self::with_timeout(name, url, Duration::from_secs(60))
     }
 
+    pub fn set_task_concurrency_limit(task: &'static str, limit: usize) {
+        let limiters = TASK_RPC_LIMITERS.get_or_init(|| std::sync::RwLock::new(HashMap::new()));
+        limiters.write().expect("task rpc limiter lock poisoned").insert(
+            task,
+            TaskRpcLimiter {
+                limit,
+                semaphore: Arc::new(Semaphore::new(limit)),
+            },
+        );
+    }
+
+    pub fn task_concurrency_snapshot(task: &'static str) -> Option<TaskRpcSnapshot> {
+        let limiters = TASK_RPC_LIMITERS.get()?;
+        let limiter = limiters
+            .read()
+            .expect("task rpc limiter lock poisoned")
+            .get(task)
+            .cloned()?;
+        Some(TaskRpcSnapshot {
+            limit: limiter.limit,
+            in_flight: limiter
+                .limit
+                .saturating_sub(limiter.semaphore.available_permits()),
+        })
+    }
+
     pub fn with_timeout(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self> {
         let name = name.into();
         let client = build_client(timeout, &name)?;
@@ -171,7 +216,7 @@ impl Provider {
     }
 
     async fn call_once(&self, method: &str, params: &Value) -> Result<Value> {
-        let _permit = global_rpc_permit().await;
+        let _permits = acquire_rpc_permits().await;
         let started = std::time::Instant::now();
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
@@ -284,7 +329,7 @@ impl Provider {
         if batch.is_empty() {
             return Ok(Vec::new());
         }
-        let _permit = global_rpc_permit().await;
+        let _permits = acquire_rpc_permits().await;
         let started = std::time::Instant::now();
 
         // Build the request array. id is the 1-based index — must be unique
@@ -453,6 +498,38 @@ impl Provider {
         }]);
         self.call("eth_getLogs", &params).await
     }
+}
+
+pub async fn with_rpc_task_label<F, T>(task: &'static str, fut: F) -> T
+where
+    F: Future<Output = T>,
+{
+    RPC_TASK_LABEL.scope(task, fut).await
+}
+
+struct RpcPermitGuards {
+    _task: Option<OwnedSemaphorePermit>,
+    _global: Option<OwnedSemaphorePermit>,
+}
+
+async fn acquire_rpc_permits() -> RpcPermitGuards {
+    let task = rpc_task_permit().await;
+    let global = global_rpc_permit().await;
+    RpcPermitGuards {
+        _task: task,
+        _global: global,
+    }
+}
+
+async fn rpc_task_permit() -> Option<OwnedSemaphorePermit> {
+    let task = RPC_TASK_LABEL.try_with(|task| *task).ok()?;
+    let limiters = TASK_RPC_LIMITERS.get()?;
+    let limiter = limiters
+        .read()
+        .expect("task rpc limiter lock poisoned")
+        .get(task)
+        .cloned()?;
+    limiter.semaphore.acquire_owned().await.ok()
 }
 
 async fn global_rpc_permit() -> Option<OwnedSemaphorePermit> {

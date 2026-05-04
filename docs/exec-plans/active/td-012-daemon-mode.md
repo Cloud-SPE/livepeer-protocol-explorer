@@ -1,6 +1,6 @@
 # TD-012: Daemon mode — keep the pipeline at chain head
 
-**Status:** In progress — Phase 1 done, Phase 2 largely implemented, Phase 3 partial.
+**Status:** In progress — Phase 1 done, Phase 2 implemented, Phase 3 hardening underway.
 **Severity:** Medium — v1 ships as one-shot CLIs that must be re-invoked to keep
 moving forward; production use needs a long-running supervised daemon.
 **Last touched:** 2026-05-04.
@@ -481,9 +481,11 @@ Acceptance for the first daemon PR slice:
   cross-checked RPC calls across all tasks. N defaults to 24 (well below
   TD-011's empirical 50 ceiling, leaves headroom for the API server's
   on-demand calls).
-- Per-task soft caps via separate semaphores so one runaway task can't
-  starve the others (`indexer ≤ 8`, `valuator ≤ 14`, `staker ≤ 4`,
-  watchers ≤ 1 each).
+- Per-task soft caps now ship via task-scoped semaphores in `core::rpc` so
+  one runaway task can't starve the others while still sharing the same
+  process-wide ceiling (`indexer ≤ 8`, `finality ≤ 2`, `reorg ≤ 2`,
+  `valuator ≤ 16`, `staker ≤ 6`; sum intentionally exceeds the global cap
+  so idle tasks do not reserve capacity).
 - Client refresh / rotation policy (TD-011 mitigation) lives inside this
   manager, not in daemon task code. Tasks should depend on a stable handle and
   remain unaware of connection-pool refreshes.

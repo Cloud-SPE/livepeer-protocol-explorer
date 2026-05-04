@@ -2,6 +2,7 @@ use crate::metrics::Metrics;
 use crate::rpc_manager::RpcManager;
 use anyhow::{bail, Result};
 use livepeer_core::Config;
+use livepeer_core::rpc::{with_rpc_task_label, Provider};
 use livepeer_finality_watcher::runner as finality_runner;
 use livepeer_indexer::{backfill::ContractKind, runner as indexer_runner};
 use livepeer_reorg_watcher::runner as reorg_runner;
@@ -39,6 +40,9 @@ pub async fn run_follow(
     metrics.chain_head_block.set(head as i64);
     let lag = current_indexer_lag(pg, head).await?;
     metrics.task_lag_blocks.with_label_values(&["indexer"]).set(lag as i64);
+    for task in ["indexer", "finality", "reorg", "valuator", "staker"] {
+        update_task_rpc_metrics(&metrics, task);
+    }
     if lag > follow.max_start_lag_blocks {
         bail!(
             "follow-mode startup refused: current lag {lag} exceeds max_start_lag_blocks {}",
@@ -124,7 +128,8 @@ async fn indexer_loop(
             _ = sleep(Duration::from_secs(INDEXER_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
-        let head = archive.eth_block_number().await?;
+        update_task_rpc_metrics(&metrics, "indexer");
+        let head = with_rpc_task_label("indexer", archive.eth_block_number()).await?;
         metrics.chain_head_block.set(head as i64);
         let to_block = head.saturating_sub(INDEXER_HEAD_DEPTH_BLOCKS);
         for contract in [
@@ -139,15 +144,18 @@ async fn indexer_loop(
                 continue;
             }
             let bounded_to = from_block.saturating_add(INDEXER_PER_TICK_BLOCKS - 1).min(to_block);
-            let result = indexer_runner::run_backfill(
-                &pg,
-                archive.as_ref(),
-                &cfg,
-                contract,
-                from_block,
-                bounded_to,
-                true,
-                "",
+            let result = with_rpc_task_label(
+                "indexer",
+                indexer_runner::run_backfill(
+                    &pg,
+                    archive.as_ref(),
+                    &cfg,
+                    contract,
+                    from_block,
+                    bounded_to,
+                    true,
+                    "",
+                ),
             )
             .await;
             match result {
@@ -176,6 +184,7 @@ async fn indexer_loop(
                 }
             }
         }
+        update_task_rpc_metrics(&metrics, "indexer");
         metrics.record_success("indexer", started.elapsed().as_secs_f64());
     }
     Ok(())
@@ -193,13 +202,15 @@ async fn finality_loop(
             _ = sleep(Duration::from_secs(FINALITY_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
-        let summary = match finality_runner::run_once(&pg, l1.as_ref()).await {
+        update_task_rpc_metrics(&metrics, "finality");
+        let summary = match with_rpc_task_label("finality", finality_runner::run_once(&pg, l1.as_ref())).await {
             Ok(summary) => summary,
             Err(e) => {
                 metrics.record_failure("finality", &e, started.elapsed().as_secs_f64());
                 return Err(e);
             }
         };
+        update_task_rpc_metrics(&metrics, "finality");
         info!(?summary, "daemon: finality iteration complete");
         metrics.record_success("finality", started.elapsed().as_secs_f64());
     }
@@ -218,7 +229,8 @@ async fn reorg_loop(
             _ = sleep(Duration::from_secs(REORG_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
-        let summary = match reorg_runner::run_once(&pg, secondary.as_ref()).await {
+        update_task_rpc_metrics(&metrics, "reorg");
+        let summary = match with_rpc_task_label("reorg", reorg_runner::run_once(&pg, secondary.as_ref())).await {
             Ok(summary) => summary,
             Err(e) => {
                 metrics.record_failure("reorg", &e, started.elapsed().as_secs_f64());
@@ -231,6 +243,7 @@ async fn reorg_loop(
                 .with_label_values(&["info"])
                 .inc_by(summary.divergences);
         }
+        update_task_rpc_metrics(&metrics, "reorg");
         info!(?summary, "daemon: reorg iteration complete");
         metrics.record_success("reorg", started.elapsed().as_secs_f64());
     }
@@ -251,12 +264,16 @@ async fn valuator_loop(
             _ = sleep(Duration::from_secs(VALUATOR_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
-        let summary = match valuator_runner::run_all(
-            &pg,
-            archive.as_ref(),
-            &cfg,
-            &follow.valuation_version,
-            follow.include_tentative,
+        update_task_rpc_metrics(&metrics, "valuator");
+        let summary = match with_rpc_task_label(
+            "valuator",
+            valuator_runner::run_all(
+                &pg,
+                archive.as_ref(),
+                &cfg,
+                &follow.valuation_version,
+                follow.include_tentative,
+            ),
         )
         .await
         {
@@ -314,6 +331,7 @@ async fn valuator_loop(
                 .with_label_values(&["failed_other"])
                 .inc_by(summary.multi_asset.failures);
         }
+        update_task_rpc_metrics(&metrics, "valuator");
         info!(?summary, "daemon: valuator iteration complete");
         metrics.record_success("valuator", started.elapsed().as_secs_f64());
     }
@@ -334,6 +352,7 @@ async fn staker_loop(
             _ = sleep(Duration::from_secs(STAKER_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
+        update_task_rpc_metrics(&metrics, "staker");
         let backfill = match staker_runner::run_backfill(&pg, include_tentative).await {
             Ok(summary) => summary,
             Err(e) => {
@@ -342,9 +361,11 @@ async fn staker_loop(
             }
         };
         info!(?backfill, "daemon: staker backfill iteration complete");
-        let refresh =
-            staker_runner::run_refresh_pending(&pg, archive.as_ref(), &cfg, include_tentative)
-                .await;
+        let refresh = with_rpc_task_label(
+            "staker",
+            staker_runner::run_refresh_pending(&pg, archive.as_ref(), &cfg, include_tentative),
+        )
+        .await;
         let refresh = match refresh {
             Ok(summary) => summary,
             Err(e) => {
@@ -352,10 +373,24 @@ async fn staker_loop(
                 return Err(e);
             }
         };
+        update_task_rpc_metrics(&metrics, "staker");
         info!(?refresh, "daemon: staker refresh iteration complete");
         metrics.record_success("staker", started.elapsed().as_secs_f64());
     }
     Ok(())
+}
+
+fn update_task_rpc_metrics(metrics: &Metrics, task: &'static str) {
+    if let Some(snapshot) = Provider::task_concurrency_snapshot(task) {
+        metrics
+            .task_rpc_limit
+            .with_label_values(&[task])
+            .set(snapshot.limit as i64);
+        metrics
+            .task_rpc_in_flight
+            .with_label_values(&[task])
+            .set(snapshot.in_flight as i64);
+    }
 }
 
 async fn current_indexer_lag(pg: &PgPool, head: u64) -> Result<u64> {

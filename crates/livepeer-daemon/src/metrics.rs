@@ -14,6 +14,8 @@ pub struct Metrics {
     pub chain_head_block: IntGauge,
     pub task_checkpoint_block: IntGaugeVec,
     pub task_lag_blocks: IntGaugeVec,
+    pub task_rpc_limit: IntGaugeVec,
+    pub task_rpc_in_flight: IntGaugeVec,
 }
 
 impl Metrics {
@@ -91,6 +93,22 @@ impl Metrics {
             &["task"],
         )
         .expect("metric construction");
+        let task_rpc_limit = IntGaugeVec::new(
+            opts!(
+                "livepeer_task_rpc_limit",
+                "Configured soft RPC concurrency cap by daemon task"
+            ),
+            &["task"],
+        )
+        .expect("metric construction");
+        let task_rpc_in_flight = IntGaugeVec::new(
+            opts!(
+                "livepeer_task_rpc_in_flight",
+                "Current in-flight RPC permits consumed by daemon task"
+            ),
+            &["task"],
+        )
+        .expect("metric construction");
 
         for collector in [
             Box::new(iterations_total.clone()) as Box<dyn prometheus::core::Collector>,
@@ -103,6 +121,8 @@ impl Metrics {
             Box::new(chain_head_block.clone()),
             Box::new(task_checkpoint_block.clone()),
             Box::new(task_lag_blocks.clone()),
+            Box::new(task_rpc_limit.clone()),
+            Box::new(task_rpc_in_flight.clone()),
         ] {
             registry.register(collector).expect("metric registration");
         }
@@ -119,6 +139,8 @@ impl Metrics {
             chain_head_block,
             task_checkpoint_block,
             task_lag_blocks,
+            task_rpc_limit,
+            task_rpc_in_flight,
         }
     }
 

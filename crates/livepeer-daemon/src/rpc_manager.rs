@@ -2,6 +2,13 @@ use anyhow::{Context, Result};
 use livepeer_core::{config::Config, rpc::Provider};
 use std::sync::Arc;
 
+const GLOBAL_RPC_LIMIT: usize = 24;
+const INDEXER_RPC_LIMIT: usize = 8;
+const FINALITY_RPC_LIMIT: usize = 2;
+const REORG_RPC_LIMIT: usize = 2;
+const VALUATOR_RPC_LIMIT: usize = 16;
+const STAKER_RPC_LIMIT: usize = 6;
+
 #[derive(Clone)]
 pub struct RpcManager {
     pub archive: Arc<Provider>,
@@ -11,7 +18,12 @@ pub struct RpcManager {
 
 impl RpcManager {
     pub async fn new(cfg: &Config) -> Result<Self> {
-        Provider::set_global_concurrency_limit(24);
+        Provider::set_global_concurrency_limit(GLOBAL_RPC_LIMIT);
+        Provider::set_task_concurrency_limit("indexer", INDEXER_RPC_LIMIT);
+        Provider::set_task_concurrency_limit("finality", FINALITY_RPC_LIMIT);
+        Provider::set_task_concurrency_limit("reorg", REORG_RPC_LIMIT);
+        Provider::set_task_concurrency_limit("valuator", VALUATOR_RPC_LIMIT);
+        Provider::set_task_concurrency_limit("staker", STAKER_RPC_LIMIT);
         let archive = Arc::new(Provider::new(
             "chainstack",
             cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,

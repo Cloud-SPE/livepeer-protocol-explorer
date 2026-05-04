@@ -5,6 +5,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct RpcManager {
     pub archive: Arc<Provider>,
+    pub secondary: Arc<Provider>,
     pub l1: Arc<Provider>,
 }
 
@@ -13,6 +14,10 @@ impl RpcManager {
         let archive = Arc::new(Provider::new(
             "chainstack",
             cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
+        )?);
+        let secondary = Arc::new(Provider::new(
+            "secondary",
+            cfg.secondary_rpc_url().context("SECONDARY_RPC_URL")?,
         )?);
         let l1_url = std::env::var(
             cfg.env
@@ -24,6 +29,10 @@ impl RpcManager {
         )
         .context("L1 RPC env missing for daemon follow mode")?;
         let l1 = Arc::new(Provider::new("l1-eth", l1_url)?);
-        Ok(Self { archive, l1 })
+        Ok(Self {
+            archive,
+            secondary,
+            l1,
+        })
     }
 }

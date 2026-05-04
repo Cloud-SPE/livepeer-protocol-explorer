@@ -29,14 +29,12 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
-use sqlx::{PgPool, Row};
+use livepeer_reorg_watcher::runner;
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
-const SERVICE: &str = "livepeer-reorg-watcher";
-const ARBITRUM_CHAIN_ID: i64 = 42161;
-const WALK_DEPTH: u64 = 7_500;
+const SERVICE: &str = runner::SERVICE;
 const CADENCE_NORMAL_SECS: u64 = 15;
 const CADENCE_HEIGHTENED_SECS: u64 = 5;
 const CADENCE_BACKOFF_SECS: u64 = 60;
@@ -73,20 +71,20 @@ async fn main() -> Result<()> {
         "liveinfraspe",
         cfg.secondary_rpc_url().context("SECONDARY_RPC_URL")?,
     )?;
-    info!(service = SERVICE, walk_depth = WALK_DEPTH, "starting");
+    info!(service = SERVICE, walk_depth = runner::WALK_DEPTH, "starting");
 
     if cli.once {
-        run_iteration(&pg, &secondary).await?;
+        runner::run_once(&pg, &secondary).await?;
         return Ok(());
     }
 
     let mut last_detection_unix: Option<u64> = None;
     let mut last_clean_unix: Option<u64> = None;
     loop {
-        match run_iteration(&pg, &secondary).await {
-            Ok(divergences) => {
+        match runner::run_once(&pg, &secondary).await {
+            Ok(summary) => {
                 let now = unix_now();
-                if divergences > 0 {
+                if summary.divergences > 0 {
                     last_detection_unix = Some(now);
                     last_clean_unix = None;
                 } else if last_clean_unix.is_none() {
@@ -124,126 +122,4 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// Run one iteration. Returns the number of divergences detected (0 = clean).
-async fn run_iteration(pg: &PgPool, secondary: &Provider) -> Result<u64> {
-    let head = secondary.eth_block_number().await?;
-    let window_start = head.saturating_sub(WALK_DEPTH);
-
-    // Find every block_number with tentative + canonical events in the window.
-    let stored: Vec<(i64, String)> = sqlx::query(
-        r#"SELECT DISTINCT block_number, block_hash
-             FROM raw_protocol_events
-            WHERE chain_id      = $1
-              AND finality      = 'tentative'
-              AND is_canonical  = TRUE
-              AND block_number BETWEEN $2 AND $3
-            ORDER BY block_number"#,
-    )
-    .bind(ARBITRUM_CHAIN_ID)
-    .bind(window_start as i64)
-    .bind(head as i64)
-    .fetch_all(pg)
-    .await?
-    .into_iter()
-    .map(|r| (r.get::<i64, _>(0), r.get::<String, _>(1)))
-    .collect();
-
-    info!(
-        head,
-        window_start,
-        blocks_to_check = stored.len(),
-        "iteration"
-    );
-
-    let mut divergences = 0u64;
-    for (block_number, stored_hash) in stored {
-        let n = block_number as u64;
-        let header = secondary
-            .eth_get_block_header(livepeer_core::rpc::BlockTag::Number(n))
-            .await?;
-        let chain_hash = header
-            .get("hash")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_lowercase())
-            .context("block header missing .hash")?;
-        let stored_hash = stored_hash.to_lowercase();
-        if chain_hash != stored_hash {
-            divergences += 1;
-            handle_divergence(pg, n, &stored_hash, &chain_hash).await?;
-        }
-    }
-
-    if divergences == 0 {
-        debug!(blocks_checked = "n", "no divergence");
-    }
-    Ok(divergences)
-}
-
-async fn handle_divergence(
-    pg: &PgPool,
-    block_number: u64,
-    old_hash: &str,
-    new_hash: &str,
-) -> Result<()> {
-    let mut tx = pg.begin().await?;
-
-    // Mark all events at this block non-canonical. SPEC §9.3 also requires updating
-    // block_number/block_hash to the new canonical values + writing reorg_mutations
-    // rows. That's a richer flow tracked in TD-005 (added below).
-    let affected: u64 = sqlx::query(
-        r#"UPDATE raw_protocol_events
-              SET is_canonical = FALSE
-            WHERE chain_id     = $1
-              AND block_number = $2
-              AND is_canonical = TRUE"#,
-    )
-    .bind(ARBITRUM_CHAIN_ID)
-    .bind(block_number as i64)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-
-    // Audit row.
-    let depth = 1; // single-block divergence detected; deeper reorgs are recorded as
-                   // separate detections in v1. Multi-block-depth tracking → TD-005.
-    sqlx::query(
-        r#"INSERT INTO reorg_events
-              (chain_id, divergence_block, depth, old_block_hashes,
-               new_block_hashes, affected_event_count, notes)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
-    )
-    .bind(ARBITRUM_CHAIN_ID)
-    .bind(block_number as i64)
-    .bind(depth as i32)
-    .bind(vec![old_hash.to_string()])
-    .bind(vec![new_hash.to_string()])
-    .bind(affected as i32)
-    .bind("v1 reorg-watcher: events-only walk; non-canonical marker only (TD-005)")
-    .execute(&mut *tx)
-    .await?;
-
-    tx.commit().await?;
-
-    let level = severity_level(depth);
-    match level {
-        Severity::Info => info!(block_number, old_hash, new_hash, affected, "reorg detected (depth ≤ 2)"),
-        Severity::Warn => warn!(block_number, old_hash, new_hash, affected, "reorg detected (depth 3–50)"),
-        Severity::Critical => error!(block_number, old_hash, new_hash, affected, "REORG detected (depth > 50) — CRITICAL"),
-    }
-    Ok(())
-}
-
-enum Severity {
-    Info,
-    Warn,
-    Critical,
-}
-fn severity_level(depth: u32) -> Severity {
-    match depth {
-        0..=2 => Severity::Info,
-        3..=50 => Severity::Warn,
-        _ => Severity::Critical,
-    }
 }

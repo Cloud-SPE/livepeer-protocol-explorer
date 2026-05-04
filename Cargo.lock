@@ -2528,6 +2528,8 @@ dependencies = [
  "livepeer-core",
  "livepeer-finality-watcher",
  "livepeer-indexer",
+ "livepeer-reorg-watcher",
+ "livepeer-staker",
  "livepeer-valuator",
  "sqlx",
  "tokio",

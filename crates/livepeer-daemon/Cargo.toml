@@ -20,4 +20,6 @@ tracing-subscriber.workspace = true
 sqlx.workspace = true
 livepeer-indexer = { path = "../livepeer-indexer" }
 livepeer-finality-watcher = { path = "../livepeer-finality-watcher" }
+livepeer-reorg-watcher = { path = "../livepeer-reorg-watcher" }
+livepeer-staker = { path = "../livepeer-staker" }
 livepeer-valuator = { path = "../livepeer-valuator" }

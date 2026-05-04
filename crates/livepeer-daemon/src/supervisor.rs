@@ -3,6 +3,8 @@ use anyhow::{bail, Result};
 use livepeer_core::Config;
 use livepeer_finality_watcher::runner as finality_runner;
 use livepeer_indexer::{backfill::ContractKind, runner as indexer_runner};
+use livepeer_reorg_watcher::runner as reorg_runner;
+use livepeer_staker::runner as staker_runner;
 use livepeer_valuator::runner as valuator_runner;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -11,8 +13,10 @@ use tokio::time::{sleep, Duration};
 use tracing::info;
 
 const INDEXER_INTERVAL_SECS: u64 = 12;
+const REORG_INTERVAL_SECS: u64 = 60;
 const FINALITY_INTERVAL_SECS: u64 = 60;
 const VALUATOR_INTERVAL_SECS: u64 = 60;
+const STAKER_INTERVAL_SECS: u64 = 300;
 const INDEXER_HEAD_DEPTH_BLOCKS: u64 = 10;
 const INDEXER_PER_TICK_BLOCKS: u64 = 1_000;
 
@@ -56,6 +60,11 @@ pub async fn run_follow(pg: &PgPool, cfg: &Config, rpc: RpcManager, follow: Foll
         rpc.l1.clone(),
         shutdown.clone(),
     ));
+    let reorg_task = tokio::spawn(reorg_loop(
+        pg.clone(),
+        rpc.secondary.clone(),
+        shutdown.clone(),
+    ));
     let valuator_task = tokio::spawn(valuator_loop(
         pg.clone(),
         cfg.clone(),
@@ -63,9 +72,22 @@ pub async fn run_follow(pg: &PgPool, cfg: &Config, rpc: RpcManager, follow: Foll
         shutdown.clone(),
         follow.clone(),
     ));
+    let staker_task = tokio::spawn(staker_loop(
+        pg.clone(),
+        cfg.clone(),
+        rpc.archive.clone(),
+        shutdown.clone(),
+        follow.include_tentative,
+    ));
 
-    let (a, b, c) = tokio::join!(indexer_task, finality_task, valuator_task);
-    for r in [a, b, c] {
+    let (a, b, c, d, e) = tokio::join!(
+        indexer_task,
+        finality_task,
+        reorg_task,
+        valuator_task,
+        staker_task
+    );
+    for r in [a, b, c, d, e] {
         match r {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e),
@@ -133,6 +155,22 @@ async fn finality_loop(
     Ok(())
 }
 
+async fn reorg_loop(
+    pg: PgPool,
+    secondary: Arc<livepeer_core::rpc::Provider>,
+    shutdown: Arc<Notify>,
+) -> Result<()> {
+    loop {
+        tokio::select! {
+            _ = shutdown.notified() => break,
+            _ = sleep(Duration::from_secs(REORG_INTERVAL_SECS)) => {}
+        }
+        let summary = reorg_runner::run_once(&pg, secondary.as_ref()).await?;
+        info!(?summary, "daemon: reorg iteration complete");
+    }
+    Ok(())
+}
+
 async fn valuator_loop(
     pg: PgPool,
     cfg: Config,
@@ -154,6 +192,28 @@ async fn valuator_loop(
         )
         .await?;
         info!(?summary, "daemon: valuator iteration complete");
+    }
+    Ok(())
+}
+
+async fn staker_loop(
+    pg: PgPool,
+    cfg: Config,
+    archive: Arc<livepeer_core::rpc::Provider>,
+    shutdown: Arc<Notify>,
+    include_tentative: bool,
+) -> Result<()> {
+    loop {
+        tokio::select! {
+            _ = shutdown.notified() => break,
+            _ = sleep(Duration::from_secs(STAKER_INTERVAL_SECS)) => {}
+        }
+        let backfill = staker_runner::run_backfill(&pg, include_tentative).await?;
+        info!(?backfill, "daemon: staker backfill iteration complete");
+        let refresh =
+            staker_runner::run_refresh_pending(&pg, archive.as_ref(), &cfg, include_tentative)
+                .await?;
+        info!(?refresh, "daemon: staker refresh iteration complete");
     }
     Ok(())
 }

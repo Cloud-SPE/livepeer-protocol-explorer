@@ -25,6 +25,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    MigrateOnly,
     Bootstrap {
         #[arg(long)]
         from_block: Option<u64>,
@@ -96,6 +97,9 @@ async fn main() -> Result<()> {
     info!(service = SERVICE, "config + db ready");
 
     match cli.command {
+        Command::MigrateOnly => {
+            run_migrations(&pg).await?;
+        }
         Command::Bootstrap {
             from_block,
             to_block,

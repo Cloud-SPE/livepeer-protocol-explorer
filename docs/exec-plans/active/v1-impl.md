@@ -266,10 +266,10 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] Reports matched / missing-in-indexer / missing-in-seed / block-number-mismatches / block-hash-mismatches with up to 10 sample tx-hash#log-index strings per class
 - [x] **Live verification on 30K-block window:** 165 indexer ↔ 136 seed events: 131 matched, 4 missing-in-indexer, 33 missing-in-seed, 1 block-hash-mismatch (the synthetic-divergence row from S7.1, correctly surfaced)
 
-#### S11.2 — determinism replay CI gate (pending)
-- [ ] Committed fixture: mini SQLite + RPC cache snapshot covering SPEC §12.4 events (Reward, EarningsClaimed multi-asset, Bond, Unbond, WinningTicketRedeemed, NewRound, TranscoderUpdate, seeded + non-seeded)
-- [ ] `tests/replay.rs` drops DB, applies migrations, runs all binaries against the fixture, hashes every table by PK, asserts against `expected_hashes.json`
-- [ ] Flip `.github/workflows/determinism.yml` from placeholder to the real test
+#### S11.2 — determinism replay CI gate (partial)
+- [x] Committed strict-replay fixtures under `tests/fixtures/<case>/` — split across small real-chain cases so CI stays practical while still covering the SPEC §12.4 surface (Reward, EarningsClaimed multi-asset, Bond, Unbond, WinningTicketRedeemed, NewRound, TranscoderUpdate, seeded + non-seeded across the case set)
+- [x] Script-driven replay gate: `scripts/run-determinism-replay.sh` drops into a clean DB, applies migrations, loads fixture cache/checkpoints, runs strict `livepeer-orchestrator replay --skip-cross-check`, hashes the derived tables by stable row order, and diffs against each case's `expected_hashes.json`
+- [x] Flip `.github/workflows/determinism.yml` from placeholder to the real test
 - [ ] `livepeer-test regenerate-fixture` operator command
 
 ### S12 — observability + alerting (in_progress)

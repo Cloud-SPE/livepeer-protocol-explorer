@@ -45,16 +45,27 @@ Key points:
 - finality replay uses recorded L1 timestamp inputs from the original live run
   instead of resolving live `latest`
 
-## What replay still needs for full CI closure
+## Fixture contract
 
-Still pending:
-- committed fixture set under `tests/fixtures/`
-- committed expected table hashes
-- real `tests/replay.rs`
-- non-placeholder `.github/workflows/determinism.yml`
+The committed replay fixtures live under `tests/fixtures/<case>/`:
+- `seed.sqlite`
+- `rpc_cache.csv`
+- `replay_checkpoints.csv`
+- `fixture.env`
+- `expected_hashes.json`
 
-So the runtime contract is now much stronger than before, but the fully
-automated CI fixture gate is still outstanding.
+The CI path is script-driven:
+
+```sh
+bash scripts/run-determinism-replay.sh
+```
+
+That script:
+1. applies migrations
+2. loads the cached RPC rows + replay finality checkpoints
+3. runs strict replay over each committed fixture window
+4. recomputes stable table hashes
+5. diffs against `expected_hashes.json`
 
 ## Expected operator flow
 
@@ -88,15 +99,15 @@ Per spec, the eventual committed fixture set must cover:
 - non-seeded on-chain pricing path
 - all required cached RPC inputs
 
-## CI target state
+## CI state
 
-The final CI gate should:
+The GitHub determinism workflow now:
 
-1. stand up empty Postgres
-2. apply migrations
-3. load fixture cache + seed inputs
-4. run strict replay
-5. hash tables by stable primary-key order
-6. compare to committed expected hashes
+1. stands up empty Postgres
+2. applies migrations via `livepeer-orchestrator migrate-only`
+3. loads the committed fixture cache + replay checkpoints
+4. runs strict replay
+5. hashes the derived tables by stable primary-key order
+6. compares to committed expected hashes
 
-Failure should block merge.
+Failure blocks merge.

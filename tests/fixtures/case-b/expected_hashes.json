@@ -1,0 +1,10 @@
+{
+  "raw_protocol_events": {"count": 159, "md5": "f154b73ce9e37302d7b9b6f80932961d"},
+  "decode_failures": {"count": 0, "md5": "d41d8cd98f00b204e9800998ecf8427e"},
+  "event_valuations": {"count": 156, "md5": "8e1011050dfe2180fef247462a7eb504"},
+  "valuation_attempts": {"count": 156, "md5": "28d07d9d679e3e2edb8ab0143abaf9a6"},
+  "token_prices_by_block": {"count": 222, "md5": "763341a5bbcfae23439dd849a4bcffb2"},
+  "stake_balances_by_block": {"count": 5, "md5": "88665150607a3701831ab37c391e5673"},
+  "delegator_registry": {"count": 3, "md5": "7f9a444e7cd2ec54fde9e709c9c5adce"},
+  "reorg_events": {"count": 0, "md5": "d41d8cd98f00b204e9800998ecf8427e"}
+}

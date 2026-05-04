@@ -22,6 +22,7 @@ Cargo.lock.bak
 *.sqlite
 *.db
 !docs/**/*.sqlite
+!tests/fixtures/**/seed.sqlite
 
 # OS
 .DS_Store

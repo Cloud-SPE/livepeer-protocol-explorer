@@ -23,6 +23,9 @@ rpc:
     burst: 4000
     max_concurrent: 100
 
+l1:
+  url_env: L1_RPC_URL
+
 alerting:
   telegram:
     bot_token_env: TELEGRAM_BOT_TOKEN

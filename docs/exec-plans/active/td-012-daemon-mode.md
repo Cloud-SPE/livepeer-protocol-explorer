@@ -650,40 +650,45 @@ The `livepeer-alert-bot` is a tiny separate binary in
 
 #### 3c — RPC failover semantics
 
-Today, `Provider` is constructed with a single primary URL; cross-check
-adds a secondary. In daemon mode we want the primary to fail over to a
-**third archive endpoint** if it stays unhealthy for >60s.
+Automatic failover is now explicitly **deferred** until we have a real
+second archive provider.
 
-Failover rules:
-- Health check = last-N-call success rate < 50% over a 30s window OR
-  pool-refresh-failed counter ≥ 3.
-- Failover swaps the URL inside `Arc<RwLock<reqwest::Client>>`; existing
-  in-flight calls are not aborted.
-- Cross-check still runs every chain read — failover doesn't make
-  single-provider reads acceptable; it just changes which providers
-  pair up for the cross-check.
-- `liveinfraspe` (the secondary, non-archive) is never promoted to
-  primary because it doesn't have archive depth.
+What ships today:
+- one primary archive provider
+- the existing cross-check path where configured
+- a process-wide RPC concurrency ceiling
+- provider-level metrics and distress visibility
 
-Out of scope for Phase 3: automatic failback. Once we fail over, manual
-ops re-points to primary. Reason: thrashing under flapping conditions
-is worse than running on the secondary for a few hours.
+What remains for a later Phase 3 slice:
+- operator-approved alternate archive URL / env contract
+- unhealthy-provider promotion policy
+- manual-vs-automatic failback decision
+
+Reason: without a real archive backup, "failover" would just add state
+machine complexity without improving availability. The current operator
+contract is manual: if the archive provider degrades badly, acquire or
+switch to a replacement provider and restart the affected process.
 
 #### 3d — Determinism replay CI
 
-Add a CI job that runs nightly:
+This has now landed for the orchestrated replay path.
 
-1. Snapshot prod's `rpc_call_cache` to a file.
-2. Stand up an empty PG, restore that cache.
-3. Run the daemon for 24 hours of simulated time (replaying chain head
-   from a recorded sequence).
-4. Diff `event_valuations`, `token_prices_by_block`,
-   `delegator_pending_state` row hashes against the prod baseline.
-5. Pass = byte-identical; fail = page on-call.
+What ships today:
+1. Committed multi-case fixtures under `tests/fixtures/<case>/`
+2. Strict replay via `livepeer-orchestrator replay`
+3. `scripts/run-determinism-replay.sh` loads fixture cache + replay
+   checkpoints, runs replay on a clean DB, and diffs stable table hashes
+4. `.github/workflows/determinism.yml` runs that gate in CI
 
-This is the operational cousin of `scripts/validate-vs-baseline.sh` and
-is the contract that lets us refactor daemon internals without fearing
-silent determinism drift.
+Current scope:
+- validates strict offline replay semantics
+- validates indexer/finality/valuator/staker orchestration against
+  committed fixture windows
+- does **not** yet simulate a long-running daemon follow session over a
+  recorded head stream
+
+That future "daemonized determinism soak" can still be added later, but
+it is no longer a blocker for calling replay determinism CI real.
 
 #### 3e — Operator runbook outline
 

@@ -2,7 +2,7 @@
 -- 1. point-in-time/latest params + lifecycle by indexed topic1 (transcoder address)
 -- 2. delegator list at block via latest-per-delegator scan
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_transcoder_topic_block
+CREATE INDEX IF NOT EXISTS idx_events_transcoder_topic_block
     ON raw_protocol_events (
         chain_id,
         event_name,
@@ -13,7 +13,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_transcoder_topic_block
     WHERE is_canonical = TRUE
       AND event_name IN ('TranscoderUpdate', 'TranscoderActivated', 'TranscoderDeactivated');
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_stake_latest_per_delegator_cover
+CREATE INDEX IF NOT EXISTS idx_stake_latest_per_delegator_cover
     ON stake_balances_by_block (
         chain_id,
         delegator_address,

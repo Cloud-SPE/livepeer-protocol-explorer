@@ -2,6 +2,7 @@ target/
 .git/
 .github/
 docs/
+backups/
 tests/fixtures/seed.sqlite
 *.db
 *.db-pre-refactor

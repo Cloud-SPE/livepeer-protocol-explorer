@@ -11,31 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Cache dependencies separately from source.
-COPY rust-toolchain.toml Cargo.toml Cargo.lock* ./
-COPY crates/core/Cargo.toml crates/core/
-COPY crates/livepeer-indexer/Cargo.toml crates/livepeer-indexer/
-COPY crates/livepeer-reorg-watcher/Cargo.toml crates/livepeer-reorg-watcher/
-COPY crates/livepeer-finality-watcher/Cargo.toml crates/livepeer-finality-watcher/
-COPY crates/livepeer-valuator/Cargo.toml crates/livepeer-valuator/
-COPY crates/livepeer-staker/Cargo.toml crates/livepeer-staker/
-COPY crates/livepeer-api/Cargo.toml crates/livepeer-api/
-COPY crates/livepeer-seed-migrator/Cargo.toml crates/livepeer-seed-migrator/
-COPY crates/livepeer-orchestrator/Cargo.toml crates/livepeer-orchestrator/
-COPY crates/livepeer-daemon/Cargo.toml crates/livepeer-daemon/
-COPY crates/livepeer-alert-bot/Cargo.toml crates/livepeer-alert-bot/
-
-# Stub out src so cargo can build the dependency graph.
-RUN mkdir -p crates/core/src && echo "" > crates/core/src/lib.rs && \
-    for c in livepeer-indexer livepeer-reorg-watcher livepeer-finality-watcher \
-             livepeer-valuator livepeer-staker livepeer-api livepeer-seed-migrator \
-             livepeer-orchestrator livepeer-daemon livepeer-alert-bot; do \
-      mkdir -p crates/$c/src && echo "fn main() {}" > crates/$c/src/main.rs; \
-    done && \
-    cargo build --release --workspace && \
-    rm -rf crates/*/src target/release/livepeer-* target/release/deps/livepeer*
-
-# Real build.
 COPY . .
 RUN cargo build --release --workspace
 

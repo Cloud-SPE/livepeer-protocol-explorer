@@ -2520,6 +2520,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "livepeer-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "livepeer-core",
+ "livepeer-finality-watcher",
+ "livepeer-indexer",
+ "livepeer-valuator",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "livepeer-finality-watcher"
 version = "0.1.0"
 dependencies = [
@@ -2544,6 +2560,25 @@ dependencies = [
  "clap",
  "livepeer-core",
  "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "livepeer-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "livepeer-core",
+ "livepeer-finality-watcher",
+ "livepeer-indexer",
+ "livepeer-seed-migrator",
+ "livepeer-staker",
+ "livepeer-valuator",
  "serde_json",
  "sqlx",
  "tokio",

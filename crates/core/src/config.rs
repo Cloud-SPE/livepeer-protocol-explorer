@@ -2,14 +2,14 @@ use crate::error::{CoreError, Result};
 use serde::Deserialize;
 use std::path::Path;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ChainConfig {
     pub name: String,
     pub chain_id: u64,
     pub livepeer_arbitrum_genesis_block: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Contracts {
     pub controller: String,
     pub governor: String,
@@ -22,7 +22,7 @@ pub struct Contracts {
     pub l2_lpt_gateway: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct PricingConfig {
     pub default_valuation_version: String,
     pub twap_window_seconds: u64,
@@ -34,20 +34,20 @@ pub struct PricingConfig {
     pub chainlink_warn_staleness_seconds: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct StaticConfig {
     pub chain: ChainConfig,
     pub contracts: Contracts,
     pub pricing: PricingConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct PostgresConfig {
     pub connection_string_env: String,
     pub pool_max_connections: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RpcEndpoint {
     pub url_env: String,
     pub rate_limit_rps: u32,
@@ -55,13 +55,13 @@ pub struct RpcEndpoint {
     pub max_concurrent: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RpcEndpoints {
     pub archive: RpcEndpoint,
     pub secondary: RpcEndpoint,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct EnvConfig {
     pub log_level: String,
     pub postgres: PostgresConfig,
@@ -71,12 +71,12 @@ pub struct EnvConfig {
     pub l1: Option<L1Endpoint>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct L1Endpoint {
     pub url_env: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub static_: StaticConfig,
     pub env: EnvConfig,

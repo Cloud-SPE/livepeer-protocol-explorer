@@ -39,6 +39,18 @@ backfill but is the wrong shape for steady-state operation:
 
 This document is the plan for fixing that. **It is a plan only — no code yet.**
 
+## Current architectural direction
+
+As of 2026-05-04, the intended runtime split is now explicit:
+
+- `bootstrap` for empty-DB / large historical catch-up
+- `replay` for deterministic rebuild from cached inputs only
+- `follow` for steady-state near-head operation
+
+The full target architecture and migration rationale are captured in
+[../../design-docs/continuous-catchup-architecture.md](../../design-docs/continuous-catchup-architecture.md).
+This plan is the execution artifact for landing that runtime shape.
+
 ## Goals
 
 - **Steady-state operation**: pipeline tracks chain head with bounded lag
@@ -201,6 +213,19 @@ The current binaries remain the building blocks for historical work:
 The new orchestration CLI should call into shared library functions from these
 crates rather than shelling out to subprocesses.
 
+#### Required library extraction boundary
+
+Each batch binary needs a bounded library entrypoint so both the bounded
+orchestrator and the future daemon call the same logic:
+
+```rust
+pub async fn run_once(ctx: &IterCtx) -> Result<IterSummary>;
+```
+
+This is the load-bearing refactor for the whole migration. If the daemon and
+the batch binaries do not share the same bounded worker entrypoints, the
+determinism story gets weaker and the runtime logic will drift.
+
 #### Determinism check for Phase 1
 
 After Phase 1 lands, validate that `replay` against the same
@@ -215,6 +240,8 @@ reports MATCH.
 - No per-binary `--follow` mode as the primary operational interface.
 - No multi-process pseudo-daemon with separate RPC pools. That would worsen the
   pressure pattern that TD-011 is trying to stabilize.
+- No auto-switch from historical catch-up straight into daemon mode until lag
+  thresholds and shared RPC ceilings are codified.
 
 ### Phase 2 — single `livepeer-daemon` binary (~3–5 days)
 
@@ -225,6 +252,14 @@ shutdown.**
 Why next: once bounded orchestration is explicit, the daemon can focus on the
 single thing batch mode is bad at: near-head steady-state scheduling. This also
 avoids entangling first-time backfill with the still-open TD-011 RPC ceiling.
+
+#### Follow-mode startup gate
+
+`livepeer-daemon follow` should refuse to start when lag exceeds a configured
+threshold (for example `--max-start-lag-blocks 50_000`). Above that threshold,
+the operator must run `bootstrap` instead. This is a core part of the
+architecture, not a convenience flag: near-head scheduling and million-block
+backfill are intentionally different modes.
 
 #### New crate: `crates/livepeer-daemon/`
 

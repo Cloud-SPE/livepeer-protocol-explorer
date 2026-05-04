@@ -110,7 +110,7 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                 summary.stake_rows_written += 1;
             }
             "Rebond" => {
-                let delegator = match ev.from_address.as_ref() {
+                let delegator = match ev.to_address.as_ref() {
                     Some(a) => a.to_lowercase(),
                     None => continue,
                 };

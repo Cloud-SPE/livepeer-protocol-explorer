@@ -11,6 +11,7 @@ pub struct RpcManager {
 
 impl RpcManager {
     pub async fn new(cfg: &Config) -> Result<Self> {
+        Provider::set_global_concurrency_limit(24);
         let archive = Arc::new(Provider::new(
             "chainstack",
             cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,

@@ -431,6 +431,7 @@ The first Phase 2 PR should also stay narrow:
    - `follow` mode
    - shared shutdown signal
    - shared RPC manager wrapper
+   - process-wide RPC concurrency ceiling in `core::rpc::Provider`
    - task loops for:
      - indexer
      - finality watcher

@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tracing::info;
+use std::sync::OnceLock;
 
 /// How often the background task replaces the reqwest client with a fresh
 /// instance. Closes the existing connection pool's TCP sockets and forces
@@ -16,6 +17,7 @@ use tracing::info;
 /// from the same host stays fast through the demotion. Replacing the pool
 /// every 30 min is a cheap experiment to test that hypothesis.
 const POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
+static GLOBAL_RPC_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub struct Provider {
@@ -87,6 +89,10 @@ fn build_client(timeout: Duration, provider_name: &str) -> Result<reqwest::Clien
 }
 
 impl Provider {
+    pub fn set_global_concurrency_limit(limit: usize) {
+        let _ = GLOBAL_RPC_SEMAPHORE.set(Arc::new(Semaphore::new(limit)));
+    }
+
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Result<Self> {
         // 60s timeout — Chainstack's dashboard shows ~6% of our requests are
         // 499s (client-closed) under sustained concurrent load: their archive
@@ -164,6 +170,7 @@ impl Provider {
     }
 
     async fn call_once(&self, method: &str, params: &Value) -> Result<Value> {
+        let _permit = global_rpc_permit().await;
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             method,
@@ -251,6 +258,7 @@ impl Provider {
         if batch.is_empty() {
             return Ok(Vec::new());
         }
+        let _permit = global_rpc_permit().await;
 
         // Build the request array. id is the 1-based index — must be unique
         // within the batch and stable so we can match responses back.
@@ -402,4 +410,9 @@ impl Provider {
         }]);
         self.call("eth_getLogs", &params).await
     }
+}
+
+async fn global_rpc_permit() -> Option<OwnedSemaphorePermit> {
+    let semaphore = GLOBAL_RPC_SEMAPHORE.get()?.clone();
+    semaphore.acquire_owned().await.ok()
 }

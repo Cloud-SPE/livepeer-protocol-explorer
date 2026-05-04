@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
         // Stake
         .route("/stake/{delegator}/block/{block}", get(routes::stake::at_block))
         .route("/stake/{delegator}/range", get(routes::stake::range))
+        .route("/transcoders/{transcoder}/delegators/block/{block}", get(routes::stake::delegators_at_block))
         // Transcoders
         .route("/transcoders/{transcoder}/params/latest", get(routes::transcoders::latest))
         .route("/transcoders/{transcoder}/params/block/{block}", get(routes::transcoders::at_block))

@@ -69,6 +69,30 @@ pub struct StakeRangeResponse {
     pub data: Vec<StakeRow>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DelegatorStakeRow {
+    pub delegator_address: String,
+    pub delegate_address: String,
+    pub block_number: String,
+    pub block_timestamp: DateTime<Utc>,
+    pub block_hash: String,
+    pub bonded_principal: String,
+    pub pending_stake: Option<String>,
+    pub pending_fees: Option<String>,
+    pub pending_round: Option<String>,
+    pub source: String,
+    pub staleness_blocks: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DelegatorListResponse {
+    pub transcoder_address: String,
+    pub requested_block: String,
+    pub delegator_count: String,
+    pub total_bonded_principal: String,
+    pub data: Vec<DelegatorStakeRow>,
+}
+
 pub async fn range(
     State(state): State<AppState>,
     Path(delegator): Path<String>,
@@ -99,6 +123,68 @@ pub async fn range(
 
     Ok(Json(StakeRangeResponse {
         data: rows.iter().map(|r| to_stake_row(r, 0)).collect(),
+    }))
+}
+
+pub async fn delegators_at_block(
+    State(state): State<AppState>,
+    Path((transcoder, block)): Path<(String, i64)>,
+) -> Result<Json<DelegatorListResponse>, ApiError> {
+    let transcoder_lower = transcoder.to_lowercase();
+    let rows = sqlx::query(
+        r#"WITH latest AS (
+               SELECT DISTINCT ON (delegator_address)
+                      delegator_address, delegate_address,
+                      block_number, block_timestamp, block_hash,
+                      bonded_principal, pending_stake, pending_fees, pending_round, source
+                 FROM stake_balances_by_block
+                WHERE chain_id = $1
+                  AND block_number <= $2
+                ORDER BY delegator_address, block_number DESC
+           )
+           SELECT delegator_address, delegate_address,
+                  block_number, block_timestamp, block_hash,
+                  bonded_principal, pending_stake, pending_fees, pending_round, source
+             FROM latest
+            WHERE delegate_address = $3
+              AND bonded_principal > 0
+            ORDER BY bonded_principal DESC, delegator_address ASC"#,
+    )
+    .bind(state.chain_id)
+    .bind(block)
+    .bind(&transcoder_lower)
+    .fetch_all(&state.pg)
+    .await?;
+
+    let mut total = BigDecimal::from(0);
+    let data: Vec<DelegatorStakeRow> = rows
+        .iter()
+        .map(|r| {
+            let snap_block: i64 = r.get("block_number");
+            let bonded: BigDecimal = r.get("bonded_principal");
+            total += bonded.clone();
+            DelegatorStakeRow {
+                delegator_address: r.get("delegator_address"),
+                delegate_address: r.get("delegate_address"),
+                block_number: snap_block.to_string(),
+                block_timestamp: r.get("block_timestamp"),
+                block_hash: r.get("block_hash"),
+                bonded_principal: bonded.to_string(),
+                pending_stake: r.try_get::<BigDecimal, _>("pending_stake").ok().map(|v| v.to_string()),
+                pending_fees: r.try_get::<BigDecimal, _>("pending_fees").ok().map(|v| v.to_string()),
+                pending_round: r.try_get::<i64, _>("pending_round").ok().map(|v| v.to_string()),
+                source: r.get("source"),
+                staleness_blocks: (block - snap_block).to_string(),
+            }
+        })
+        .collect();
+
+    Ok(Json(DelegatorListResponse {
+        transcoder_address: transcoder_lower,
+        requested_block: block.to_string(),
+        delegator_count: data.len().to_string(),
+        total_bonded_principal: total.to_string(),
+        data,
     }))
 }
 

@@ -9,6 +9,7 @@ use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
+use std::collections::{HashMap, HashSet};
 
 const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 1_000;
@@ -362,30 +363,60 @@ async fn list_by_amount_usd_desc(
 
     // We don't take filters on this path beyond the basics + valuation_version. Most
     // callers using amount_usd_desc want "top N most valuable events" — a thin slice.
+    //
+    // Avoid aggregating the entire valuations table. Instead, walk the top-priced
+    // valuation rows in descending order and dedupe event ids in-process. Multi-asset
+    // events only create a tiny number of duplicates, so a modest overscan is enough.
     let sql = format!(
-        r#"WITH max_per_event AS (
-              SELECT v.event_id, MAX(v.amount_usd) AS amount_usd
-                FROM event_valuations v
-               WHERE v.valuation_version = $2
-               GROUP BY v.event_id
-            )
-            SELECT r.id, r.chain_id, r.tx_hash, r.log_index, r.block_number, r.block_hash,
-                   r.block_timestamp, r.contract_address, r.contract_name, r.event_name,
-                   r.event_signature, r.asset, r.amount_normalized, r.is_valuable,
-                   r.from_address, r.to_address, r.finality, r.is_canonical
-              FROM raw_protocol_events r
-              JOIN max_per_event m ON m.event_id = r.id
-             WHERE {where_clauses}
-             ORDER BY m.amount_usd DESC NULLS LAST, r.id DESC
-             LIMIT {limit}"#,
+        r#"SELECT r.id, r.chain_id, r.tx_hash, r.log_index, r.block_number, r.block_hash,
+                  r.block_timestamp, r.contract_address, r.contract_name, r.event_name,
+                  r.event_signature, r.asset, r.amount_normalized, r.is_valuable,
+                  r.from_address, r.to_address, r.finality, r.is_canonical
+             FROM event_valuations v
+             JOIN raw_protocol_events r
+               ON r.id = v.event_id
+            WHERE v.valuation_version = $2
+              AND v.amount_usd IS NOT NULL
+              AND {where_clauses}
+            ORDER BY v.amount_usd DESC, v.event_id DESC
+            LIMIT $3
+            OFFSET $4"#,
         where_clauses = where_clauses.join(" AND "),
     );
-    let rows = sqlx::query(&sql)
-        .bind(state.chain_id)
-        .bind(default_version)
-        .fetch_all(&state.pg)
-        .await?;
-    let mut events: Vec<EventRow> = rows.iter().map(row_to_event).collect();
+
+    let batch_size = (limit * 4).clamp(100, 5_000);
+    let mut offset = 0i64;
+    let mut events: Vec<EventRow> = Vec::with_capacity(limit as usize);
+    let mut seen_event_ids: HashSet<i64> = HashSet::with_capacity(limit as usize);
+
+    while (events.len() as i64) < limit {
+        let rows = sqlx::query(&sql)
+            .bind(state.chain_id)
+            .bind(default_version)
+            .bind(batch_size)
+            .bind(offset)
+            .fetch_all(&state.pg)
+            .await?;
+
+        if rows.is_empty() {
+            break;
+        }
+
+        for row in &rows {
+            let event_id: i64 = row.get(0);
+            if seen_event_ids.insert(event_id) {
+                events.push(row_to_event(row));
+                if (events.len() as i64) == limit {
+                    break;
+                }
+            }
+        }
+
+        if (rows.len() as i64) < batch_size {
+            break;
+        }
+        offset += batch_size;
+    }
 
     if q.with_valuations && !events.is_empty() {
         let ids: Vec<i64> = events.iter().filter_map(|e| e.id.parse().ok()).collect();
@@ -398,7 +429,6 @@ async fn list_by_amount_usd_desc(
         .bind(&ids)
         .fetch_all(&state.pg)
         .await?;
-        use std::collections::HashMap;
         let mut by_id: HashMap<i64, Vec<ValuationInline>> = HashMap::new();
         for r in &val_rows {
             let event_id: i64 = r.get(0);

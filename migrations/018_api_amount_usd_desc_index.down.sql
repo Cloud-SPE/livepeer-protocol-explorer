@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_valuations_version_amount_usd_event;

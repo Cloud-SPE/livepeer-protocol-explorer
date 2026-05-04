@@ -14,6 +14,8 @@ use state::AppState;
 use std::{net::SocketAddr, path::PathBuf};
 use tower_http::trace::TraceLayer;
 use tracing::info;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 const SERVICE: &str = "livepeer-api";
 
@@ -51,7 +53,6 @@ async fn main() -> Result<()> {
         // Operational
         .route("/health", get(routes::operational::health))
         .route("/metrics", get(routes::operational::metrics))
-        .route("/openapi.json", get(openapi::spec))
         .route("/backfills/status", get(routes::operational::backfill_status))
         // Events
         .route("/events", get(routes::events::list))
@@ -81,7 +82,8 @@ async fn main() -> Result<()> {
         .route("/transcoders/{transcoder}/lifecycle/history", get(routes::transcoders::lifecycle_history))
         .route("/transcoders/{transcoder}/profile/block/{block}", get(routes::transcoders::profile_at_block))
         .with_state(state)
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi::ApiDoc::openapi()));
 
     let addr: SocketAddr = cli.bind.parse().context("parsing bind address")?;
     info!(service = SERVICE, %addr, "listening");

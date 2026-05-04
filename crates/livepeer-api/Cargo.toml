@@ -28,3 +28,4 @@ chrono.workspace = true
 prometheus.workspace = true
 alloy.workspace = true
 utoipa.workspace = true
+utoipa-swagger-ui.workspace = true

@@ -1,6 +1,3 @@
-use axum::Json;
-use serde_json::Value;
-use std::sync::LazyLock;
 use utoipa::OpenApi;
 
 #[derive(OpenApi)]
@@ -83,11 +80,3 @@ use utoipa::OpenApi;
     )
 )]
 pub struct ApiDoc;
-
-static OPENAPI: LazyLock<Value> = LazyLock::new(|| {
-    serde_json::to_value(ApiDoc::openapi()).expect("serializing generated OpenAPI document")
-});
-
-pub async fn spec() -> Json<Value> {
-    Json(OPENAPI.clone())
-}

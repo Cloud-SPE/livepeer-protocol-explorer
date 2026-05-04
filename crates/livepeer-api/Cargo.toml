@@ -26,3 +26,4 @@ serde_json.workspace = true
 bigdecimal.workspace = true
 chrono.workspace = true
 prometheus.workspace = true
+alloy.workspace = true

@@ -3,6 +3,7 @@ mod error;
 mod metrics;
 mod routes;
 mod state;
+mod abi;
 
 use anyhow::{Context, Result};
 use axum::{routing::get, Router};
@@ -68,6 +69,14 @@ async fn main() -> Result<()> {
         // Stake
         .route("/stake/{delegator}/block/{block}", get(routes::stake::at_block))
         .route("/stake/{delegator}/range", get(routes::stake::range))
+        // Transcoders
+        .route("/transcoders/{transcoder}/params/latest", get(routes::transcoders::latest))
+        .route("/transcoders/{transcoder}/params/block/{block}", get(routes::transcoders::at_block))
+        .route("/transcoders/{transcoder}/params/history", get(routes::transcoders::history))
+        .route("/transcoders/{transcoder}/lifecycle/latest", get(routes::transcoders::lifecycle_latest))
+        .route("/transcoders/{transcoder}/lifecycle/block/{block}", get(routes::transcoders::lifecycle_at_block))
+        .route("/transcoders/{transcoder}/lifecycle/history", get(routes::transcoders::lifecycle_history))
+        .route("/transcoders/{transcoder}/profile/block/{block}", get(routes::transcoders::profile_at_block))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
 

@@ -751,11 +751,54 @@ fn decode_one(
                     Err(e) => return decode_failed(contract, "WithdrawFees", topic0, e),
                 }
             } else if topic0 == BondingManager::TranscoderActivated::SIGNATURE_HASH {
-                decoded!("TranscoderActivated", {});
+                match BondingManager::TranscoderActivated::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("TranscoderActivated", {
+                        row.to_address = Some(addr_lower(&d.transcoder));
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "transcoder": addr_lower(&d.transcoder),
+                                    "activationRound": d.activationRound.to_string(),
+                                }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "TranscoderActivated", topic0, e),
+                }
             } else if topic0 == BondingManager::TranscoderDeactivated::SIGNATURE_HASH {
-                decoded!("TranscoderDeactivated", {});
+                match BondingManager::TranscoderDeactivated::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("TranscoderDeactivated", {
+                        row.to_address = Some(addr_lower(&d.transcoder));
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "transcoder": addr_lower(&d.transcoder),
+                                    "deactivationRound": d.deactivationRound.to_string(),
+                                }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "TranscoderDeactivated", topic0, e),
+                }
             } else if topic0 == BondingManager::TranscoderUpdate::SIGNATURE_HASH {
-                decoded!("TranscoderUpdate", {});
+                match BondingManager::TranscoderUpdate::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("TranscoderUpdate", {
+                        row.to_address = Some(addr_lower(&d.transcoder));
+                        if let Some(obj) = row.raw_event.as_object_mut() {
+                            obj.insert(
+                                "decoded".to_string(),
+                                serde_json::json!({
+                                    "transcoder": addr_lower(&d.transcoder),
+                                    "rewardCut": d.rewardCut.to_string(),
+                                    "feeShare": d.feeShare.to_string(),
+                                }),
+                            );
+                        }
+                    }),
+                    Err(e) => return decode_failed(contract, "TranscoderUpdate", topic0, e),
+                }
             } else if topic0 == TranscoderSlashed::SIGNATURE_HASH {
                 match TranscoderSlashed::decode_log_data(&log_data, true) {
                     Ok(d) => decoded!("TranscoderSlashed", {

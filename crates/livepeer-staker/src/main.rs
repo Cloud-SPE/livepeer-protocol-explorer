@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
             let bonding_manager = cfg.static_.contracts.bonding_manager.to_lowercase();
             let summary = pending::refresh_pending(&pg, &archive, &bonding_manager, cli.include_tentative).await?;
             info!(
+                reconciled_rows = summary.reconciled_rows,
                 events_considered = summary.events_considered,
                 refreshed = summary.refreshed,
                 failed_decode = summary.failed_decode,

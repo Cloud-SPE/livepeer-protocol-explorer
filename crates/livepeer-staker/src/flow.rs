@@ -110,7 +110,7 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                 summary.stake_rows_written += 1;
             }
             "Rebond" => {
-                let delegator = match ev.to_address.as_ref() {
+                let delegator = match ev.from_address.as_ref() {
                     Some(a) => a.to_lowercase(),
                     None => continue,
                 };
@@ -176,8 +176,13 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                 summary.stake_rows_written += 1;
             }
             "TransferBond" => {
-                // SPEC §6.3 — moves bonded LPT from old_delegator (from_address) to
-                // new_delegator (to_address). Two affected delegators per event.
+                // TransferBond moves ownership of an unbonding lock from the old
+                // delegator to the new delegator. The underlying stake was already
+                // removed from bonded principal by the preceding Unbond event, so
+                // this event should not change bonded_principal for either side.
+                //
+                // We still keep registry/stake rows at this block so callers can see
+                // the touched delegators, but the balance is unchanged.
                 let old_d = match ev.from_address.as_ref() {
                     Some(a) => a.to_lowercase(),
                     None => continue,
@@ -186,9 +191,7 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                     Some(a) => a.to_lowercase(),
                     None => continue,
                 };
-                let amt = ev.amount_normalized.clone().unwrap_or_else(|| zero.clone());
                 if registered.contains(&old_d) {
-                    *balances.entry(old_d.clone()).or_insert_with(|| zero.clone()) -= &amt;
                     let delegate = delegates.get(&old_d).cloned().unwrap_or_default();
                     upsert_registry(pg, &old_d, ev.block_number, ev.event_id, false).await?;
                     upsert_stake_row(pg, &old_d, &delegate, ev, &balances[&old_d]).await?;
@@ -200,12 +203,12 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                 if registered.insert(new_d.clone()) {
                     summary.delegators_registered += 1;
                 }
-                *balances.entry(new_d.clone()).or_insert_with(|| zero.clone()) += &amt;
                 let delegate_for_new = delegates.get(&new_d).cloned()
                     .or_else(|| delegates.get(&old_d).cloned())
                     .unwrap_or_default();
                 upsert_registry(pg, &new_d, ev.block_number, ev.event_id, true).await?;
-                upsert_stake_row(pg, &new_d, &delegate_for_new, ev, &balances[&new_d]).await?;
+                let new_balance = balances.entry(new_d.clone()).or_insert_with(|| zero.clone()).clone();
+                upsert_stake_row(pg, &new_d, &delegate_for_new, ev, &new_balance).await?;
                 summary.stake_rows_written += 1;
             }
             _ => {}

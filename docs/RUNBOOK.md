@@ -1,54 +1,224 @@
 # Runbook
 
-Operational procedures for the Livepeer indexing & valuation system.
+Operational procedures for the Livepeer indexing and valuation system.
 
-> **Status: skeleton.** Sections below are the required outline from SPEC §19. Fill each section as the corresponding code lands.
+This document reflects the current runtime shape:
+
+- bounded historical runs via `livepeer-orchestrator bootstrap`
+- deterministic rebuilds via `livepeer-orchestrator replay`
+- near-head continuous operation via `livepeer-daemon follow`
+- read API via `livepeer-api`
+
+Authoritative reference: [SPEC §19](product-specs/v1-livepeer-indexer.md#19-operations-runbook).
 
 ## 1. Daily operations
-- Health-check endpoints (`/health` per service)
-- Common log patterns
-- Dashboard interpretation
-- _TODO_
 
-## 2. Backfill procedures
-- Running the seed migration (`livepeer-seed-migrator --source-sqlite <path>`)
-- Backfilling a date range (`livepeer-indexer backfill --from-block N --to-block M`)
-- Re-valuing under a new version
-- _TODO_
+Primary processes:
+- `livepeer-daemon follow`
+- `livepeer-api`
+- Postgres
 
-## 3. Recovery procedures
-- pg_dump restore
-- Deep replay from `rpc_call_cache` + seeded SQLite
-- Partial recovery of a corrupted single table
-- _TODO_
+Health checks:
+- daemon: `curl http://127.0.0.1:9107/health`
+- daemon metrics: `curl http://127.0.0.1:9107/metrics`
+- api: `curl http://127.0.0.1:8080/health`
+- api metrics: `curl http://127.0.0.1:8080/metrics`
 
-## 4. Failure response
-For each alert in SPEC §10.6:
-- What it means
-- Investigation steps
-- Resolution
-- Escalation criteria
+Healthy indicators:
+- daemon `/health` returns `ok`
+- api `/health` returns `ok`
+- `livepeer_chain_head_block` is moving
+- `livepeer_task_lag_blocks{task="indexer"}` stays bounded
+- `livepeer_iterations_total{task=...}` increases over time
+- `livepeer_iteration_failures_total` remains flat or near-flat
 
-Critical procedures already drafted in SPEC §19.2:
-- §19.2.1 Adding a new ABI version
-- §19.2.2 Responding to `failed_rpc_divergence`
-- §19.2.3 Responding to determinism violation alert
+Useful SQL checks:
 
-## 5. Schema changes
-- Authoring a migration (`sqlx migrate add <name>`)
-- Local testing
-- Deploying
-- Destructive migrations (`--allow-destructive`)
-- _TODO_
+```sql
+SELECT name, last_processed_block, updated_at
+FROM indexer_checkpoints
+ORDER BY name;
+```
 
-## 6. ABI updates
-Procedure when Livepeer upgrades a tracked contract:
-1. Identify upgrade block from `Controller.SetContractInfo`.
-2. Fetch new implementation ABI from Arbiscan.
-3. Compute sha256, insert `contract_abi_registry` row.
-4. Update prior row's `to_block`.
-5. Restart services.
-6. Run `livepeer-indexer recover-decode-failures`.
-7. Regenerate determinism fixture if affected.
+```sql
+SELECT finality, COUNT(*)
+FROM raw_protocol_events
+GROUP BY finality
+ORDER BY finality;
+```
 
-See SPEC §19.2.1 for the full procedure.
+```sql
+SELECT status, COUNT(*)
+FROM event_valuations
+GROUP BY status
+ORDER BY status;
+```
+
+## 2. Historical backfill
+
+First-time or catch-up backfill:
+
+```sh
+livepeer-orchestrator bootstrap \
+  --source-sqlite /path/sqlite-4.0.db \
+  --from-block 6072093 \
+  --to-block <target_block>
+```
+
+What it does:
+- runs migrations
+- seeds ABI registry
+- imports SQLite seed if provided
+- runs bounded indexer passes
+- runs one finality pass
+- runs valuator
+- runs staker backfill + pending refresh
+- optionally runs the SQLite cross-check
+
+Use `bootstrap`, not `follow`, when lag is large or the database is empty.
+
+## 3. Deterministic replay
+
+Strict replay requires:
+- committed or preserved `rpc_call_cache`
+- seeded SQLite if seed import is part of the original run
+- explicit `--to-block`
+
+Command:
+
+```sh
+livepeer-orchestrator replay \
+  --source-sqlite /path/sqlite-4.0.db \
+  --from-block 6072093 \
+  --to-block <target_block>
+```
+
+Current replay contract:
+- strict by default
+- fails on missing cached RPC inputs
+- does not resolve live head
+- reuses recorded finality inputs from the live finality pass
+
+Escape hatch for debugging only:
+
+```sh
+livepeer-orchestrator replay ... --allow-live-rpc
+```
+
+That mode is not the determinism contract.
+
+## 4. Near-head follow mode
+
+Start:
+
+```sh
+livepeer-daemon follow --max-start-lag-blocks 50000
+```
+
+Behavior:
+- refuses to start if current lag is above threshold
+- runs bounded loops for:
+  - indexer
+  - finality
+  - reorg watcher
+  - valuator
+  - staker
+- exposes `/metrics` and `/health` on the daemon metrics bind
+
+Current defaults:
+- metrics bind: `0.0.0.0:9107`
+- process-wide RPC concurrency ceiling: `24`
+
+## 5. Recovery procedures
+
+### Restore from database backup
+
+Use normal Postgres `pg_dump` / restore procedures first when available.
+
+### Deep replay from deterministic inputs
+
+When derived state is corrupted but `rpc_call_cache` and seed inputs are intact:
+
+1. Preserve `rpc_call_cache`, `seeded_event_prices`, `contract_abi_registry`
+2. Reset derived state
+3. Rerun `livepeer-orchestrator replay --to-block ...`
+4. Validate table counts / hashes against the expected baseline
+
+### Partial table recovery
+
+If only derived tables are suspect:
+- truncate and rebuild:
+  - `event_valuations`
+  - `valuation_attempts`
+  - `token_prices_by_block`
+  - `stake_balances_by_block`
+  - `delegator_registry`
+- rerun valuator + staker stages
+
+If raw events are suspect:
+- rerun full `bootstrap`
+
+## 6. Failure response
+
+### Daemon refuses to start
+
+Likely cause:
+- lag exceeds `--max-start-lag-blocks`
+
+Action:
+- use `bootstrap` to catch up first
+
+### Replay fails with missing cache row
+
+Likely cause:
+- original run did not capture every needed RPC input
+- requested range differs from the original cached range
+
+Action:
+- inspect the missing method from the error
+- either:
+  - rerun the original live path to populate cache, then replay again
+  - or use `--allow-live-rpc` only for debugging, not determinism validation
+
+### Reorg divergence detected
+
+Action:
+- inspect `reorg_events`
+- confirm whether divergence is isolated and recent
+- remember v1 reorg handling is audit-grade but not full mutation-grade:
+  `reorg_mutations` remains incomplete
+
+### Lag grows steadily
+
+Action:
+- inspect daemon metrics
+- inspect `indexer_checkpoints`
+- inspect `livepeer_iteration_failures_total`
+- if valuator lags specifically, re-check TD-011 symptoms
+
+## 7. Schema changes
+
+Normal workflow:
+
+```sh
+sqlx migrate add <name>
+cargo build --workspace
+```
+
+Rules:
+- migrations are forward-only once merged
+- do not rewrite merged migrations
+- destructive changes require explicit operational intent
+
+## 8. ABI updates
+
+When a tracked contract implementation changes:
+
+1. Identify upgrade block from controller or contract-management events
+2. Fetch the new ABI
+3. Compute SHA-256 and insert a new `contract_abi_registry` row
+4. Bound the previous ABI row with `to_block`
+5. restart relevant workers
+6. rerun decode recovery if needed
+
+See the product spec for the full upgrade procedure.

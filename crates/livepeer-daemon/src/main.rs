@@ -1,10 +1,14 @@
+mod http;
+mod metrics;
 mod rpc_manager;
 mod supervisor;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use livepeer_core::{config::Config, db, tracing_init};
+use std::sync::Arc;
 use std::path::PathBuf;
+use tracing::{error, info};
 
 const SERVICE: &str = "livepeer-daemon";
 
@@ -16,6 +20,9 @@ struct Cli {
 
     #[arg(long, env = "ENV_CONFIG", default_value = "config/env/dev.yaml", global = true)]
     env_config: PathBuf,
+
+    #[arg(long, env = "DAEMON_METRICS_BIND", default_value = "0.0.0.0:9107", global = true)]
+    metrics_bind: String,
 
     #[command(subcommand)]
     command: Command,
@@ -44,6 +51,19 @@ async fn main() -> Result<()> {
     )
     .await
     .context("connecting to Postgres")?;
+    let metrics = Arc::new(metrics::Metrics::new());
+    let metrics_bind = cli.metrics_bind.clone();
+    let metrics_task = tokio::spawn({
+        let metrics = metrics.clone();
+        async move {
+            if let Err(e) = http::serve(&metrics_bind, metrics).await {
+                error!(error = %e, bind = %metrics_bind, "daemon metrics server exited");
+                return Err(e);
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+    });
+    info!(bind = %cli.metrics_bind, "daemon metrics server starting");
 
     match cli.command {
         Command::Follow {
@@ -57,6 +77,7 @@ async fn main() -> Result<()> {
                 &pg,
                 &cfg,
                 rpc,
+                metrics.clone(),
                 supervisor::FollowConfig {
                     max_start_lag_blocks,
                     valuation_version: version,
@@ -66,5 +87,6 @@ async fn main() -> Result<()> {
             .await?;
         }
     }
+    metrics_task.abort();
     Ok(())
 }

@@ -1,9 +1,9 @@
 # TD-012: Daemon mode — keep the pipeline at chain head
 
-**Status:** Plan only — no implementation yet.
+**Status:** In progress — Phase 1 done, Phase 2 largely implemented, Phase 3 partial.
 **Severity:** Medium — v1 ships as one-shot CLIs that must be re-invoked to keep
 moving forward; production use needs a long-running supervised daemon.
-**Last touched:** 2026-04-29.
+**Last touched:** 2026-05-04.
 
 ## Problem statement
 
@@ -37,7 +37,8 @@ backfill but is the wrong shape for steady-state operation:
 5. **No alerting** — SPEC §13.5 calls for Telegram alerts on RpcDivergence,
    stuck checkpoints, finality lag — none are wired.
 
-This document is the plan for fixing that. **It is a plan only — no code yet.**
+This document started as the plan for fixing that. It is now also the running
+execution record for the landed `orchestrator` and `daemon` slices.
 
 ## Current architectural direction
 

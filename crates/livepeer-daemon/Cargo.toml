@@ -18,6 +18,8 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 sqlx.workspace = true
+axum.workspace = true
+prometheus.workspace = true
 livepeer-indexer = { path = "../livepeer-indexer" }
 livepeer-finality-watcher = { path = "../livepeer-finality-watcher" }
 livepeer-reorg-watcher = { path = "../livepeer-reorg-watcher" }

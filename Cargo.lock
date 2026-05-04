@@ -2524,6 +2524,7 @@ name = "livepeer-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "livepeer-core",
  "livepeer-finality-watcher",
@@ -2531,6 +2532,7 @@ dependencies = [
  "livepeer-reorg-watcher",
  "livepeer-staker",
  "livepeer-valuator",
+ "prometheus",
  "sqlx",
  "tokio",
  "tracing",

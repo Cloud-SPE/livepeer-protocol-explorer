@@ -279,11 +279,17 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] `GET /metrics` exposes standard Prometheus exposition format
 - [x] `/health` increments the counter — verified live: `api_requests_total{route="/health",status="2xx"} 3` after 3 requests
 
-#### S12.2 — daemon-side metrics + Telegram alerter (pending)
-- [ ] `/metrics` on indexer / reorg-watcher / finality-watcher / valuator / staker on ports 9101–9106 (SPEC §15.2)
+#### S12.2 — daemon-side metrics + Telegram alerter (partial)
+- [x] `livepeer-daemon` now exposes `/health` and `/metrics` on a dedicated bind (`--metrics-bind`, default `0.0.0.0:9107`)
+- [x] Core daemon metrics now live in Prometheus format:
+  - `livepeer_iterations_total{task}`
+  - `livepeer_iteration_failures_total{task,error_kind}`
+  - `livepeer_iteration_duration_seconds{task}`
+  - `livepeer_chain_head_block`
+  - `livepeer_task_checkpoint_block{task}`
+  - `livepeer_task_lag_blocks{task}`
 - [ ] Per-event-name counters per SPEC §17.2: `events_indexed_total`, `events_valued_total`, `decode_failures_total`, `rpc_calls_total`, `reorgs_detected_total`, `rpc_divergence_total`
-- [ ] Lag gauges (`indexer_lag_blocks`, `valuator_pending_events`, `rpc_provider_circuit_state`)
-- [ ] Histograms (`rpc_call_duration_seconds`, `event_processing_duration_seconds`)
+- [ ] Additional lag / circuit gauges (`valuator_pending_events`, `rpc_provider_circuit_state`)
 - [ ] Telegram alerter — last priority per SPEC §10.6, behind a feature flag
 
 ## Progress log
@@ -311,5 +317,6 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S9.2 done — staker.refresh-pending walks EarningsClaimed events, eth_calls BondingManager.pendingStake / pendingFees at the event block, updates stake rows with source='both'. Sample: delegator with 61.91 LPT bonded_principal in our window has 40,856 LPT pendingStake on chain (full history).
 - **2026-04-27** S11.1 done — cross-check binary surfaces real divergences. 131 matched / 4 missing-in-indexer / 33 missing-in-seed / 1 block-hash-mismatch (the S7.1 synthetic-divergence row).
 - **2026-04-27** S12.1 done — /metrics endpoint on API binary, Prometheus exposition, IntCounterVec(route, status), /health increments and serves cleanly.
+- **2026-05-04** S12.2 partial — `livepeer-daemon` now exists with `follow` mode, shared RPC handles, coordinated shutdown, and Prometheus `/metrics` + `/health` on a dedicated bind. Current metric set covers iteration success/failure/duration plus head/checkpoint/lag gauges; alerting and richer per-event RPC metrics remain open.
 - **2026-05-03** S9.2 strengthened — pending refresh is now bulk and exact-state-aware. `refresh-pending` first reconciles every stored stake row against `BondingManager.getDelegator()` and then bulk-refreshes `pendingStake` / `pendingFees` for every `EarningsClaimed` row from cached RPC inputs. Fresh rerun validation: `no_stake_row = 0`, self-delegated orchestrator spot-checks match on-chain `bondedAmount`.
 - **2026-05-04** S10.4 done — transcoder context API shipped: params/history, lifecycle/history, point-in-time profile, and delegators-at-block. Migration `021_api_transcoder_indexes` added the required raw-event expression index plus stake covering index; measured route latencies dropped to ~1ms for params/lifecycle/profile and ~42ms for delegators-at-block.

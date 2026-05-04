@@ -1,3 +1,4 @@
+use crate::metrics::Metrics;
 use crate::rpc_manager::RpcManager;
 use anyhow::{bail, Result};
 use livepeer_core::Config;
@@ -27,9 +28,17 @@ pub struct FollowConfig {
     pub include_tentative: bool,
 }
 
-pub async fn run_follow(pg: &PgPool, cfg: &Config, rpc: RpcManager, follow: FollowConfig) -> Result<()> {
+pub async fn run_follow(
+    pg: &PgPool,
+    cfg: &Config,
+    rpc: RpcManager,
+    metrics: Arc<Metrics>,
+    follow: FollowConfig,
+) -> Result<()> {
     let head = rpc.archive.eth_block_number().await?;
+    metrics.chain_head_block.set(head as i64);
     let lag = current_indexer_lag(pg, head).await?;
+    metrics.task_lag_blocks.with_label_values(&["indexer"]).set(lag as i64);
     if lag > follow.max_start_lag_blocks {
         bail!(
             "follow-mode startup refused: current lag {lag} exceeds max_start_lag_blocks {}",
@@ -53,22 +62,26 @@ pub async fn run_follow(pg: &PgPool, cfg: &Config, rpc: RpcManager, follow: Foll
         pg.clone(),
         cfg.clone(),
         rpc.archive.clone(),
+        metrics.clone(),
         shutdown.clone(),
     ));
     let finality_task = tokio::spawn(finality_loop(
         pg.clone(),
         rpc.l1.clone(),
+        metrics.clone(),
         shutdown.clone(),
     ));
     let reorg_task = tokio::spawn(reorg_loop(
         pg.clone(),
         rpc.secondary.clone(),
+        metrics.clone(),
         shutdown.clone(),
     ));
     let valuator_task = tokio::spawn(valuator_loop(
         pg.clone(),
         cfg.clone(),
         rpc.archive.clone(),
+        metrics.clone(),
         shutdown.clone(),
         follow.clone(),
     ));
@@ -76,6 +89,7 @@ pub async fn run_follow(pg: &PgPool, cfg: &Config, rpc: RpcManager, follow: Foll
         pg.clone(),
         cfg.clone(),
         rpc.archive.clone(),
+        metrics.clone(),
         shutdown.clone(),
         follow.include_tentative,
     ));
@@ -101,6 +115,7 @@ async fn indexer_loop(
     pg: PgPool,
     cfg: Config,
     archive: Arc<livepeer_core::rpc::Provider>,
+    metrics: Arc<Metrics>,
     shutdown: Arc<Notify>,
 ) -> Result<()> {
     loop {
@@ -108,7 +123,9 @@ async fn indexer_loop(
             _ = shutdown.notified() => break,
             _ = sleep(Duration::from_secs(INDEXER_INTERVAL_SECS)) => {}
         }
+        let started = std::time::Instant::now();
         let head = archive.eth_block_number().await?;
+        metrics.chain_head_block.set(head as i64);
         let to_block = head.saturating_sub(INDEXER_HEAD_DEPTH_BLOCKS);
         for contract in [
             ContractKind::BondingManager,
@@ -122,7 +139,7 @@ async fn indexer_loop(
                 continue;
             }
             let bounded_to = from_block.saturating_add(INDEXER_PER_TICK_BLOCKS - 1).min(to_block);
-            let summary = indexer_runner::run_backfill(
+            let result = indexer_runner::run_backfill(
                 &pg,
                 archive.as_ref(),
                 &cfg,
@@ -132,9 +149,26 @@ async fn indexer_loop(
                 true,
                 "",
             )
-            .await?;
-            info!(?summary, "daemon: indexer iteration complete");
+            .await;
+            match result {
+                Ok(summary) => {
+                    metrics
+                        .task_checkpoint_block
+                        .with_label_values(&["indexer"])
+                        .set(bounded_to as i64);
+                    metrics
+                        .task_lag_blocks
+                        .with_label_values(&["indexer"])
+                        .set(head.saturating_sub(bounded_to) as i64);
+                    info!(?summary, "daemon: indexer iteration complete");
+                }
+                Err(e) => {
+                    metrics.record_failure("indexer", &e, started.elapsed().as_secs_f64());
+                    return Err(e);
+                }
+            }
         }
+        metrics.record_success("indexer", started.elapsed().as_secs_f64());
     }
     Ok(())
 }
@@ -142,6 +176,7 @@ async fn indexer_loop(
 async fn finality_loop(
     pg: PgPool,
     l1: Arc<livepeer_core::rpc::Provider>,
+    metrics: Arc<Metrics>,
     shutdown: Arc<Notify>,
 ) -> Result<()> {
     loop {
@@ -149,8 +184,16 @@ async fn finality_loop(
             _ = shutdown.notified() => break,
             _ = sleep(Duration::from_secs(FINALITY_INTERVAL_SECS)) => {}
         }
-        let summary = finality_runner::run_once(&pg, l1.as_ref()).await?;
+        let started = std::time::Instant::now();
+        let summary = match finality_runner::run_once(&pg, l1.as_ref()).await {
+            Ok(summary) => summary,
+            Err(e) => {
+                metrics.record_failure("finality", &e, started.elapsed().as_secs_f64());
+                return Err(e);
+            }
+        };
         info!(?summary, "daemon: finality iteration complete");
+        metrics.record_success("finality", started.elapsed().as_secs_f64());
     }
     Ok(())
 }
@@ -158,6 +201,7 @@ async fn finality_loop(
 async fn reorg_loop(
     pg: PgPool,
     secondary: Arc<livepeer_core::rpc::Provider>,
+    metrics: Arc<Metrics>,
     shutdown: Arc<Notify>,
 ) -> Result<()> {
     loop {
@@ -165,8 +209,16 @@ async fn reorg_loop(
             _ = shutdown.notified() => break,
             _ = sleep(Duration::from_secs(REORG_INTERVAL_SECS)) => {}
         }
-        let summary = reorg_runner::run_once(&pg, secondary.as_ref()).await?;
+        let started = std::time::Instant::now();
+        let summary = match reorg_runner::run_once(&pg, secondary.as_ref()).await {
+            Ok(summary) => summary,
+            Err(e) => {
+                metrics.record_failure("reorg", &e, started.elapsed().as_secs_f64());
+                return Err(e);
+            }
+        };
         info!(?summary, "daemon: reorg iteration complete");
+        metrics.record_success("reorg", started.elapsed().as_secs_f64());
     }
     Ok(())
 }
@@ -175,6 +227,7 @@ async fn valuator_loop(
     pg: PgPool,
     cfg: Config,
     archive: Arc<livepeer_core::rpc::Provider>,
+    metrics: Arc<Metrics>,
     shutdown: Arc<Notify>,
     follow: FollowConfig,
 ) -> Result<()> {
@@ -183,15 +236,24 @@ async fn valuator_loop(
             _ = shutdown.notified() => break,
             _ = sleep(Duration::from_secs(VALUATOR_INTERVAL_SECS)) => {}
         }
-        let summary = valuator_runner::run_all(
+        let started = std::time::Instant::now();
+        let summary = match valuator_runner::run_all(
             &pg,
             archive.as_ref(),
             &cfg,
             &follow.valuation_version,
             follow.include_tentative,
         )
-        .await?;
+        .await
+        {
+            Ok(summary) => summary,
+            Err(e) => {
+                metrics.record_failure("valuator", &e, started.elapsed().as_secs_f64());
+                return Err(e);
+            }
+        };
         info!(?summary, "daemon: valuator iteration complete");
+        metrics.record_success("valuator", started.elapsed().as_secs_f64());
     }
     Ok(())
 }
@@ -200,6 +262,7 @@ async fn staker_loop(
     pg: PgPool,
     cfg: Config,
     archive: Arc<livepeer_core::rpc::Provider>,
+    metrics: Arc<Metrics>,
     shutdown: Arc<Notify>,
     include_tentative: bool,
 ) -> Result<()> {
@@ -208,12 +271,27 @@ async fn staker_loop(
             _ = shutdown.notified() => break,
             _ = sleep(Duration::from_secs(STAKER_INTERVAL_SECS)) => {}
         }
-        let backfill = staker_runner::run_backfill(&pg, include_tentative).await?;
+        let started = std::time::Instant::now();
+        let backfill = match staker_runner::run_backfill(&pg, include_tentative).await {
+            Ok(summary) => summary,
+            Err(e) => {
+                metrics.record_failure("staker", &e, started.elapsed().as_secs_f64());
+                return Err(e);
+            }
+        };
         info!(?backfill, "daemon: staker backfill iteration complete");
         let refresh =
             staker_runner::run_refresh_pending(&pg, archive.as_ref(), &cfg, include_tentative)
-                .await?;
+                .await;
+        let refresh = match refresh {
+            Ok(summary) => summary,
+            Err(e) => {
+                metrics.record_failure("staker", &e, started.elapsed().as_secs_f64());
+                return Err(e);
+            }
+        };
         info!(?refresh, "daemon: staker refresh iteration complete");
+        metrics.record_success("staker", started.elapsed().as_secs_f64());
     }
     Ok(())
 }

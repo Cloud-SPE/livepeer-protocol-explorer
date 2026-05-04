@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_valuations_api_event_version_asset_covering;

@@ -113,7 +113,7 @@ pub async fn events(
         format!(
             "LEFT JOIN event_valuations v ON v.event_id = r.id \
              AND v.valuation_version = ${v_idx} \
-             AND (v.asset = r.asset OR (v.asset IS NULL AND r.asset IS NULL))"
+             AND v.asset IS NOT DISTINCT FROM r.asset"
         )
     } else {
         String::new()

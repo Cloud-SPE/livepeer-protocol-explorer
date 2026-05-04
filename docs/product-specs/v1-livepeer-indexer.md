@@ -2,7 +2,7 @@
 
 ## Technical Specification v1.7
 
-**Status:** Draft, ready for implementation
+**Status:** Living spec for the implemented v1 system
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
@@ -2178,4 +2178,4 @@ This appendix summarizes the substantive decisions made during spec development,
 
 ---
 
-**END OF SPECIFICATION v1.0**
+**END OF SPECIFICATION v1.7**

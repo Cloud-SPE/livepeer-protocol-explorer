@@ -213,10 +213,12 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] Skipped 22 events on delegators whose Bond is outside the 30K-block test window (full-genesis backfill would not skip)
 - [x] **Live verification:** 3 delegators registered, 3 rows persisted (61.91 / 20.97 / 0.9 LPT) — re-run leaves DB row count unchanged
 
-#### S9.2 — pending stake / fees via RPC (pending)
-- [ ] BondingManager.pendingStake(delegator) + pendingFees(delegator) at event block via `cross_check::single_call_cached`
-- [ ] Update source = 'pending_call' or 'both' per SPEC §11.10
-- [ ] Triggered on EarningsClaimed (canonical reconciliation point per SPEC §6.8)
+#### S9.2 — pending stake / fees via RPC ✅ done
+- [x] BondingManager.pendingStake(delegator) + pendingFees(delegator, endRound) at event block via deterministic cached RPC reads
+- [x] Update source = 'pending_call' or 'both' per SPEC §11.10
+- [x] Triggered on EarningsClaimed (canonical reconciliation point per SPEC §6.8)
+- [x] Bulk refresh implementation shipped in [crates/livepeer-staker/src/pending.rs](../../../crates/livepeer-staker/src/pending.rs) — cache prefetch + bulk `UPDATE … FROM unnest(...)`
+- [x] Exact-state reconcile shipped before pending refresh: `getDelegator()` overwrites flow-derived `bonded_principal` / `delegate_address` with contract truth at each stored stake row block
 
 ### S10 — API (in_progress)
 
@@ -240,11 +242,22 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] `GET /prices/{asset}/{quote}/block/{block}` and `/latest` — backed by `token_prices_by_block`, populated by the valuator's on-chain reads (Chainlink ETH/USD; Uniswap V3 TWAP for LPT/WETH; LPT/USD as the derived product). Live verified: `/prices/LPT/USD/latest` serves $2.194 with pool + oracle addresses.
 - [x] Validation: rejects `bucket=hour`, `metric=median`, etc. with conformant 400 + error envelope.
 
-#### S10.3 — stake + ETag + range prices + sort=amount_usd_desc (pending)
-- [ ] `GET /stake/{delegator}/...` — needs S9 staker
+#### S10.3 — stake + ETag + range prices + sort=amount_usd_desc (partial)
+- [x] `GET /stake/{delegator}/...`
 - [ ] `If-None-Match` / `ETag` / `Cache-Control` per SPEC §14.2
-- [ ] `GET /prices/{asset}/{quote}/range` with lazy backfill
-- [ ] `sort=amount_usd_desc` on `/events` (requires JOIN)
+- [x] `GET /prices/{asset}/{quote}/range` with lazy backfill
+- [x] `sort=amount_usd_desc` on `/events`
+
+#### S10.4 — transcoder context endpoints ✅ done
+- [x] `GET /transcoders/{transcoder}/params/latest`
+- [x] `GET /transcoders/{transcoder}/params/block/{block}`
+- [x] `GET /transcoders/{transcoder}/params/history`
+- [x] `GET /transcoders/{transcoder}/lifecycle/latest`
+- [x] `GET /transcoders/{transcoder}/lifecycle/block/{block}`
+- [x] `GET /transcoders/{transcoder}/lifecycle/history`
+- [x] `GET /transcoders/{transcoder}/profile/block/{block}`
+- [x] `GET /transcoders/{transcoder}/delegators/block/{block}`
+- [x] Query-path indexes landed in migration `021_api_transcoder_indexes`
 
 ### S11 — cross-check + determinism CI (in_progress)
 
@@ -298,3 +311,5 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-04-27** S9.2 done — staker.refresh-pending walks EarningsClaimed events, eth_calls BondingManager.pendingStake / pendingFees at the event block, updates stake rows with source='both'. Sample: delegator with 61.91 LPT bonded_principal in our window has 40,856 LPT pendingStake on chain (full history).
 - **2026-04-27** S11.1 done — cross-check binary surfaces real divergences. 131 matched / 4 missing-in-indexer / 33 missing-in-seed / 1 block-hash-mismatch (the S7.1 synthetic-divergence row).
 - **2026-04-27** S12.1 done — /metrics endpoint on API binary, Prometheus exposition, IntCounterVec(route, status), /health increments and serves cleanly.
+- **2026-05-03** S9.2 strengthened — pending refresh is now bulk and exact-state-aware. `refresh-pending` first reconciles every stored stake row against `BondingManager.getDelegator()` and then bulk-refreshes `pendingStake` / `pendingFees` for every `EarningsClaimed` row from cached RPC inputs. Fresh rerun validation: `no_stake_row = 0`, self-delegated orchestrator spot-checks match on-chain `bondedAmount`.
+- **2026-05-04** S10.4 done — transcoder context API shipped: params/history, lifecycle/history, point-in-time profile, and delegators-at-block. Migration `021_api_transcoder_indexes` added the required raw-event expression index plus stake covering index; measured route latencies dropped to ~1ms for params/lifecycle/profile and ~42ms for delegators-at-block.

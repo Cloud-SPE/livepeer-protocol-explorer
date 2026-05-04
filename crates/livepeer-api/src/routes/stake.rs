@@ -11,8 +11,10 @@ use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
+use utoipa::{IntoParams, ToSchema};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Stake snapshot for a single delegator at a specific indexed block.")]
 pub struct StakeRow {
     pub chain_id: String,
     pub delegator_address: String,
@@ -29,6 +31,20 @@ pub struct StakeRow {
     pub staleness_blocks: String,
 }
 
+#[utoipa::path(
+    get,
+    path = "/stake/{delegator}/block/{block}",
+    tag = "Stake",
+    params(
+        ("delegator" = String, Path, description = "Delegator address to inspect."),
+        ("block" = i64, Path, description = "Return the latest snapshot at or before this block.")
+    ),
+    responses(
+        (status = 200, description = "Delegator stake snapshot at or before the requested block.", body = StakeRow),
+        (status = 404, description = "No stake snapshot exists at or before the requested block.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn at_block(
     State(state): State<AppState>,
     Path((delegator, block)): Path<(String, i64)>,
@@ -57,19 +73,25 @@ pub async fn at_block(
     Ok(Json(to_stake_row(&r, block - snap_block)))
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query parameters for stake history over a bounded block window.")]
 pub struct StakeRangeQuery {
+    /// Inclusive start of the requested block range.
     pub from_block: i64,
+    /// Inclusive end of the requested block range.
     pub to_block: i64,
+    /// Maximum number of stake snapshots to return.
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Stake history response for a single delegator.")]
 pub struct StakeRangeResponse {
     pub data: Vec<StakeRow>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Point-in-time stake row for one delegator within a transcoder's delegator set.")]
 pub struct DelegatorStakeRow {
     pub delegator_address: String,
     pub delegate_address: String,
@@ -84,7 +106,8 @@ pub struct DelegatorStakeRow {
     pub staleness_blocks: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Delegator distribution snapshot for a transcoder at a requested block.")]
 pub struct DelegatorListResponse {
     pub transcoder_address: String,
     pub requested_block: String,
@@ -93,6 +116,20 @@ pub struct DelegatorListResponse {
     pub data: Vec<DelegatorStakeRow>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/stake/{delegator}/range",
+    tag = "Stake",
+    params(
+        ("delegator" = String, Path, description = "Delegator address to inspect."),
+        StakeRangeQuery
+    ),
+    responses(
+        (status = 200, description = "All stored stake snapshots for the delegator within the requested block range.", body = StakeRangeResponse),
+        (status = 400, description = "Invalid range parameters.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn range(
     State(state): State<AppState>,
     Path(delegator): Path<String>,
@@ -126,6 +163,19 @@ pub async fn range(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/transcoders/{transcoder}/delegators/block/{block}",
+    tag = "Transcoders",
+    params(
+        ("transcoder" = String, Path, description = "Orchestrator/transcoder address."),
+        ("block" = i64, Path, description = "Return each delegator's latest stake row at or before this block.")
+    ),
+    responses(
+        (status = 200, description = "Delegator set and bonded principal distribution for a transcoder at a block.", body = DelegatorListResponse),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn delegators_at_block(
     State(state): State<AppState>,
     Path((transcoder, block)): Path<(String, i64)>,

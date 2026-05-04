@@ -1,5 +1,7 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
+use serde::Serialize;
 use serde_json::json;
+use utoipa::ToSchema;
 
 /// Standard error envelope per SPEC §14.4.
 pub struct ApiError {
@@ -50,4 +52,22 @@ impl From<sqlx::Error> for ApiError {
             other => Self::internal(other),
         }
     }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Canonical JSON error envelope returned by failing API endpoints.")]
+pub struct ErrorEnvelope {
+    /// Standard top-level error wrapper returned by every failing API route.
+    pub error: ErrorBody,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Structured contents of the API error response.")]
+pub struct ErrorBody {
+    /// Stable machine-readable error class.
+    pub code: String,
+    /// Human-readable error message intended for operators and API consumers.
+    pub message: String,
+    /// Optional structured debugging context. Present only when the server has extra details.
+    pub context: Option<serde_json::Value>,
 }

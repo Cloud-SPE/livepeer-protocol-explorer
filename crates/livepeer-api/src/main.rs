@@ -1,6 +1,7 @@
 mod cursor;
 mod error;
 mod metrics;
+mod openapi;
 mod routes;
 mod state;
 mod abi;
@@ -50,6 +51,7 @@ async fn main() -> Result<()> {
         // Operational
         .route("/health", get(routes::operational::health))
         .route("/metrics", get(routes::operational::metrics))
+        .route("/openapi.json", get(openapi::spec))
         .route("/backfills/status", get(routes::operational::backfill_status))
         // Events
         .route("/events", get(routes::events::list))

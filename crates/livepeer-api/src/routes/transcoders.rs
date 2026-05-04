@@ -11,19 +11,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Row;
 use std::str::FromStr;
+use utoipa::{IntoParams, ToSchema};
 
 const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 1_000;
 const PERCENT_DENOMINATOR: i64 = 10_000;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Shared history query for transcoder parameter and lifecycle endpoints.")]
 pub struct HistoryQuery {
+    /// Optional lower block bound.
     pub from_block: Option<i64>,
+    /// Optional upper block bound.
     pub to_block: Option<i64>,
+    /// Maximum number of history rows to return.
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Decoded TranscoderUpdate row describing reward-cut and fee-share policy at a block.")]
 pub struct TranscoderParamsRow {
     pub event_id: String,
     pub transcoder_address: String,
@@ -37,12 +43,14 @@ pub struct TranscoderParamsRow {
     pub fee_share_percent: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Historical collection of transcoder parameter rows.")]
 pub struct TranscoderParamsHistoryResponse {
     pub data: Vec<TranscoderParamsRow>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Decoded activation or deactivation event for a transcoder.")]
 pub struct TranscoderLifecycleRow {
     pub event_id: String,
     pub transcoder_address: String,
@@ -55,12 +63,14 @@ pub struct TranscoderLifecycleRow {
     pub is_active: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Historical collection of transcoder lifecycle rows.")]
 pub struct TranscoderLifecycleHistoryResponse {
     pub data: Vec<TranscoderLifecycleRow>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Point-in-time transcoder profile composed from parameter and lifecycle history.")]
 pub struct TranscoderProfileResponse {
     pub transcoder_address: String,
     pub block_number: String,
@@ -68,6 +78,19 @@ pub struct TranscoderProfileResponse {
     pub lifecycle: Option<TranscoderLifecycleRow>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/transcoders/{transcoder}/params/latest",
+    tag = "Transcoders",
+    params(
+        ("transcoder" = String, Path, description = "Transcoder/orchestrator address.")
+    ),
+    responses(
+        (status = 200, description = "Most recent TranscoderUpdate event for the transcoder.", body = TranscoderParamsRow),
+        (status = 404, description = "No transcoder parameter history found.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn latest(
     State(state): State<AppState>,
     Path(transcoder): Path<String>,
@@ -82,6 +105,20 @@ pub async fn latest(
     Ok(Json(row))
 }
 
+#[utoipa::path(
+    get,
+    path = "/transcoders/{transcoder}/params/block/{block}",
+    tag = "Transcoders",
+    params(
+        ("transcoder" = String, Path, description = "Transcoder/orchestrator address."),
+        ("block" = i64, Path, description = "Return the latest parameter change at or before this block.")
+    ),
+    responses(
+        (status = 200, description = "Transcoder parameters effective at the requested block.", body = TranscoderParamsRow),
+        (status = 404, description = "No parameter event exists at or before the requested block.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn at_block(
     State(state): State<AppState>,
     Path((transcoder, block)): Path<(String, i64)>,
@@ -96,6 +133,19 @@ pub async fn at_block(
     Ok(Json(row))
 }
 
+#[utoipa::path(
+    get,
+    path = "/transcoders/{transcoder}/params/history",
+    tag = "Transcoders",
+    params(
+        ("transcoder" = String, Path, description = "Transcoder/orchestrator address."),
+        HistoryQuery
+    ),
+    responses(
+        (status = 200, description = "Historical TranscoderUpdate rows for a transcoder.", body = TranscoderParamsHistoryResponse),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn history(
     State(state): State<AppState>,
     Path(transcoder): Path<String>,
@@ -107,6 +157,19 @@ pub async fn history(
     Ok(Json(TranscoderParamsHistoryResponse { data: rows }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/transcoders/{transcoder}/lifecycle/latest",
+    tag = "Transcoders",
+    params(
+        ("transcoder" = String, Path, description = "Transcoder/orchestrator address.")
+    ),
+    responses(
+        (status = 200, description = "Most recent activation or deactivation event.", body = TranscoderLifecycleRow),
+        (status = 404, description = "No lifecycle events found for the transcoder.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn lifecycle_latest(
     State(state): State<AppState>,
     Path(transcoder): Path<String>,
@@ -121,6 +184,20 @@ pub async fn lifecycle_latest(
     Ok(Json(row))
 }
 
+#[utoipa::path(
+    get,
+    path = "/transcoders/{transcoder}/lifecycle/block/{block}",
+    tag = "Transcoders",
+    params(
+        ("transcoder" = String, Path, description = "Transcoder/orchestrator address."),
+        ("block" = i64, Path, description = "Return the latest lifecycle event at or before this block.")
+    ),
+    responses(
+        (status = 200, description = "Lifecycle state effective at the requested block.", body = TranscoderLifecycleRow),
+        (status = 404, description = "No lifecycle event exists at or before the requested block.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn lifecycle_at_block(
     State(state): State<AppState>,
     Path((transcoder, block)): Path<(String, i64)>,
@@ -135,6 +212,19 @@ pub async fn lifecycle_at_block(
     Ok(Json(row))
 }
 
+#[utoipa::path(
+    get,
+    path = "/transcoders/{transcoder}/lifecycle/history",
+    tag = "Transcoders",
+    params(
+        ("transcoder" = String, Path, description = "Transcoder/orchestrator address."),
+        HistoryQuery
+    ),
+    responses(
+        (status = 200, description = "Activation and deactivation history for a transcoder.", body = TranscoderLifecycleHistoryResponse),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn lifecycle_history(
     State(state): State<AppState>,
     Path(transcoder): Path<String>,
@@ -146,6 +236,19 @@ pub async fn lifecycle_history(
     Ok(Json(TranscoderLifecycleHistoryResponse { data: rows }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/transcoders/{transcoder}/profile/block/{block}",
+    tag = "Transcoders",
+    params(
+        ("transcoder" = String, Path, description = "Transcoder/orchestrator address."),
+        ("block" = i64, Path, description = "Return transcoder params and lifecycle state effective at this block.")
+    ),
+    responses(
+        (status = 200, description = "Point-in-time transcoder profile composed from parameter and lifecycle history.", body = TranscoderProfileResponse),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn profile_at_block(
     State(state): State<AppState>,
     Path((transcoder, block)): Path<(String, i64)>,

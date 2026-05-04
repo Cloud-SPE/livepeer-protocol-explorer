@@ -4,13 +4,30 @@ use crate::{error::ApiError, state::AppState};
 use axum::{extract::State, http::header, response::IntoResponse, Json};
 use prometheus::{Encoder, TextEncoder};
 use serde::Serialize;
+use utoipa::ToSchema;
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "Operational",
+    responses(
+        (status = 200, description = "Liveness probe for the API process.", body = String, content_type = "text/plain")
+    )
+)]
 pub async fn health(State(state): State<AppState>) -> &'static str {
     state.metrics.api_requests_total.with_label_values(&["/health", "2xx"]).inc();
     "ok"
 }
 
 /// Standard Prometheus exposition. SPEC §17.2.
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    tag = "Operational",
+    responses(
+        (status = 200, description = "Prometheus metrics for the API process.", body = String, content_type = "text/plain")
+    )
+)]
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let encoder = TextEncoder::new();
     let mut buf = Vec::new();
@@ -25,7 +42,8 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         .into_response()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Operational summary of checkpoint progress and approximate table sizes.")]
 pub struct BackfillStatus {
     pub checkpoints: Vec<Checkpoint>,
     pub raw_event_count: String,
@@ -34,13 +52,23 @@ pub struct BackfillStatus {
     pub reorg_event_count: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Single checkpoint entry from indexer_checkpoints.")]
 pub struct Checkpoint {
     pub name: String,
     pub last_processed_block: String,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/backfills/status",
+    tag = "Operational",
+    responses(
+        (status = 200, description = "Checkpoint and approximate row-count summary for the indexing pipeline.", body = BackfillStatus),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn backfill_status(State(state): State<AppState>) -> Result<Json<BackfillStatus>, ApiError> {
     use sqlx::Row;
     let checkpoint_rows = sqlx::query(

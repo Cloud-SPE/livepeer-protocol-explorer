@@ -9,13 +9,16 @@ use axum::{extract::{Query, State}, Json};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
+use utoipa::{IntoParams, ToSchema};
 
 const MAX_BUCKETS: i64 = 1_000;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query model for time-bucketed event counts and value aggregations.")]
 pub struct AggregationsQuery {
     pub contract: Option<String>,
     pub event_name: Option<String>,
+    /// One of `day`, `week`, or `month`.
     pub bucket: String,
     /// ISO date YYYY-MM-DD or block number. Both endpoints accept both forms.
     pub from: Option<String>,
@@ -31,7 +34,8 @@ pub struct AggregationsQuery {
     pub tz: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Aggregation response over canonical indexed events.")]
 pub struct AggregationsResponse {
     pub bucket: String,
     pub tz: String,
@@ -40,13 +44,25 @@ pub struct AggregationsResponse {
     pub results: Vec<BucketRow>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "One bucket in the aggregation result set.")]
 pub struct BucketRow {
     pub bucket_start: DateTime<Utc>,
     pub count: String,
     pub value: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/aggregations/events",
+    tag = "Aggregations",
+    params(AggregationsQuery),
+    responses(
+        (status = 200, description = "Time-bucketed event counts or valuation aggregates over the canonical event set.", body = AggregationsResponse),
+        (status = 400, description = "Invalid bucket, metric, or range parameter.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn events(
     State(state): State<AppState>,
     Query(q): Query<AggregationsQuery>,

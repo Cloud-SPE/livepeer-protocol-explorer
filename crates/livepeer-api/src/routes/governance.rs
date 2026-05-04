@@ -8,14 +8,19 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::str::FromStr;
+use utoipa::{IntoParams, ToSchema};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query parameters for the convenience governance endpoints.")]
 pub struct ProposalsQuery {
+    /// Filter by lifecycle status: `executed`, `not_executed`, `active`, or `all`.
     pub status: Option<String>,
+    /// Maximum number of proposals to return.
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Convenience view of a Governor proposal assembled from raw protocol events.")]
 pub struct ProposalRow {
     pub proposal_id: String,
     pub proposer: Option<String>,
@@ -31,7 +36,8 @@ pub struct ProposalRow {
     pub vote_tally: VoteTally,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, ToSchema)]
+#[schema(description = "Vote weights derived from VoteCast events for a single proposal.")]
 pub struct VoteTally {
     /// Solidity `support` enum — 0=Against, 1=For, 2=Abstain.
     pub against_weight: String,
@@ -40,11 +46,23 @@ pub struct VoteTally {
     pub vote_count: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Collection response for governance proposals.")]
 pub struct ProposalListResponse {
     pub data: Vec<ProposalRow>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/governance/proposals",
+    tag = "Governance",
+    params(ProposalsQuery),
+    responses(
+        (status = 200, description = "Convenience governance view joining proposal creation, execution, and vote tallies.", body = ProposalListResponse),
+        (status = 400, description = "Invalid status filter.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn list(
     State(state): State<AppState>,
     Query(q): Query<ProposalsQuery>,
@@ -130,6 +148,19 @@ pub async fn list(
     Ok(Json(ProposalListResponse { data: proposals }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/governance/proposals/{proposal_id}",
+    tag = "Governance",
+    params(
+        ("proposal_id" = String, Path, description = "Governor proposal identifier.")
+    ),
+    responses(
+        (status = 200, description = "Single governance proposal with execution state and vote tallies.", body = ProposalRow),
+        (status = 404, description = "No proposal exists for the requested identifier.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn get_one(
     State(state): State<AppState>,
     Path(proposal_id): Path<String>,

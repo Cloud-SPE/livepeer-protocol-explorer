@@ -10,22 +10,31 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
+use utoipa::{IntoParams, ToSchema};
 
 const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 1_000;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query parameters for listing or fetching raw protocol events.")]
 pub struct EventsQuery {
+    /// Optional lower block bound.
     pub from_block: Option<i64>,
+    /// Optional upper block bound.
     pub to_block: Option<i64>,
+    /// Contract name filter, such as `BondingManager`.
     pub contract: Option<String>,
+    /// Canonical event name filter.
     pub event_name: Option<String>,
     /// Legacy alias for event_name (SPEC §14.3.1).
     pub event_type: Option<String>,
+    /// Exact sender address match.
     pub from_address: Option<String>,
+    /// Exact receiver/delegate address match.
     pub to_address: Option<String>,
     /// Any-role address match (matches either from_address or to_address).
     pub address: Option<String>,
+    /// Asset symbol filter such as `LPT` or `ETH`.
     pub asset: Option<String>,
     #[serde(default)]
     pub with_valuations: bool,
@@ -38,7 +47,8 @@ pub struct EventsQuery {
     pub cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Canonical raw protocol event as stored in raw_protocol_events.")]
 pub struct EventRow {
     pub id: String,
     pub chain_id: String,
@@ -62,7 +72,8 @@ pub struct EventRow {
     pub valuations: Option<Vec<ValuationInline>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Inline valuation outcome attached to an event response when requested.")]
 pub struct ValuationInline {
     pub asset: String,
     pub valuation_version: String,
@@ -74,13 +85,28 @@ pub struct ValuationInline {
     pub status: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Paginated event list response with an opaque cursor and finality watermark.")]
 pub struct EventListResponse {
     pub data: Vec<EventRow>,
     pub next_cursor: Option<String>,
     pub last_finalized_block: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/events/{id}",
+    tag = "Events",
+    params(
+        ("id" = i64, Path, description = "Primary key of the indexed raw event."),
+        EventsQuery
+    ),
+    responses(
+        (status = 200, description = "Single indexed event. Set `with_valuations=true` to inline attached valuation rows.", body = EventRow),
+        (status = 404, description = "No event exists for the requested identifier.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn get_one(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -107,6 +133,17 @@ pub async fn get_one(
     Ok(Json(event))
 }
 
+#[utoipa::path(
+    get,
+    path = "/events",
+    tag = "Events",
+    params(EventsQuery),
+    responses(
+        (status = 200, description = "Paginated raw protocol events with optional valuation inlining.", body = EventListResponse),
+        (status = 400, description = "Invalid sort or cursor parameters.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn list(
     State(state): State<AppState>,
     Query(q): Query<EventsQuery>,

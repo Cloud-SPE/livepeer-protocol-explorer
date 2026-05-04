@@ -1,0 +1,93 @@
+use axum::Json;
+use serde_json::Value;
+use std::sync::LazyLock;
+use utoipa::OpenApi;
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Livepeer Valuation API",
+        version = "1.7",
+        description = "HTTP API for indexed Livepeer protocol events, valuation outcomes, token prices, stake snapshots, governance views, and transcoder context. The API is backed by deterministic replayable Postgres state derived from Arbitrum and Ethereum RPC inputs."
+    ),
+    paths(
+        crate::routes::operational::health,
+        crate::routes::operational::metrics,
+        crate::routes::operational::backfill_status,
+        crate::routes::events::list,
+        crate::routes::events::get_one,
+        crate::routes::valuations::for_event,
+        crate::routes::valuations::list,
+        crate::routes::aggregations::events,
+        crate::routes::governance::list,
+        crate::routes::governance::get_one,
+        crate::routes::prices::at_block,
+        crate::routes::prices::latest,
+        crate::routes::prices::range,
+        crate::routes::stake::at_block,
+        crate::routes::stake::range,
+        crate::routes::stake::delegators_at_block,
+        crate::routes::transcoders::latest,
+        crate::routes::transcoders::at_block,
+        crate::routes::transcoders::history,
+        crate::routes::transcoders::lifecycle_latest,
+        crate::routes::transcoders::lifecycle_at_block,
+        crate::routes::transcoders::lifecycle_history,
+        crate::routes::transcoders::profile_at_block
+    ),
+    components(
+        schemas(
+            crate::error::ErrorEnvelope,
+            crate::error::ErrorBody,
+            crate::routes::operational::BackfillStatus,
+            crate::routes::operational::Checkpoint,
+            crate::routes::events::EventsQuery,
+            crate::routes::events::EventRow,
+            crate::routes::events::ValuationInline,
+            crate::routes::events::EventListResponse,
+            crate::routes::valuations::ValuationsQuery,
+            crate::routes::valuations::ValuationRow,
+            crate::routes::valuations::ValuationListResponse,
+            crate::routes::aggregations::AggregationsQuery,
+            crate::routes::aggregations::AggregationsResponse,
+            crate::routes::aggregations::BucketRow,
+            crate::routes::governance::ProposalsQuery,
+            crate::routes::governance::ProposalRow,
+            crate::routes::governance::VoteTally,
+            crate::routes::governance::ProposalListResponse,
+            crate::routes::prices::PriceRow,
+            crate::routes::prices::RangeQuery,
+            crate::routes::prices::RangeResponse,
+            crate::routes::stake::StakeRow,
+            crate::routes::stake::StakeRangeQuery,
+            crate::routes::stake::StakeRangeResponse,
+            crate::routes::stake::DelegatorStakeRow,
+            crate::routes::stake::DelegatorListResponse,
+            crate::routes::transcoders::HistoryQuery,
+            crate::routes::transcoders::TranscoderParamsRow,
+            crate::routes::transcoders::TranscoderParamsHistoryResponse,
+            crate::routes::transcoders::TranscoderLifecycleRow,
+            crate::routes::transcoders::TranscoderLifecycleHistoryResponse,
+            crate::routes::transcoders::TranscoderProfileResponse
+        )
+    ),
+    tags(
+        (name = "Operational", description = "Health, metrics, and pipeline checkpoint visibility."),
+        (name = "Events", description = "Canonical raw protocol events with optional inline valuation outcomes."),
+        (name = "Valuations", description = "Versioned valuation outcomes attached to finalized monetary events."),
+        (name = "Aggregations", description = "Time-bucketed analytics over raw events and valuation rows."),
+        (name = "Governance", description = "Governor proposal lifecycle and vote tally convenience views."),
+        (name = "Prices", description = "Cached on-chain token prices keyed by asset, quote, and block."),
+        (name = "Stake", description = "Delegator stake snapshots and bounded stake history derived from protocol events and exact reconciliation."),
+        (name = "Transcoders", description = "Transcoder parameter history, lifecycle state, and delegator set snapshots.")
+    )
+)]
+pub struct ApiDoc;
+
+static OPENAPI: LazyLock<Value> = LazyLock::new(|| {
+    serde_json::to_value(ApiDoc::openapi()).expect("serializing generated OpenAPI document")
+});
+
+pub async fn spec() -> Json<Value> {
+    Json(OPENAPI.clone())
+}

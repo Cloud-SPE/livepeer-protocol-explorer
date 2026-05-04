@@ -8,22 +8,31 @@ use axum::{
 use bigdecimal::BigDecimal;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
+use utoipa::{IntoParams, ToSchema};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Filters for querying versioned event valuation outcomes.")]
 pub struct ValuationsQuery {
+    /// Optional lower block bound.
     pub from_block: Option<i64>,
+    /// Optional upper block bound.
     pub to_block: Option<i64>,
+    /// Filter valuations to a specific pricing version.
     pub version: Option<String>,
+    /// Filter valuations by asset symbol.
     pub asset: Option<String>,
+    /// Maximum number of rows to return.
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Top-level valuations collection response.")]
 pub struct ValuationListResponse {
     pub data: Vec<ValuationRow>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Single immutable valuation outcome row for one (event_id, valuation_version, asset) tuple.")]
 pub struct ValuationRow {
     pub event_id: String,
     pub valuation_version: String,
@@ -37,6 +46,20 @@ pub struct ValuationRow {
     pub status: String,
 }
 
+#[utoipa::path(
+    get,
+    path = "/events/{id}/valuation",
+    tag = "Valuations",
+    params(
+        ("id" = i64, Path, description = "Event identifier."),
+        ValuationsQuery
+    ),
+    responses(
+        (status = 200, description = "All valuation rows attached to a single event.", body = Vec<crate::routes::events::ValuationInline>),
+        (status = 404, description = "No valuations exist for the requested event.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn for_event(
     State(state): State<AppState>,
     Path(event_id): Path<i64>,
@@ -82,6 +105,16 @@ pub async fn for_event(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/valuations",
+    tag = "Valuations",
+    params(ValuationsQuery),
+    responses(
+        (status = 200, description = "Valuation rows across events, optionally filtered by version, asset, and block range.", body = ValuationListResponse),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
 pub async fn list(
     State(state): State<AppState>,
     Query(q): Query<ValuationsQuery>,

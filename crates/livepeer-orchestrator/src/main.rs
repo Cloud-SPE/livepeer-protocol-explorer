@@ -4,7 +4,7 @@ mod reset;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
+use livepeer_core::{config::Config, db, rpc::{cache, Provider}, tracing_init};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -57,6 +57,8 @@ enum Command {
         #[arg(long, default_value_t = false)]
         keep_raw_events: bool,
         #[arg(long, default_value_t = false)]
+        allow_live_rpc: bool,
+        #[arg(long, default_value_t = false)]
         skip_seed_import: bool,
         #[arg(long, default_value_t = false)]
         skip_cross_check: bool,
@@ -67,6 +69,7 @@ pub struct Runtime {
     pub cfg: Config,
     pub pg: sqlx::PgPool,
     pub archive: Provider,
+    pub l1: Option<Provider>,
     pub source_sqlite: Option<PathBuf>,
 }
 
@@ -82,6 +85,14 @@ async fn main() -> Result<()> {
     .await
     .context("connecting to Postgres")?;
     let archive = Provider::new("chainstack", cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?)?;
+    let l1 = match cfg.env.l1.as_ref() {
+        Some(l1_cfg) => {
+            let l1_url = std::env::var(l1_cfg.url_env.as_str())
+                .with_context(|| format!("{} missing", l1_cfg.url_env))?;
+            Some(Provider::new("l1-eth", l1_url)?)
+        }
+        None => None,
+    };
     info!(service = SERVICE, "config + db ready");
 
     match cli.command {
@@ -99,6 +110,7 @@ async fn main() -> Result<()> {
                 cfg,
                 pg,
                 archive,
+                l1,
                 source_sqlite,
             };
             bootstrap::run(
@@ -122,6 +134,7 @@ async fn main() -> Result<()> {
             version,
             include_tentative,
             keep_raw_events,
+            allow_live_rpc,
             skip_seed_import,
             skip_cross_check,
         } => {
@@ -129,8 +142,10 @@ async fn main() -> Result<()> {
                 cfg,
                 pg,
                 archive,
+                l1,
                 source_sqlite,
             };
+            cache::set_cache_only_mode(!allow_live_rpc);
             replay::run(
                 &rt,
                 replay::ReplayOpts {
@@ -139,6 +154,7 @@ async fn main() -> Result<()> {
                     version,
                     include_tentative,
                     keep_raw_events,
+                    allow_live_rpc,
                     skip_seed_import,
                     skip_cross_check,
                 },

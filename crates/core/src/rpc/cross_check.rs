@@ -43,6 +43,21 @@ pub async fn cross_check_call(
     block_number: Option<i64>,
 ) -> Result<CrossCheckOutcome> {
     let call_hash = cache::compute_call_hash(method, params, block_number);
+    if let Some((bytes, hash, _provider)) = cache::get(pg, &call_hash).await? {
+        return Ok(CrossCheckOutcome {
+            call_hash,
+            response_bytes: bytes,
+            response_hash: hash,
+        });
+    }
+    if cache::cache_only_mode() {
+        return Err(CoreError::JsonRpc {
+            provider: a.name().to_string(),
+            method: method.to_string(),
+            code: -32002,
+            message: format!("cache-only replay: missing rpc_call_cache row for {method}"),
+        });
+    }
 
     let result_a = a.call(method, params).await?;
     let result_b = b.call(method, params).await?;
@@ -190,6 +205,14 @@ pub async fn single_call_cached(
             response_hash: hash,
         });
     }
+    if cache::cache_only_mode() {
+        return Err(CoreError::JsonRpc {
+            provider: p.name().to_string(),
+            method: method.to_string(),
+            code: -32002,
+            message: format!("cache-only replay: missing rpc_call_cache row for {method}"),
+        });
+    }
     let result = p.call(method, params).await?;
     let bytes = serde_json::to_vec(&result).unwrap_or_default();
     let hash = cache::hash_response_bytes(&bytes);
@@ -262,6 +285,18 @@ pub async fn batch_call_cached(
 
     // If everything was cached, we're done — no HTTP call needed.
     if !miss_indices.is_empty() {
+        if cache::cache_only_mode() {
+            let first_miss = miss_indices[0];
+            return Err(CoreError::JsonRpc {
+                provider: p.name().to_string(),
+                method: requests[first_miss].0.clone(),
+                code: -32002,
+                message: format!(
+                    "cache-only replay: missing rpc_call_cache row for {}",
+                    requests[first_miss].0
+                ),
+            });
+        }
         // Build the batch in MISS order; we'll map results back via miss_indices.
         let miss_batch: Vec<(String, Value)> = miss_indices
             .iter()

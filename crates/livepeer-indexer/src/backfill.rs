@@ -265,7 +265,8 @@ async fn backfill_chunk(
 ) -> Result<ChunkSummary> {
     let topic0s = topic0s_for(contract);
     let logs_value =
-        eth_get_logs_multi_topic(archive, proxy_address, &topic0s, chunk_start, chunk_end).await?;
+        eth_get_logs_multi_topic(pg, archive, proxy_address, &topic0s, chunk_start, chunk_end)
+            .await?;
     let raw_logs: Vec<RawLog> =
         serde_json::from_value(logs_value).context("decoding eth_getLogs response")?;
 
@@ -1265,6 +1266,7 @@ fn topic0s_for(c: ContractKind) -> Vec<String> {
 }
 
 async fn eth_get_logs_multi_topic(
+    pg: &PgPool,
     p: &Provider,
     contract: &str,
     topic0s: &[String],
@@ -1277,7 +1279,8 @@ async fn eth_get_logs_multi_topic(
         "fromBlock": format!("0x{:x}", from_block),
         "toBlock":   format!("0x{:x}", to_block),
     }]);
-    Ok(p.call("eth_getLogs", &params).await?)
+    let outcome = cross_check::single_call_cached(pg, p, "eth_getLogs", &params, None).await?;
+    Ok(serde_json::from_slice(&outcome.response_bytes)?)
 }
 
 async fn advance_checkpoint(

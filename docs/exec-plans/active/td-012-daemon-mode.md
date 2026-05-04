@@ -198,7 +198,10 @@ livepeer replay ...
 `replay` responsibilities:
 
 - Recreates derived state from a known input set.
-- Requires `--cache-only` / `--fail-on-missing-cache`.
+- Strict by default: requires an explicit `--to-block` and fails on missing
+  cached RPC inputs instead of falling back to live reads.
+- Optional escape hatch: `--allow-live-rpc` for debugging / backfilling cache
+  gaps, but that mode is not the determinism contract.
 - Fails immediately on missing cached RPC inputs.
 - Emits or verifies deterministic output hashes.
 
@@ -285,7 +288,7 @@ The exact fields can evolve, but the important property is:
 
 #### Determinism check for Phase 1
 
-After Phase 1 lands, validate that `replay` against the same
+After Phase 1 lands, validate that strict `replay` against the same
 `rpc_call_cache` + seed reproduces the same `raw_protocol_events`,
 `event_valuations`, `token_prices_by_block`, and stake tables as the original
 bounded run. Acceptance: `bash scripts/validate-vs-baseline.sh <baseline-dir>`

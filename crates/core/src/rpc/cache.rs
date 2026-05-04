@@ -4,6 +4,17 @@ use crate::error::Result;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static CACHE_ONLY_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_cache_only_mode(enabled: bool) {
+    CACHE_ONLY_MODE.store(enabled, Ordering::SeqCst);
+}
+
+pub fn cache_only_mode() -> bool {
+    CACHE_ONLY_MODE.load(Ordering::SeqCst)
+}
 
 /// `call_hash = sha256(method || canonical_params || block)`. SPEC §11.12.
 pub fn compute_call_hash(method: &str, params: &Value, block_number: Option<i64>) -> String {

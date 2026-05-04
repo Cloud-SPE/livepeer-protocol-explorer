@@ -1,5 +1,5 @@
 use crate::{reset, run_migrations, resolve_to_block, Runtime};
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use livepeer_indexer::{backfill::ContractKind, runner as indexer_runner};
 use livepeer_seed_migrator::runner as seed_runner;
 use livepeer_staker::runner as staker_runner;
@@ -13,11 +13,15 @@ pub struct ReplayOpts {
     pub version: Option<String>,
     pub include_tentative: bool,
     pub keep_raw_events: bool,
+    pub allow_live_rpc: bool,
     pub skip_seed_import: bool,
     pub skip_cross_check: bool,
 }
 
 pub async fn run(rt: &Runtime, opts: ReplayOpts) -> Result<()> {
+    if opts.to_block.is_none() {
+        bail!("replay requires explicit --to-block so it does not depend on live head state");
+    }
     run_migrations(&rt.pg).await?;
     seed_runner::seed_abi_registry(&rt.pg, std::path::Path::new("abi"), &rt.cfg).await?;
     reset::truncate_for_replay(&rt.pg, opts.keep_raw_events).await?;
@@ -61,7 +65,15 @@ pub async fn run(rt: &Runtime, opts: ReplayOpts) -> Result<()> {
         }
     }
 
-    let finality = livepeer_finality_watcher::runner::run_once(&rt.pg, &rt.archive).await?;
+    let finality = if opts.allow_live_rpc {
+        let l1 = rt
+            .l1
+            .as_ref()
+            .context("replay with --allow-live-rpc requires configured L1 provider for finality")?;
+        livepeer_finality_watcher::runner::run_once(&rt.pg, l1).await?
+    } else {
+        livepeer_finality_watcher::runner::run_once_replay(&rt.pg).await?
+    };
     info!(?finality, "replay: finality pass complete");
 
     let valuation = valuator_runner::run_all(

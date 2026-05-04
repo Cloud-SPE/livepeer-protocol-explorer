@@ -45,10 +45,20 @@ pub async fn truncate_for_replay(pg: &PgPool, keep_raw_events: bool) -> Result<(
               token_prices_by_block,
               reorg_events,
               reorg_mutations,
-              rpc_divergence_failures,
-              indexer_checkpoints
+              rpc_divergence_failures
            RESTART IDENTITY CASCADE"#
     };
     sqlx::query(sql).execute(pg).await?;
+    if !keep_raw_events {
+        sqlx::query(
+            r#"DELETE FROM indexer_checkpoints
+                 WHERE name NOT IN (
+                   'replay_finality_latest_l1_ts',
+                   'replay_finality_finalized_l1_ts'
+                 )"#,
+        )
+        .execute(pg)
+        .await?;
+    }
     Ok(())
 }

@@ -1,5 +1,5 @@
 use crate::{run_migrations, resolve_to_block, Runtime};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use livepeer_indexer::{backfill::ContractKind, runner as indexer_runner};
 use livepeer_seed_migrator::runner as seed_runner;
 use livepeer_staker::runner as staker_runner;
@@ -58,7 +58,11 @@ pub async fn run(rt: &Runtime, opts: BootstrapOpts) -> Result<()> {
         info!(?summary, "bootstrap: indexer contract complete");
     }
 
-    let finality = livepeer_finality_watcher::runner::run_once(&rt.pg, &rt.archive).await?;
+    let l1 = rt
+        .l1
+        .as_ref()
+        .context("bootstrap requires configured L1 provider for finality")?;
+    let finality = livepeer_finality_watcher::runner::run_once(&rt.pg, l1).await?;
     info!(?finality, "bootstrap: finality pass complete");
 
     let valuation = valuator_runner::run_all(

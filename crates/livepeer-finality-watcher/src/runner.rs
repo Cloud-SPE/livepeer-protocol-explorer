@@ -7,6 +7,8 @@ pub const ARBITRUM_CHAIN_ID: i64 = 42161;
 pub const POSTING_LAG_SECS: i64 = 600;
 pub const FINALITY_SAFETY_MARGIN_SECS: i64 = 60;
 pub const CADENCE_SECS: u64 = 60;
+const REPLAY_LATEST_TS_CHECKPOINT: &str = "replay_finality_latest_l1_ts";
+const REPLAY_FINALIZED_TS_CHECKPOINT: &str = "replay_finality_finalized_l1_ts";
 
 #[derive(Debug, Default)]
 pub struct FinalityIterationSummary {
@@ -21,7 +23,21 @@ pub struct FinalityIterationSummary {
 pub async fn run_once(pg: &PgPool, l1: &Provider) -> Result<FinalityIterationSummary> {
     let latest_ts = l1_block_timestamp(l1, BlockTag::Latest).await?;
     let finalized_ts = l1_block_timestamp_str(l1, "finalized").await?;
+    persist_replay_inputs(pg, latest_ts, finalized_ts).await?;
+    run_with_timestamps(pg, latest_ts, finalized_ts).await
+}
 
+pub async fn run_once_replay(pg: &PgPool) -> Result<FinalityIterationSummary> {
+    let latest_ts = replay_input(pg, REPLAY_LATEST_TS_CHECKPOINT).await?;
+    let finalized_ts = replay_input(pg, REPLAY_FINALIZED_TS_CHECKPOINT).await?;
+    run_with_timestamps(pg, latest_ts, finalized_ts).await
+}
+
+async fn run_with_timestamps(
+    pg: &PgPool,
+    latest_ts: i64,
+    finalized_ts: i64,
+) -> Result<FinalityIterationSummary> {
     let l1_posted_cutoff = latest_ts - POSTING_LAG_SECS;
     let finalized_cutoff = finalized_ts - FINALITY_SAFETY_MARGIN_SECS;
 
@@ -95,4 +111,36 @@ async fn l1_block_timestamp_str(l1: &Provider, tag: &str) -> Result<i64> {
         .with_context(|| format!("L1 block header at tag={tag} missing .timestamp"))?;
     let ts = i64::from_str_radix(ts_hex.trim_start_matches("0x"), 16)?;
     Ok(ts)
+}
+
+async fn persist_replay_inputs(pg: &PgPool, latest_ts: i64, finalized_ts: i64) -> Result<()> {
+    for (name, value) in [
+        (REPLAY_LATEST_TS_CHECKPOINT, latest_ts),
+        (REPLAY_FINALIZED_TS_CHECKPOINT, finalized_ts),
+    ] {
+        sqlx::query(
+            r#"INSERT INTO indexer_checkpoints
+                    (name, chain_id, last_processed_block, updated_at)
+               VALUES ($1, $2, $3, now())
+               ON CONFLICT (name) DO UPDATE
+                  SET last_processed_block = EXCLUDED.last_processed_block,
+                      updated_at = now()"#,
+        )
+        .bind(name)
+        .bind(ARBITRUM_CHAIN_ID)
+        .bind(value)
+        .execute(pg)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn replay_input(pg: &PgPool, name: &str) -> Result<i64> {
+    sqlx::query_scalar(
+        "SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1",
+    )
+    .bind(name)
+    .fetch_optional(pg)
+    .await?
+    .with_context(|| format!("missing replay finality input checkpoint {name}"))
 }

@@ -213,6 +213,27 @@ The current binaries remain the building blocks for historical work:
 The new orchestration CLI should call into shared library functions from these
 crates rather than shelling out to subprocesses.
 
+#### Concrete extraction targets from the current repo
+
+Current `main.rs` files show the right reuse points already exist, but they are
+trapped behind CLI parsing. The first code step is to expose them as crate
+library entrypoints.
+
+| Crate | Current bounded function(s) to wrap | Target library module |
+|---|---|---|
+| `livepeer-indexer` | `backfill::drive_backfill`, `backfill::resume_from` | `crates/livepeer-indexer/src/lib.rs`, `runner.rs` |
+| `livepeer-finality-watcher` | `run_iteration` | `crates/livepeer-finality-watcher/src/lib.rs`, `runner.rs` |
+| `livepeer-reorg-watcher` | `run_iteration`, `pick_cadence` (scheduler-only helper) | `crates/livepeer-reorg-watcher/src/lib.rs`, `runner.rs` |
+| `livepeer-valuator` | `seed::run_seed_pass`, `onchain::run_onchain_pass_eth`, `onchain::run_onchain_pass_lpt`, `multi_asset::run_multi_asset_pass` | `crates/livepeer-valuator/src/lib.rs`, `runner.rs` |
+| `livepeer-staker` | `flow::run_flow_backfill`, `pending::refresh_pending` | `crates/livepeer-staker/src/lib.rs`, `runner.rs` |
+
+The CLIs should become thin wrappers:
+
+- parse args
+- build config / DB / provider handles
+- call the library runner
+- log the returned summary
+
 #### Required library extraction boundary
 
 Each batch binary needs a bounded library entrypoint so both the bounded
@@ -226,6 +247,41 @@ This is the load-bearing refactor for the whole migration. If the daemon and
 the batch binaries do not share the same bounded worker entrypoints, the
 determinism story gets weaker and the runtime logic will drift.
 
+#### Proposed shared types
+
+These should live in a small reusable orchestration-facing module, ideally
+under `crates/core` once the shape stabilizes.
+
+```rust
+pub struct IterCtx<'a> {
+    pub pg: &'a PgPool,
+    pub cfg: &'a Config,
+    pub provider: Option<&'a Provider>,
+    pub include_tentative: bool,
+    pub valuation_version: Option<&'a str>,
+    pub from_block: Option<u64>,
+    pub to_block: Option<u64>,
+    pub checkpoint_suffix: Option<&'a str>,
+    pub cache_only: bool,
+}
+
+pub struct IterSummary {
+    pub task: &'static str,
+    pub units_seen: u64,
+    pub units_written: u64,
+    pub checkpoint_before: Option<u64>,
+    pub checkpoint_after: Option<u64>,
+    pub lag_before: Option<u64>,
+    pub lag_after: Option<u64>,
+}
+```
+
+The exact fields can evolve, but the important property is:
+
+- a bounded worker reports enough structured output for both the batch
+  orchestrator and the future daemon supervisor
+- the caller does not need to scrape human log lines to know what happened
+
 #### Determinism check for Phase 1
 
 After Phase 1 lands, validate that `replay` against the same
@@ -233,6 +289,71 @@ After Phase 1 lands, validate that `replay` against the same
 `event_valuations`, `token_prices_by_block`, and stake tables as the original
 bounded run. Acceptance: `bash scripts/validate-vs-baseline.sh <baseline-dir>`
 reports MATCH.
+
+#### First PR slice for Phase 1
+
+The first implementation PR should stay narrow:
+
+1. Add `lib.rs` to:
+   - `livepeer-indexer`
+   - `livepeer-finality-watcher`
+   - `livepeer-valuator`
+   - `livepeer-staker`
+2. Move existing callable bounded logic behind exported runner functions.
+3. Keep existing CLI behavior unchanged by making `main.rs` call the new
+   runners.
+4. Add a new orchestration binary crate:
+   - `crates/livepeer-orchestrator`
+5. Implement only:
+   - `livepeer-orchestrator bootstrap`
+   - `livepeer-orchestrator replay`
+6. Do **not** add daemon looping in this PR.
+
+Acceptance for the first PR slice:
+
+- existing binaries still behave the same from the command line
+- orchestrator can call the same workers without shelling out
+- `replay` can be wired to the same deterministic validation flow already used
+  by `scripts/snapshot-baseline.sh` / `scripts/validate-vs-baseline.sh`
+
+#### Suggested crate layout for Phase 1
+
+```
+crates/
+  livepeer-orchestrator/
+    Cargo.toml
+    src/
+      main.rs
+      bootstrap.rs
+      replay.rs
+      reset.rs          # optional derived-table reset helper
+      summary.rs
+  livepeer-indexer/
+    src/
+      lib.rs
+      main.rs
+      backfill.rs
+      runner.rs
+  livepeer-finality-watcher/
+    src/
+      lib.rs
+      main.rs
+      runner.rs
+  livepeer-valuator/
+    src/
+      lib.rs
+      main.rs
+      runner.rs
+  livepeer-staker/
+    src/
+      lib.rs
+      main.rs
+      runner.rs
+```
+
+The orchestrator should link directly against these crates, not spawn shell
+commands. Shelling out would preserve today's operational shape and lose the
+structured summary / shared-resource story we need for Phase 2.
 
 #### What Phase 1 deliberately does NOT do
 
@@ -295,6 +416,33 @@ The first daemon scope should be intentionally narrow:
 Reasoning: keeping the initial daemon focused on ingestion + finalization +
 valuation minimizes failure-surface while solving the highest-value
 steady-state problem first.
+
+#### First daemon PR slice
+
+The first Phase 2 PR should also stay narrow:
+
+1. Add `crates/livepeer-daemon`
+2. Implement only:
+   - startup lag inspection
+   - `follow` mode
+   - shared shutdown signal
+   - shared RPC manager wrapper
+   - task loops for:
+     - indexer
+     - finality watcher
+     - valuator
+3. Keep:
+   - reorg watcher standalone for the first daemon cut, or run it on a very
+     conservative cadence with no mutation-policy changes
+   - staker standalone until the follow loop is proven stable
+
+Acceptance for the first daemon PR slice:
+
+- daemon refuses to start when lag is above threshold
+- daemon keeps near-head data moving without wrapper scripts
+- stopping the daemon cleanly leaves resumable checkpoints
+- bounded worker output remains byte-identical to batch-mode output on the same
+  cached inputs
 
 #### Async task topology
 

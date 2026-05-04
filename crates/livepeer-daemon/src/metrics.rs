@@ -7,6 +7,10 @@ pub struct Metrics {
     pub iterations_total: IntCounterVec,
     pub iteration_failures_total: IntCounterVec,
     pub iteration_duration_seconds: HistogramVec,
+    pub events_indexed_total: IntCounterVec,
+    pub decode_failures_total: IntCounterVec,
+    pub events_valued_total: IntCounterVec,
+    pub reorgs_detected_total: IntCounterVec,
     pub chain_head_block: IntGauge,
     pub task_checkpoint_block: IntGaugeVec,
     pub task_lag_blocks: IntGaugeVec,
@@ -37,6 +41,38 @@ impl Metrics {
             &["task"],
         )
         .expect("metric construction");
+        let events_indexed_total = IntCounterVec::new(
+            opts!(
+                "livepeer_events_indexed_total",
+                "Raw protocol events indexed by contract"
+            ),
+            &["contract"],
+        )
+        .expect("metric construction");
+        let decode_failures_total = IntCounterVec::new(
+            opts!(
+                "livepeer_decode_failures_total",
+                "Decode failures written by contract"
+            ),
+            &["contract"],
+        )
+        .expect("metric construction");
+        let events_valued_total = IntCounterVec::new(
+            opts!(
+                "livepeer_events_valued_total",
+                "Valuation outcomes written by status"
+            ),
+            &["status"],
+        )
+        .expect("metric construction");
+        let reorgs_detected_total = IntCounterVec::new(
+            opts!(
+                "livepeer_reorgs_detected_total",
+                "Reorg divergences detected by the daemon"
+            ),
+            &["severity"],
+        )
+        .expect("metric construction");
         let chain_head_block = IntGauge::new(
             "livepeer_chain_head_block",
             "Latest chain head block observed by the daemon",
@@ -60,6 +96,10 @@ impl Metrics {
             Box::new(iterations_total.clone()) as Box<dyn prometheus::core::Collector>,
             Box::new(iteration_failures_total.clone()),
             Box::new(iteration_duration_seconds.clone()),
+            Box::new(events_indexed_total.clone()),
+            Box::new(decode_failures_total.clone()),
+            Box::new(events_valued_total.clone()),
+            Box::new(reorgs_detected_total.clone()),
             Box::new(chain_head_block.clone()),
             Box::new(task_checkpoint_block.clone()),
             Box::new(task_lag_blocks.clone()),
@@ -72,6 +112,10 @@ impl Metrics {
             iterations_total,
             iteration_failures_total,
             iteration_duration_seconds,
+            events_indexed_total,
+            decode_failures_total,
+            events_valued_total,
+            reorgs_detected_total,
             chain_head_block,
             task_checkpoint_block,
             task_lag_blocks,

@@ -153,6 +153,14 @@ async fn indexer_loop(
             match result {
                 Ok(summary) => {
                     metrics
+                        .events_indexed_total
+                        .with_label_values(&[summary.contract_name])
+                        .inc_by(summary.inner.events_inserted);
+                    metrics
+                        .decode_failures_total
+                        .with_label_values(&[summary.contract_name])
+                        .inc_by(summary.inner.dead_lettered);
+                    metrics
                         .task_checkpoint_block
                         .with_label_values(&["indexer"])
                         .set(bounded_to as i64);
@@ -217,6 +225,12 @@ async fn reorg_loop(
                 return Err(e);
             }
         };
+        if summary.divergences > 0 {
+            metrics
+                .reorgs_detected_total
+                .with_label_values(&["info"])
+                .inc_by(summary.divergences);
+        }
         info!(?summary, "daemon: reorg iteration complete");
         metrics.record_success("reorg", started.elapsed().as_secs_f64());
     }
@@ -252,6 +266,54 @@ async fn valuator_loop(
                 return Err(e);
             }
         };
+        let priced = summary.seed.priced_this_run
+            + summary.eth.priced
+            + summary.lpt.priced_twap
+            + summary.lpt.priced_degraded
+            + summary.multi_asset.lpt_rows_priced
+            + summary.multi_asset.eth_rows_priced;
+        if priced > 0 {
+            metrics
+                .events_valued_total
+                .with_label_values(&["priced"])
+                .inc_by(priced);
+        }
+        if summary.eth.failed_missing_oracle > 0 {
+            metrics
+                .events_valued_total
+                .with_label_values(&["failed_missing_oracle"])
+                .inc_by(summary.eth.failed_missing_oracle);
+        }
+        if summary.eth.failed_sequencer_outage > 0 {
+            metrics
+                .events_valued_total
+                .with_label_values(&["failed_sequencer_outage"])
+                .inc_by(summary.eth.failed_sequencer_outage);
+        }
+        if summary.lpt.failed_missing_oracle > 0 {
+            metrics
+                .events_valued_total
+                .with_label_values(&["failed_missing_oracle"])
+                .inc_by(summary.lpt.failed_missing_oracle);
+        }
+        if summary.lpt.failed_missing_pool > 0 {
+            metrics
+                .events_valued_total
+                .with_label_values(&["failed_missing_pool"])
+                .inc_by(summary.lpt.failed_missing_pool);
+        }
+        if summary.lpt.failed_sequencer_outage > 0 {
+            metrics
+                .events_valued_total
+                .with_label_values(&["failed_sequencer_outage"])
+                .inc_by(summary.lpt.failed_sequencer_outage);
+        }
+        if summary.multi_asset.failures > 0 {
+            metrics
+                .events_valued_total
+                .with_label_values(&["failed_other"])
+                .inc_by(summary.multi_asset.failures);
+        }
         info!(?summary, "daemon: valuator iteration complete");
         metrics.record_success("valuator", started.elapsed().as_secs_f64());
     }

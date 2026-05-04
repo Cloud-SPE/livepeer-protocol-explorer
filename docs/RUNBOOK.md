@@ -11,6 +11,9 @@ This document reflects the current runtime shape:
 
 Authoritative reference: [SPEC §19](product-specs/v1-livepeer-indexer.md#19-operations-runbook).
 
+Deployment walkthrough:
+- [DEPLOYMENT.md](DEPLOYMENT.md)
+
 ## 1. Daily operations
 
 Primary processes:

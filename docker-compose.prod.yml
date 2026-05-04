@@ -1,0 +1,103 @@
+# Production-oriented compose shape.
+# Runtime services:
+# - postgres
+# - livepeer-daemon
+# - livepeer-api
+# - optional livepeer-alert-bot
+#
+# Bootstrap / replay / seed import are one-shot tools, run via:
+#   docker compose -f docker-compose.prod.yml run --rm livepeer-orchestrator ...
+#   docker compose -f docker-compose.prod.yml run --rm livepeer-seed-migrator ...
+#
+# Prometheus and Alertmanager remain external per SPEC §15.1.
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  livepeer-daemon:
+    image: livepeer-valuation-system:latest
+    build: .
+    command:
+      - livepeer-daemon
+      - --env-config
+      - config/env/prod.yaml
+      - follow
+      - --max-start-lag-blocks
+      - "50000"
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9107:9107"
+
+  livepeer-api:
+    image: livepeer-valuation-system:latest
+    command:
+      - livepeer-api
+      - --env-config
+      - config/env/prod.yaml
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "9106:9106"
+
+  livepeer-alert-bot:
+    image: livepeer-valuation-system:latest
+    command:
+      - livepeer-alert-bot
+      - --env-config
+      - config/env/prod.yaml
+    restart: unless-stopped
+    env_file: .env
+    profiles: ["ops"]
+    ports:
+      - "9111:9111"
+
+  livepeer-orchestrator:
+    image: livepeer-valuation-system:latest
+    command:
+      - livepeer-orchestrator
+      - --env-config
+      - config/env/prod.yaml
+    env_file: .env
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./seed:/seed:ro
+
+  livepeer-seed-migrator:
+    image: livepeer-valuation-system:latest
+    command:
+      - livepeer-seed-migrator
+      - --env-config
+      - config/env/prod.yaml
+    env_file: .env
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./seed:/seed:ro
+
+volumes:
+  postgres_data:

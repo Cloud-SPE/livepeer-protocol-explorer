@@ -6,6 +6,7 @@
 
 pub mod cache;
 pub mod cross_check;
+pub mod metrics;
 pub mod provider;
 
 pub use provider::{BlockTag, Provider};

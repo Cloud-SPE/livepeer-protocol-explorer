@@ -25,7 +25,8 @@ async fn health() -> &'static str {
 async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl IntoResponse {
     let encoder = TextEncoder::new();
     let mut buf = Vec::new();
-    let families = metrics.registry.gather();
+    let mut families = metrics.registry.gather();
+    families.extend(livepeer_core::rpc::metrics::gather());
     if encoder.encode(&families, &mut buf).is_err() {
         return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "encode failed").into_response();
     }

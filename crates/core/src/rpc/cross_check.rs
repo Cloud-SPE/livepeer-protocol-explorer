@@ -15,7 +15,7 @@
 //! NEVER auto-retry, always surface for human review (§13.3, §10.6).
 
 use crate::error::{CoreError, Result};
-use crate::rpc::{cache, Provider};
+use crate::rpc::{cache, metrics, Provider};
 use serde_json::Value;
 use sqlx::PgPool;
 
@@ -68,6 +68,7 @@ pub async fn cross_check_call(
     let hash_b = cache::hash_response_bytes(&bytes_b);
 
     if hash_a != hash_b {
+        metrics::record_divergence(method);
         sqlx::query(
             r#"INSERT INTO rpc_divergence_failures
                   (method, params, block_number, provider_a, response_a_bytes,
@@ -155,6 +156,7 @@ pub async fn cross_check_block_hash(
     }
 
     if hash_a != hash_b {
+        metrics::record_divergence("eth_getBlockByNumber.hash");
         let bytes_a = serde_json::to_vec(&result_a).unwrap_or_default();
         let bytes_b = serde_json::to_vec(&result_b).unwrap_or_default();
         sqlx::query(

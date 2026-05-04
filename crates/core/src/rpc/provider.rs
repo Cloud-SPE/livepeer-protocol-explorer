@@ -2,6 +2,7 @@
 //! the indexer composes those on top.
 
 use crate::error::{CoreError, Result};
+use crate::rpc::metrics;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -171,6 +172,7 @@ impl Provider {
 
     async fn call_once(&self, method: &str, params: &Value) -> Result<Value> {
         let _permit = global_rpc_permit().await;
+        let started = std::time::Instant::now();
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             method,
@@ -212,6 +214,12 @@ impl Provider {
         let resp_text = match tokio::time::timeout(hard_timeout, send_text).await {
             Ok(r) => r?,
             Err(_) => {
+                metrics::record_call(
+                    &self.name,
+                    method,
+                    "timeout",
+                    started.elapsed().as_secs_f64(),
+                );
                 return Err(CoreError::JsonRpc {
                     provider: self.name.clone(),
                     method: method.to_string(),
@@ -221,6 +229,12 @@ impl Provider {
             }
         };
         let parsed: JsonRpcResponse = serde_json::from_str(&resp_text).map_err(|_| {
+            metrics::record_call(
+                &self.name,
+                method,
+                "malformed",
+                started.elapsed().as_secs_f64(),
+            );
             // Treat malformed JSON-RPC as a determinism-fatal error per §13.3
             CoreError::JsonRpc {
                 provider: self.name.clone(),
@@ -230,6 +244,12 @@ impl Provider {
             }
         })?;
         if let Some(err) = parsed.error {
+            metrics::record_call(
+                &self.name,
+                method,
+                "jsonrpc_error",
+                started.elapsed().as_secs_f64(),
+            );
             return Err(CoreError::JsonRpc {
                 provider: self.name.clone(),
                 method: method.to_string(),
@@ -237,6 +257,12 @@ impl Provider {
                 message: err.message,
             });
         }
+        metrics::record_call(
+            &self.name,
+            method,
+            "ok",
+            started.elapsed().as_secs_f64(),
+        );
         Ok(parsed.result.unwrap_or(Value::Null))
     }
 
@@ -259,6 +285,7 @@ impl Provider {
             return Ok(Vec::new());
         }
         let _permit = global_rpc_permit().await;
+        let started = std::time::Instant::now();
 
         // Build the request array. id is the 1-based index — must be unique
         // within the batch and stable so we can match responses back.
@@ -300,6 +327,10 @@ impl Provider {
         let resp_text = match tokio::time::timeout(hard_timeout, send_text).await {
             Ok(r) => r?,
             Err(_) => {
+                let duration = started.elapsed().as_secs_f64();
+                for (method, _) in batch {
+                    metrics::record_call(&self.name, method, "timeout", duration);
+                }
                 return Err(CoreError::JsonRpc {
                     provider: self.name.clone(),
                     method: "call_batch".to_string(),
@@ -316,6 +347,10 @@ impl Provider {
             Err(_) => match serde_json::from_str::<JsonRpcResponse>(&resp_text) {
                 Ok(single) => vec![single],
                 Err(_) => {
+                    let duration = started.elapsed().as_secs_f64();
+                    for (method, _) in batch {
+                        metrics::record_call(&self.name, method, "malformed", duration);
+                    }
                     return Err(CoreError::JsonRpc {
                         provider: self.name.clone(),
                         method: "call_batch".to_string(),
@@ -352,6 +387,14 @@ impl Provider {
             } else {
                 Ok(resp.result.unwrap_or(Value::Null))
             };
+        }
+        let duration = started.elapsed().as_secs_f64();
+        for (i, result) in results.iter().enumerate() {
+            let result_label = match result {
+                Ok(_) => "ok",
+                Err(_) => "jsonrpc_error",
+            };
+            metrics::record_call(&self.name, &batch[i].0, result_label, duration);
         }
         Ok(results)
     }

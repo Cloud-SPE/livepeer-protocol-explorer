@@ -1,16 +1,13 @@
 [package]
-name = "livepeer-seed-migrator"
+name = "livepeer-orchestrator"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[lib]
-path = "src/lib.rs"
-
 [[bin]]
-name = "livepeer-seed-migrator"
+name = "livepeer-orchestrator"
 path = "src/main.rs"
 
 [dependencies]
@@ -22,5 +19,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 sqlx.workspace = true
 serde_json.workspace = true
-serde.workspace = true
-bigdecimal.workspace = true
+livepeer-indexer = { path = "../livepeer-indexer" }
+livepeer-finality-watcher = { path = "../livepeer-finality-watcher" }
+livepeer-valuator = { path = "../livepeer-valuator" }
+livepeer-staker = { path = "../livepeer-staker" }
+livepeer-seed-migrator = { path = "../livepeer-seed-migrator" }

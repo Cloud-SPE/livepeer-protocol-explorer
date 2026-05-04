@@ -1,13 +1,7 @@
-mod bulk;
-mod multi_asset;
-mod onchain;
-mod persist;
-mod seed;
-mod tick_math;
-
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
+use livepeer_valuator::runner;
 use std::path::PathBuf;
 use tracing::info;
 
@@ -69,7 +63,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::BackfillFromSeed => {
-            let s = seed::run_seed_pass(&pg, &valuation_version, cli.include_tentative).await?;
+            let s = runner::run_seed(&pg, &valuation_version, cli.include_tentative).await?;
             info!(
                 events_considered = s.events_considered,
                 seed_hits = s.seed_hits,
@@ -84,7 +78,7 @@ async fn main() -> Result<()> {
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
             )?;
-            let s = onchain::run_onchain_pass_eth(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            let s = runner::run_eth(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
             info!(
                 events_considered = s.events_considered,
                 priced = s.priced,
@@ -99,7 +93,7 @@ async fn main() -> Result<()> {
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
             )?;
-            let s = onchain::run_onchain_pass_lpt(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            let s = runner::run_lpt(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
             info!(
                 events_considered = s.events_considered,
                 priced_twap = s.priced_twap,
@@ -116,7 +110,7 @@ async fn main() -> Result<()> {
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
             )?;
-            let s = multi_asset::run_multi_asset_pass(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            let s = runner::run_multi_asset(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
             info!(
                 events_considered = s.events_considered,
                 lpt_rows_priced = s.lpt_rows_priced,
@@ -128,46 +122,43 @@ async fn main() -> Result<()> {
             );
         }
         Command::BackfillAll => {
-            let s = seed::run_seed_pass(&pg, &valuation_version, cli.include_tentative).await?;
-            info!(
-                events_considered = s.events_considered,
-                priced_this_run = s.priced_this_run,
-                seed_misses = s.seed_misses,
-                multi_asset_skipped = s.multi_asset_skipped,
-                "seed pass summary"
-            );
             let archive = Provider::new(
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
             )?;
-            let o = onchain::run_onchain_pass_eth(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            let all = runner::run_all(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
             info!(
-                events_considered = o.events_considered,
-                priced = o.priced,
-                failed_sequencer_outage = o.failed_sequencer_outage,
-                failed_missing_oracle = o.failed_missing_oracle,
-                other_skipped = o.other_skipped,
+                events_considered = all.seed.events_considered,
+                priced_this_run = all.seed.priced_this_run,
+                seed_misses = all.seed.seed_misses,
+                multi_asset_skipped = all.seed.multi_asset_skipped,
+                "seed pass summary"
+            );
+            info!(
+                events_considered = all.eth.events_considered,
+                priced = all.eth.priced,
+                failed_sequencer_outage = all.eth.failed_sequencer_outage,
+                failed_missing_oracle = all.eth.failed_missing_oracle,
+                other_skipped = all.eth.other_skipped,
                 "on-chain ETH pass summary"
             );
-            let l = onchain::run_onchain_pass_lpt(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
             info!(
-                events_considered = l.events_considered,
-                priced_twap = l.priced_twap,
-                priced_degraded = l.priced_degraded,
-                failed_sequencer_outage = l.failed_sequencer_outage,
-                failed_missing_oracle = l.failed_missing_oracle,
-                failed_missing_pool = l.failed_missing_pool,
-                other_skipped = l.other_skipped,
+                events_considered = all.lpt.events_considered,
+                priced_twap = all.lpt.priced_twap,
+                priced_degraded = all.lpt.priced_degraded,
+                failed_sequencer_outage = all.lpt.failed_sequencer_outage,
+                failed_missing_oracle = all.lpt.failed_missing_oracle,
+                failed_missing_pool = all.lpt.failed_missing_pool,
+                other_skipped = all.lpt.other_skipped,
                 "on-chain LPT pass summary"
             );
-            let m = multi_asset::run_multi_asset_pass(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
             info!(
-                events_considered = m.events_considered,
-                lpt_rows_priced = m.lpt_rows_priced,
-                eth_rows_priced = m.eth_rows_priced,
-                lpt_zero_amount_rows = m.lpt_zero_amount_rows,
-                eth_zero_amount_rows = m.eth_zero_amount_rows,
-                failures = m.failures,
+                events_considered = all.multi_asset.events_considered,
+                lpt_rows_priced = all.multi_asset.lpt_rows_priced,
+                eth_rows_priced = all.multi_asset.eth_rows_priced,
+                lpt_zero_amount_rows = all.multi_asset.lpt_zero_amount_rows,
+                eth_zero_amount_rows = all.multi_asset.eth_zero_amount_rows,
+                failures = all.multi_asset.failures,
                 "multi-asset pass summary"
             );
         }

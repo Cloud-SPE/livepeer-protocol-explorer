@@ -20,19 +20,18 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use livepeer_finality_watcher::runner;
 use livepeer_core::{
     config::Config,
     db,
-    rpc::{BlockTag, Provider},
+    rpc::Provider,
     tracing_init,
 };
-use sqlx::PgPool;
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 const SERVICE: &str = "livepeer-finality-watcher";
-const ARBITRUM_CHAIN_ID: i64 = 42161;
 const POSTING_LAG_SECS: i64 = 600;            // ~10 min — typical Arbitrum batch-posting cadence
 const FINALITY_SAFETY_MARGIN_SECS: i64 = 60;  // 1 min past L1 finalized timestamp
 const CADENCE_SECS: u64 = 60;                 // L1 advances slowly; no need to poll fast
@@ -72,119 +71,15 @@ async fn main() -> Result<()> {
     );
 
     if cli.once {
-        run_iteration(&pg, &l1).await?;
+        let summary = runner::run_once(&pg, &l1).await?;
+        info!(?summary, "iteration");
         return Ok(());
     }
     loop {
-        match run_iteration(&pg, &l1).await {
-            Ok(()) => {}
+        match runner::run_once(&pg, &l1).await {
+            Ok(summary) => info!(?summary, "iteration"),
             Err(e) => error!(error = %e, "iteration failed; will retry on next tick"),
         }
         tokio::time::sleep(Duration::from_secs(CADENCE_SECS)).await;
     }
-}
-
-async fn run_iteration(pg: &PgPool, l1: &Provider) -> Result<()> {
-    // Read L1 latest + finalized block timestamps. Both are live (not block-pinned)
-    // queries so we don't push them through the deterministic cache.
-    let latest_ts = l1_block_timestamp(l1, BlockTag::Latest).await?;
-    let finalized_ts = l1_block_timestamp_str(l1, "finalized").await?;
-
-    let l1_posted_cutoff = latest_ts - POSTING_LAG_SECS;
-    let finalized_cutoff = finalized_ts - FINALITY_SAFETY_MARGIN_SECS;
-
-    if finalized_cutoff > l1_posted_cutoff {
-        warn!(
-            l1_posted_cutoff, finalized_cutoff,
-            "finalized cutoff > l1_posted cutoff — defensive cap (shouldn't happen with the configured lag)"
-        );
-    }
-
-    // tentative → l1_posted
-    //
-    // Predicate uses `block_timestamp <= to_timestamp($2)` instead of
-    // `EXTRACT(EPOCH FROM block_timestamp)::BIGINT <= $2` because the latter
-    // is not sargable — wrapping the indexed column in EXTRACT forces a full
-    // scan of all 2.6M rows even when only a tiny range needs updating
-    // (TD-009). The to_timestamp form lets the planner do an index range scan.
-    let posted = sqlx::query(
-        r#"UPDATE raw_protocol_events
-              SET finality = 'l1_posted'
-            WHERE chain_id = $1
-              AND finality = 'tentative'
-              AND is_canonical = TRUE
-              AND block_timestamp <= to_timestamp($2)"#,
-    )
-    .bind(ARBITRUM_CHAIN_ID)
-    .bind(l1_posted_cutoff as f64)
-    .execute(pg)
-    .await?
-    .rows_affected();
-
-    // (tentative | l1_posted) → finalized — same sargability fix.
-    let finalized = sqlx::query(
-        r#"UPDATE raw_protocol_events
-              SET finality   = 'finalized',
-                  finalized_at = now()
-            WHERE chain_id = $1
-              AND finality IN ('tentative', 'l1_posted')
-              AND is_canonical = TRUE
-              AND block_timestamp <= to_timestamp($2)"#,
-    )
-    .bind(ARBITRUM_CHAIN_ID)
-    .bind(finalized_cutoff as f64)
-    .execute(pg)
-    .await?
-    .rows_affected();
-
-    // Checkpoint advance — observability, not load-bearing for the heuristic.
-    sqlx::query(
-        r#"INSERT INTO indexer_checkpoints
-                (name, chain_id, last_processed_block, updated_at)
-           VALUES ('finality_watcher', $1, $2, now())
-           ON CONFLICT (name) DO UPDATE
-              SET last_processed_block = GREATEST(indexer_checkpoints.last_processed_block, EXCLUDED.last_processed_block),
-                  updated_at = now()"#,
-    )
-    .bind(ARBITRUM_CHAIN_ID)
-    .bind(finalized_cutoff)
-    .execute(pg)
-    .await?;
-
-    info!(
-        l1_latest_ts = latest_ts,
-        l1_finalized_ts = finalized_ts,
-        l1_posted_cutoff,
-        finalized_cutoff,
-        rows_marked_l1_posted = posted,
-        rows_marked_finalized = finalized,
-        "iteration"
-    );
-    Ok(())
-}
-
-async fn l1_block_timestamp(l1: &Provider, tag: BlockTag) -> Result<i64> {
-    let header = l1.eth_get_block_header(tag).await?;
-    let ts_hex = header
-        .get("timestamp")
-        .and_then(|v| v.as_str())
-        .context("L1 block header missing .timestamp")?;
-    let ts = i64::from_str_radix(ts_hex.trim_start_matches("0x"), 16)?;
-    Ok(ts)
-}
-
-/// Variant for string tags ("safe", "finalized") that BlockTag doesn't model.
-async fn l1_block_timestamp_str(l1: &Provider, tag: &str) -> Result<i64> {
-    let v = l1
-        .call(
-            "eth_getBlockByNumber",
-            &serde_json::json!([tag, false]),
-        )
-        .await?;
-    let ts_hex = v
-        .get("timestamp")
-        .and_then(|v| v.as_str())
-        .with_context(|| format!("L1 block header at tag={tag} missing .timestamp"))?;
-    let ts = i64::from_str_radix(ts_hex.trim_start_matches("0x"), 16)?;
-    Ok(ts)
 }

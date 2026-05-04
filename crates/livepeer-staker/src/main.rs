@@ -1,9 +1,7 @@
-mod flow;
-mod pending;
-
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
+use livepeer_staker::runner;
 use std::path::PathBuf;
 use tracing::info;
 
@@ -53,7 +51,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Backfill => {
-            let summary = flow::run_flow_backfill(&pg, cli.include_tentative).await?;
+            let summary = runner::run_backfill(&pg, cli.include_tentative).await?;
             info!(
                 events_seen = summary.events_seen,
                 bond_events = summary.bond_events,
@@ -66,8 +64,7 @@ async fn main() -> Result<()> {
         Command::RefreshPending => {
             let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
             let archive = Provider::new("chainstack", archive_url)?;
-            let bonding_manager = cfg.static_.contracts.bonding_manager.to_lowercase();
-            let summary = pending::refresh_pending(&pg, &archive, &bonding_manager, cli.include_tentative).await?;
+            let summary = runner::run_refresh_pending(&pg, &archive, &cfg, cli.include_tentative).await?;
             info!(
                 reconciled_rows = summary.reconciled_rows,
                 events_considered = summary.events_considered,

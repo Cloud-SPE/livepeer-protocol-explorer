@@ -9,6 +9,7 @@ members = [
     "crates/livepeer-staker",
     "crates/livepeer-api",
     "crates/livepeer-seed-migrator",
+    "crates/livepeer-orchestrator",
 ]
 
 [workspace.package]

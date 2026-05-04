@@ -1,9 +1,7 @@
-mod backfill;
-mod events;
-
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
+use livepeer_indexer::{backfill, runner};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -90,22 +88,6 @@ async fn main() -> Result<()> {
             let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
             let archive = Provider::new("chainstack", archive_url)?;
             let kind = contract.to_kind();
-            let proxy = match kind {
-                backfill::ContractKind::BondingManager => &cfg.static_.contracts.bonding_manager,
-                backfill::ContractKind::TicketBroker => &cfg.static_.contracts.ticket_broker,
-                backfill::ContractKind::LivepeerToken => &cfg.static_.contracts.livepeer_token,
-                backfill::ContractKind::RoundsManager => &cfg.static_.contracts.rounds_manager,
-                backfill::ContractKind::Governor => &cfg.static_.contracts.governor,
-            }
-            .to_lowercase();
-            let abi_hash: String = sqlx::query_scalar(
-                "SELECT abi_hash FROM contract_abi_registry WHERE contract_name = $1",
-            )
-            .bind(kind.name())
-            .fetch_one(&pg)
-            .await
-            .with_context(|| format!("loading {} abi_hash from registry", kind.name()))?;
-
             let actual_from = if no_resume {
                 from_block
             } else {
@@ -123,27 +105,27 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            let summary = backfill::drive_backfill(
+            let summary = runner::run_backfill(
                 &pg,
                 &archive,
+                &cfg,
                 kind,
-                &checkpoint_suffix,
-                &proxy,
-                &abi_hash,
-                actual_from,
+                from_block,
                 to_block,
+                no_resume,
+                &checkpoint_suffix,
             )
             .await?;
             info!(
-                contract = kind.name(),
+                contract = summary.contract_name,
                 checkpoint_suffix = %checkpoint_suffix,
-                chunks = summary.chunks,
-                logs_seen = summary.logs_seen,
-                events_inserted = summary.events_inserted,
-                dead_lettered = summary.dead_lettered,
-                final_batch_size = summary.final_batch_size,
-                from_block = actual_from,
-                to_block,
+                chunks = summary.inner.chunks,
+                logs_seen = summary.inner.logs_seen,
+                events_inserted = summary.inner.events_inserted,
+                dead_lettered = summary.inner.dead_lettered,
+                final_batch_size = summary.inner.final_batch_size,
+                from_block = summary.actual_from,
+                to_block = summary.to_block,
                 "backfill complete"
             );
         }

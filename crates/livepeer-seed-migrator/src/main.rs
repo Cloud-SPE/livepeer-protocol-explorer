@@ -1,6 +1,3 @@
-mod compare;
-mod import;
-
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use livepeer_core::{
@@ -10,6 +7,7 @@ use livepeer_core::{
     rpc::{cross_check, Provider},
     tracing_init,
 };
+use livepeer_seed_migrator::{compare, import};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::path::PathBuf;
 use std::str::FromStr;

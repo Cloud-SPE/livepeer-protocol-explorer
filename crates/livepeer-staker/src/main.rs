@@ -80,9 +80,13 @@ async fn main() -> Result<()> {
             let summary =
                 runner::run_gateway_backfill(&pg, &archive, &cfg, cli.include_tentative).await?;
             info!(
-                candidates_seen = summary.candidates_seen,
-                rows_written = summary.rows_written,
+                balance_candidates_seen = summary.balance_candidates_seen,
+                balance_rows_written = summary.balance_rows_written,
+                flow_candidates_seen = summary.flow_candidates_seen,
+                flow_rows_written = summary.flow_rows_written,
+                claimant_rows_written = summary.claimant_rows_written,
                 gateways_touched = summary.gateways_touched,
+                claimants_touched = summary.claimants_touched,
                 "gateway backfill summary"
             );
         }

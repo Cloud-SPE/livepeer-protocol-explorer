@@ -27,9 +27,13 @@ const SOURCE_RPC_RECONCILED: &str = "rpc_reconciled";
 
 #[derive(Debug, Default, Serialize)]
 pub struct GatewayBackfillSummary {
-    pub candidates_seen: u64,
-    pub rows_written: u64,
+    pub balance_candidates_seen: u64,
+    pub balance_rows_written: u64,
+    pub flow_candidates_seen: u64,
+    pub flow_rows_written: u64,
+    pub claimant_rows_written: u64,
     pub gateways_touched: u64,
+    pub claimants_touched: u64,
 }
 
 #[derive(Debug)]
@@ -41,21 +45,48 @@ struct GatewayCandidate {
     block_hash: String,
 }
 
+#[derive(Debug)]
+struct GatewayFlowCandidate {
+    event_id: i64,
+    gateway_address: String,
+    claimant_address: Option<String>,
+    counterparty_address: Option<String>,
+    event_name: String,
+    flow_kind: String,
+    block_number: i64,
+    block_timestamp: DateTime<Utc>,
+    tx_hash: String,
+    log_index: i32,
+    asset: Option<String>,
+    amount_native: Option<BigDecimal>,
+    amount_usd: Option<BigDecimal>,
+    valuation_version: Option<String>,
+    block_hash: String,
+}
+
 pub async fn run_gateway_backfill(
     pg: &PgPool,
     archive: &Provider,
     cfg: &Config,
     include_tentative: bool,
 ) -> Result<GatewayBackfillSummary> {
-    let candidates = fetch_candidates(pg, include_tentative).await?;
-    info!(candidates = candidates.len(), "gateway backfill starting");
+    let balance_candidates = fetch_balance_candidates(pg, include_tentative).await?;
+    let flow_candidates = fetch_flow_candidates(pg, include_tentative).await?;
+    info!(
+        balance_candidates = balance_candidates.len(),
+        flow_candidates = flow_candidates.len(),
+        "gateway backfill starting"
+    );
 
     let mut summary = GatewayBackfillSummary {
-        candidates_seen: candidates.len() as u64,
+        balance_candidates_seen: balance_candidates.len() as u64,
+        flow_candidates_seen: flow_candidates.len() as u64,
         ..Default::default()
     };
     let mut gateways = HashSet::new();
-    for candidate in candidates {
+    let mut claimants = HashSet::new();
+
+    for candidate in balance_candidates {
         let snapshot = read_gateway_state(
             pg,
             archive,
@@ -66,9 +97,30 @@ pub async fn run_gateway_backfill(
         .await?;
         upsert_gateway_row(pg, &candidate, &snapshot).await?;
         gateways.insert(candidate.gateway_address);
-        summary.rows_written += 1;
+        summary.balance_rows_written += 1;
+    }
+
+    for candidate in flow_candidates {
+        upsert_gateway_flow(pg, &candidate).await?;
+        gateways.insert(candidate.gateway_address.clone());
+        if let Some(claimant) = candidate.claimant_address.as_ref() {
+            let claimant_snapshot = read_claimant_state(
+                pg,
+                archive,
+                &cfg.static_.contracts.ticket_broker.to_lowercase(),
+                &candidate.gateway_address,
+                claimant,
+                candidate.block_number,
+            )
+            .await?;
+            upsert_gateway_claimant_row(pg, &candidate, &claimant_snapshot).await?;
+            claimants.insert((candidate.gateway_address.clone(), claimant.clone()));
+            summary.claimant_rows_written += 1;
+        }
+        summary.flow_rows_written += 1;
     }
     summary.gateways_touched = gateways.len() as u64;
+    summary.claimants_touched = claimants.len() as u64;
     info!(?summary, "gateway backfill complete");
     Ok(summary)
 }
@@ -83,7 +135,17 @@ struct GatewaySnapshot {
     raw_call: serde_json::Value,
 }
 
-async fn fetch_candidates(pg: &PgPool, include_tentative: bool) -> Result<Vec<GatewayCandidate>> {
+#[derive(Debug)]
+struct ClaimantSnapshot {
+    claimable_reserve: BigDecimal,
+    claimed_reserve: BigDecimal,
+    raw_call: serde_json::Value,
+}
+
+async fn fetch_balance_candidates(
+    pg: &PgPool,
+    include_tentative: bool,
+) -> Result<Vec<GatewayCandidate>> {
     let finality_filter = if include_tentative {
         ""
     } else {
@@ -135,6 +197,102 @@ async fn fetch_candidates(pg: &PgPool, include_tentative: bool) -> Result<Vec<Ga
             gateway_address: r.get("gateway_address"),
             block_number: r.get("block_number"),
             block_timestamp: r.get("block_timestamp"),
+            block_hash: r.get("block_hash"),
+        })
+        .collect())
+}
+
+async fn fetch_flow_candidates(
+    pg: &PgPool,
+    include_tentative: bool,
+) -> Result<Vec<GatewayFlowCandidate>> {
+    let finality_filter = if include_tentative {
+        ""
+    } else {
+        "AND r.finality = 'finalized'"
+    };
+    let sql = format!(
+        r#"SELECT r.id AS event_id,
+                  r.from_address AS gateway_address,
+                  CASE
+                      WHEN r.event_name IN ('WinningTicketRedeemed', 'WinningTicketTransfer', 'ReserveClaimed')
+                      THEN r.to_address
+                      ELSE NULL
+                  END AS claimant_address,
+                  r.to_address AS counterparty_address,
+                  r.event_name,
+                  CASE
+                      WHEN r.event_name = 'DepositFunded' THEN 'deposit_in'
+                      WHEN r.event_name = 'ReserveFunded' THEN 'reserve_in'
+                      WHEN r.event_name = 'WinningTicketTransfer' THEN 'reserve_transfer'
+                      WHEN r.event_name = 'WinningTicketRedeemed' THEN 'ticket_redeemed'
+                      WHEN r.event_name = 'ReserveClaimed' THEN 'reserve_claimed'
+                      WHEN r.event_name = 'Withdrawal' THEN 'withdrawal'
+                      ELSE 'other'
+                  END AS flow_kind,
+                  r.block_number,
+                  r.block_timestamp,
+                  r.tx_hash,
+                  r.log_index,
+                  r.asset,
+                  r.amount_normalized,
+                  v.amount_usd,
+                  v.valuation_version,
+                  r.block_hash
+             FROM raw_protocol_events r
+             LEFT JOIN event_valuations v
+               ON v.event_id = r.id
+              AND v.status = 'priced'
+            WHERE r.chain_id = $1
+              AND r.is_canonical = TRUE
+              AND r.contract_name = 'TicketBroker'
+              AND r.from_address IS NOT NULL
+              AND r.event_name IN (
+                    'DepositFunded',
+                    'ReserveFunded',
+                    'WinningTicketTransfer',
+                    'WinningTicketRedeemed',
+                    'ReserveClaimed',
+                    'Withdrawal'
+              )
+              {finality_filter}
+              AND NOT EXISTS (
+                    SELECT 1
+                      FROM gateway_flows gf
+                     WHERE gf.event_id = r.id
+                       AND gf.flow_kind = CASE
+                           WHEN r.event_name = 'DepositFunded' THEN 'deposit_in'
+                           WHEN r.event_name = 'ReserveFunded' THEN 'reserve_in'
+                           WHEN r.event_name = 'WinningTicketTransfer' THEN 'reserve_transfer'
+                           WHEN r.event_name = 'WinningTicketRedeemed' THEN 'ticket_redeemed'
+                           WHEN r.event_name = 'ReserveClaimed' THEN 'reserve_claimed'
+                           WHEN r.event_name = 'Withdrawal' THEN 'withdrawal'
+                           ELSE 'other'
+                       END
+              )
+            ORDER BY r.block_number ASC, r.log_index ASC"#,
+    );
+    let rows = sqlx::query(&sql)
+        .bind(ARBITRUM_CHAIN_ID)
+        .fetch_all(pg)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| GatewayFlowCandidate {
+            event_id: r.get("event_id"),
+            gateway_address: r.get("gateway_address"),
+            claimant_address: r.try_get("claimant_address").ok(),
+            counterparty_address: r.try_get("counterparty_address").ok(),
+            event_name: r.get("event_name"),
+            flow_kind: r.get("flow_kind"),
+            block_number: r.get("block_number"),
+            block_timestamp: r.get("block_timestamp"),
+            tx_hash: r.get("tx_hash"),
+            log_index: r.get("log_index"),
+            asset: r.try_get("asset").ok(),
+            amount_native: r.try_get("amount_normalized").ok(),
+            amount_usd: r.try_get("amount_usd").ok(),
+            valuation_version: r.try_get("valuation_version").ok(),
             block_hash: r.get("block_hash"),
         })
         .collect())
@@ -253,6 +411,164 @@ async fn upsert_gateway_row(
     .bind(SOURCE_RPC_RECONCILED)
     .bind(&snapshot.raw_call)
     .bind(candidate.event_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+async fn read_claimant_state(
+    pg: &PgPool,
+    archive: &Provider,
+    ticket_broker: &str,
+    gateway: &str,
+    claimant: &str,
+    block_number: i64,
+) -> Result<ClaimantSnapshot> {
+    let gateway_addr = Address::from_str(gateway).context("parsing gateway address")?;
+    let claimant_addr = Address::from_str(claimant).context("parsing claimant address")?;
+
+    let claimable_data = format!(
+        "0x{}",
+        alloy::hex::encode(
+            TicketBroker::claimableReserveCall {
+                _reserveHolder: gateway_addr,
+                _claimant: claimant_addr,
+            }
+            .abi_encode()
+        )
+    );
+    let claimable_params = json!([
+        { "to": ticket_broker, "data": claimable_data },
+        BlockTag::Number(block_number as u64).to_param()
+    ]);
+    let claimable_outcome = cross_check::single_call_cached(
+        pg,
+        archive,
+        "eth_call",
+        &claimable_params,
+        Some(block_number),
+    )
+    .await?;
+    let claimable_raw = decode_hex_result(&claimable_outcome.response_bytes)?;
+    let claimable = TicketBroker::claimableReserveCall::abi_decode_returns(&claimable_raw, true)?;
+
+    let claimed_data = format!(
+        "0x{}",
+        alloy::hex::encode(
+            TicketBroker::claimedReserveCall {
+                _reserveHolder: gateway_addr,
+                _claimant: claimant_addr,
+            }
+            .abi_encode()
+        )
+    );
+    let claimed_params = json!([
+        { "to": ticket_broker, "data": claimed_data },
+        BlockTag::Number(block_number as u64).to_param()
+    ]);
+    let claimed_outcome = cross_check::single_call_cached(
+        pg,
+        archive,
+        "eth_call",
+        &claimed_params,
+        Some(block_number),
+    )
+    .await?;
+    let claimed_raw = decode_hex_result(&claimed_outcome.response_bytes)?;
+    let claimed = TicketBroker::claimedReserveCall::abi_decode_returns(&claimed_raw, true)?;
+
+    Ok(ClaimantSnapshot {
+        claimable_reserve: u256_to_decimal(&claimable._0, ETH_DECIMALS),
+        claimed_reserve: u256_to_decimal(&claimed._0, ETH_DECIMALS),
+        raw_call: json!({
+            "claimableReserve_call_hash": claimable_outcome.call_hash,
+            "claimedReserve_call_hash": claimed_outcome.call_hash,
+        }),
+    })
+}
+
+async fn upsert_gateway_claimant_row(
+    pg: &PgPool,
+    candidate: &GatewayFlowCandidate,
+    snapshot: &ClaimantSnapshot,
+) -> Result<()> {
+    let claimant = match candidate.claimant_address.as_ref() {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    sqlx::query(
+        r#"INSERT INTO gateway_claimants_by_block (
+               chain_id, gateway_address, claimant_address, block_number, block_timestamp, block_hash,
+               claimable_reserve, claimed_reserve, source, raw_call, triggering_event_id
+           ) VALUES (
+               $1, $2, $3, $4, $5, $6,
+               $7, $8, $9, $10, $11
+           )
+           ON CONFLICT (chain_id, gateway_address, claimant_address, block_number) DO UPDATE
+               SET block_timestamp = EXCLUDED.block_timestamp,
+                   block_hash = EXCLUDED.block_hash,
+                   claimable_reserve = EXCLUDED.claimable_reserve,
+                   claimed_reserve = EXCLUDED.claimed_reserve,
+                   source = EXCLUDED.source,
+                   raw_call = EXCLUDED.raw_call,
+                   triggering_event_id = EXCLUDED.triggering_event_id"#,
+    )
+    .bind(ARBITRUM_CHAIN_ID)
+    .bind(&candidate.gateway_address)
+    .bind(claimant)
+    .bind(candidate.block_number)
+    .bind(candidate.block_timestamp)
+    .bind(&candidate.block_hash)
+    .bind(&snapshot.claimable_reserve)
+    .bind(&snapshot.claimed_reserve)
+    .bind(SOURCE_RPC_RECONCILED)
+    .bind(&snapshot.raw_call)
+    .bind(candidate.event_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+async fn upsert_gateway_flow(pg: &PgPool, candidate: &GatewayFlowCandidate) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO gateway_flows (
+               chain_id, event_id, gateway_address, claimant_address, counterparty_address,
+               block_number, block_timestamp, tx_hash, log_index, event_name, flow_kind,
+               asset, amount_native, amount_usd, valuation_version
+           ) VALUES (
+               $1, $2, $3, $4, $5,
+               $6, $7, $8, $9, $10, $11,
+               $12, $13, $14, $15
+           )
+           ON CONFLICT (event_id, flow_kind) DO UPDATE
+               SET gateway_address = EXCLUDED.gateway_address,
+                   claimant_address = EXCLUDED.claimant_address,
+                   counterparty_address = EXCLUDED.counterparty_address,
+                   block_number = EXCLUDED.block_number,
+                   block_timestamp = EXCLUDED.block_timestamp,
+                   tx_hash = EXCLUDED.tx_hash,
+                   log_index = EXCLUDED.log_index,
+                   event_name = EXCLUDED.event_name,
+                   asset = EXCLUDED.asset,
+                   amount_native = EXCLUDED.amount_native,
+                   amount_usd = EXCLUDED.amount_usd,
+                   valuation_version = EXCLUDED.valuation_version"#,
+    )
+    .bind(ARBITRUM_CHAIN_ID)
+    .bind(candidate.event_id)
+    .bind(&candidate.gateway_address)
+    .bind(&candidate.claimant_address)
+    .bind(&candidate.counterparty_address)
+    .bind(candidate.block_number)
+    .bind(candidate.block_timestamp)
+    .bind(&candidate.tx_hash)
+    .bind(candidate.log_index)
+    .bind(&candidate.event_name)
+    .bind(&candidate.flow_kind)
+    .bind(&candidate.asset)
+    .bind(&candidate.amount_native)
+    .bind(&candidate.amount_usd)
+    .bind(&candidate.valuation_version)
     .execute(pg)
     .await?;
     Ok(())

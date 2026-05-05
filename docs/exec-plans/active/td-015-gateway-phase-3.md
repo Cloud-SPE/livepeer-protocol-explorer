@@ -52,17 +52,16 @@ can answer recipient-level payout questions directly.
 
 ## Remaining implementation work
 
-- Define the claimant backfill universe and its pruning rules
-- Decide whether phase 3 lives in the phase-2 gateway worker or a second pass
-- Implement paired-event handling for:
-  - `WinningTicketTransfer`
-  - `WinningTicketRedeemed`
-- Define whether `gateway_flows` should store:
-  - both gross paired-event volume
+- Add recipient-oriented analytics endpoints:
+  - `GET /gateways/{gateway}/recipients`
+  - `GET /gateways/{gateway}/analytics/summary`
+- Decide whether to expose:
+  - gross paired-event volume
   - and a net-payout interpretation field
 - Add validation:
   - sampled claimant rows vs on-chain `claimableReserve` / `claimedReserve`
   - sampled materialized flow rows vs `raw_protocol_events` + `event_valuations`
+- Run a SQL/performance pass once claimant/payout routes are exercised on prod-scale data
 
 ## Progress log
 
@@ -71,3 +70,15 @@ can answer recipient-level payout questions directly.
   - `024_create_gateway_flows`
 - 2026-05-04: Split claimant/materialized-flow work out of phase 2 so sender
   balance snapshots can ship first without scope creep.
+- 2026-05-05: Implemented claimant discovery/materialization inside the
+  gateway backfill worker and added `gateway_flows` writes for:
+  - `DepositFunded`
+  - `ReserveFunded`
+  - `WinningTicketTransfer`
+  - `WinningTicketRedeemed`
+  - `ReserveClaimed`
+  - `Withdrawal`
+- 2026-05-05: Added claimant and payout API endpoints:
+  - `GET /gateways/{gateway}/claimants/block/{block}`
+  - `GET /gateways/{gateway}/claimants/history`
+  - `GET /gateways/{gateway}/payouts`

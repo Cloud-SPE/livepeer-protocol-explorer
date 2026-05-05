@@ -101,7 +101,19 @@ async fn main() -> Result<()> {
             "/gateways/{gateway}/balance/history",
             get(routes::gateways::balance_history),
         )
+        .route(
+            "/gateways/{gateway}/claimants/block/{block}",
+            get(routes::gateways::claimants_at_block),
+        )
+        .route(
+            "/gateways/{gateway}/claimants/history",
+            get(routes::gateways::claimants_history),
+        )
         .route("/gateways/{gateway}/flows", get(routes::gateways::flows))
+        .route(
+            "/gateways/{gateway}/payouts",
+            get(routes::gateways::payouts),
+        )
         .route(
             "/gateways/{gateway}/summary",
             get(routes::gateways::summary),

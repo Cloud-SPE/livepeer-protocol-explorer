@@ -52,6 +52,35 @@ pub struct GatewayBalanceHistoryResponse {
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query parameters for gateway claimant reserve history.")]
+pub struct GatewayClaimantsQuery {
+    /// Inclusive lower block bound.
+    pub from_block: Option<i64>,
+    /// Inclusive upper block bound.
+    pub to_block: Option<i64>,
+    /// Maximum number of claimant rows to return.
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Point-in-time claimant reserve state for a gateway.")]
+pub struct GatewayClaimantRow {
+    pub gateway_address: String,
+    pub claimant_address: String,
+    pub block_number: String,
+    pub claimable_reserve: String,
+    pub claimed_reserve: String,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Historical claimant reserve rows for a gateway.")]
+pub struct GatewayClaimantsResponse {
+    pub gateway_address: String,
+    pub data: Vec<GatewayClaimantRow>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
 #[schema(description = "Query parameters for gateway flow history.")]
 pub struct GatewayFlowsQuery {
     /// Optional lower block bound.
@@ -86,6 +115,19 @@ pub struct GatewayFlowRow {
 pub struct GatewayFlowsResponse {
     pub gateway_address: String,
     pub data: Vec<GatewayFlowRow>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query parameters for gateway payout flow history.")]
+pub struct GatewayPayoutsQuery {
+    /// Optional lower block bound.
+    pub from_block: Option<i64>,
+    /// Optional upper block bound.
+    pub to_block: Option<i64>,
+    /// Maximum number of payout rows to return.
+    pub limit: Option<u32>,
+    /// If true, include transfer-side reserve movement rows alongside redemption and reserve-claim rows.
+    pub include_transfers: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
@@ -226,6 +268,105 @@ pub async fn balance_history(
 
 #[utoipa::path(
     get,
+    path = "/gateways/{gateway}/claimants/block/{block}",
+    tag = "Gateways",
+    params(
+        ("gateway" = String, Path, description = "Gateway/sender address to inspect."),
+        ("block" = i64, Path, description = "Return each claimant's latest reserve snapshot at or before this block.")
+    ),
+    responses(
+        (status = 200, description = "Claimant reserve state at the requested block.", body = GatewayClaimantsResponse),
+        (status = 400, description = "Invalid gateway address or block.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
+pub async fn claimants_at_block(
+    State(state): State<AppState>,
+    Path((gateway, block)): Path<(String, i64)>,
+) -> Result<Json<GatewayClaimantsResponse>, ApiError> {
+    if block < 0 {
+        return Err(ApiError::bad_request("block must be non-negative"));
+    }
+    let gateway = normalize_addr(&gateway)?;
+    let rows = sqlx::query(
+        r#"WITH latest AS (
+               SELECT DISTINCT ON (claimant_address)
+                      gateway_address, claimant_address, block_number,
+                      claimable_reserve, claimed_reserve, source
+                 FROM gateway_claimants_by_block
+                WHERE chain_id = $1
+                  AND gateway_address = $2
+                  AND block_number <= $3
+                ORDER BY claimant_address, block_number DESC
+           )
+           SELECT gateway_address, claimant_address, block_number,
+                  claimable_reserve, claimed_reserve, source
+             FROM latest
+            ORDER BY claimable_reserve DESC, claimant_address ASC"#,
+    )
+    .bind(state.chain_id)
+    .bind(&gateway)
+    .bind(block)
+    .fetch_all(&state.pg)
+    .await?;
+    Ok(Json(GatewayClaimantsResponse {
+        gateway_address: gateway,
+        data: rows.iter().map(materialized_claimant_row).collect(),
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/gateways/{gateway}/claimants/history",
+    tag = "Gateways",
+    params(
+        ("gateway" = String, Path, description = "Gateway/sender address to inspect."),
+        GatewayClaimantsQuery
+    ),
+    responses(
+        (status = 200, description = "Historical claimant reserve snapshots for the gateway.", body = GatewayClaimantsResponse),
+        (status = 400, description = "Invalid gateway address or range.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
+pub async fn claimants_history(
+    State(state): State<AppState>,
+    Path(gateway): Path<String>,
+    Query(q): Query<GatewayClaimantsQuery>,
+) -> Result<Json<GatewayClaimantsResponse>, ApiError> {
+    let gateway = normalize_addr(&gateway)?;
+    if let (Some(from), Some(to)) = (q.from_block, q.to_block) {
+        if to < from {
+            return Err(ApiError::bad_request("to_block < from_block"));
+        }
+    }
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64;
+    let rows = sqlx::query(
+        r#"SELECT gateway_address, claimant_address, block_number,
+                  claimable_reserve, claimed_reserve, source
+             FROM gateway_claimants_by_block
+            WHERE chain_id = $1
+              AND gateway_address = $2
+              AND ($3::bigint IS NULL OR block_number >= $3)
+              AND ($4::bigint IS NULL OR block_number <= $4)
+            ORDER BY block_number ASC, claimant_address ASC
+            LIMIT $5"#,
+    )
+    .bind(state.chain_id)
+    .bind(&gateway)
+    .bind(q.from_block)
+    .bind(q.to_block)
+    .bind(limit)
+    .fetch_all(&state.pg)
+    .await?;
+    Ok(Json(GatewayClaimantsResponse {
+        gateway_address: gateway,
+        data: rows.iter().map(materialized_claimant_row).collect(),
+    }))
+}
+
+#[utoipa::path(
+    get,
     path = "/gateways/{gateway}/flows",
     tag = "Gateways",
     params(
@@ -306,6 +447,58 @@ pub async fn flows(
     Ok(Json(GatewayFlowsResponse {
         gateway_address: gateway,
         data,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/gateways/{gateway}/payouts",
+    tag = "Gateways",
+    params(
+        ("gateway" = String, Path, description = "Gateway/sender address to inspect."),
+        GatewayPayoutsQuery
+    ),
+    responses(
+        (status = 200, description = "Materialized payout-side gateway flow rows.", body = GatewayFlowsResponse),
+        (status = 400, description = "Invalid gateway address.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
+pub async fn payouts(
+    State(state): State<AppState>,
+    Path(gateway): Path<String>,
+    Query(q): Query<GatewayPayoutsQuery>,
+) -> Result<Json<GatewayFlowsResponse>, ApiError> {
+    let gateway = normalize_addr(&gateway)?;
+    let include_transfers = q.include_transfers.unwrap_or(false);
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64;
+    let rows = sqlx::query(
+        r#"SELECT event_id, gateway_address, claimant_address, counterparty_address,
+                  block_number, block_timestamp, tx_hash, log_index, event_name, flow_kind,
+                  asset, amount_native, amount_usd
+             FROM gateway_flows
+            WHERE chain_id = $1
+              AND gateway_address = $2
+              AND ($3::bigint IS NULL OR block_number >= $3)
+              AND ($4::bigint IS NULL OR block_number <= $4)
+              AND (
+                    flow_kind IN ('ticket_redeemed', 'reserve_claimed', 'withdrawal')
+                    OR ($5::boolean = TRUE AND flow_kind = 'reserve_transfer')
+              )
+            ORDER BY block_number DESC, log_index DESC
+            LIMIT $6"#,
+    )
+    .bind(state.chain_id)
+    .bind(&gateway)
+    .bind(q.from_block)
+    .bind(q.to_block)
+    .bind(include_transfers)
+    .bind(limit)
+    .fetch_all(&state.pg)
+    .await?;
+    Ok(Json(GatewayFlowsResponse {
+        gateway_address: gateway,
+        data: rows.iter().map(materialized_flow_row).collect(),
     }))
 }
 
@@ -527,6 +720,43 @@ fn materialized_balance_row(r: &sqlx::postgres::PgRow) -> GatewayBalanceRow {
         withdraw_round: r.get::<i64, _>("withdraw_round").to_string(),
         unlock_in_progress: r.get("unlock_in_progress"),
         source: r.get("source"),
+    }
+}
+
+fn materialized_claimant_row(r: &sqlx::postgres::PgRow) -> GatewayClaimantRow {
+    GatewayClaimantRow {
+        gateway_address: r.get("gateway_address"),
+        claimant_address: r.get("claimant_address"),
+        block_number: r.get::<i64, _>("block_number").to_string(),
+        claimable_reserve: r.get::<BigDecimal, _>("claimable_reserve").to_string(),
+        claimed_reserve: r.get::<BigDecimal, _>("claimed_reserve").to_string(),
+        source: r.get("source"),
+    }
+}
+
+fn materialized_flow_row(r: &sqlx::postgres::PgRow) -> GatewayFlowRow {
+    GatewayFlowRow {
+        event_id: r.get::<i64, _>("event_id").to_string(),
+        event_name: r.get("event_name"),
+        flow_kind: r.get("flow_kind"),
+        block_number: r.get::<i64, _>("block_number").to_string(),
+        block_timestamp: r.get("block_timestamp"),
+        tx_hash: r.get("tx_hash"),
+        log_index: r.get::<i32, _>("log_index") as u32,
+        asset: r.try_get("asset").ok(),
+        amount_native: r
+            .try_get::<BigDecimal, _>("amount_native")
+            .ok()
+            .map(|v| v.to_string()),
+        amount_usd: r
+            .try_get::<BigDecimal, _>("amount_usd")
+            .ok()
+            .map(|v| v.to_string()),
+        from_address: Some(r.get("gateway_address")),
+        to_address: r
+            .try_get::<String, _>("claimant_address")
+            .ok()
+            .or_else(|| r.try_get::<String, _>("counterparty_address").ok()),
     }
 }
 

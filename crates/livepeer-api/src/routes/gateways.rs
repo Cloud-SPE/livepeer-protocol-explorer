@@ -17,8 +17,18 @@ use utoipa::{IntoParams, ToSchema};
 const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 1_000;
 const ETH_DECIMALS: u32 = 18;
+const GATEWAY_TOUCH_EVENTS: &[&str] = &[
+    "DepositFunded",
+    "ReserveFunded",
+    "WinningTicketTransfer",
+    "WinningTicketRedeemed",
+    "ReserveClaimed",
+    "Withdrawal",
+    "Unlock",
+    "UnlockCancelled",
+];
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[schema(
     description = "Exact TicketBroker sender balance state for a gateway at a specific block."
 )]
@@ -259,13 +269,18 @@ pub async fn balance_latest(
     if let Some(row) = load_gateway_balance_latest_materialized(&state, &gateway).await? {
         return Ok(Json(row));
     }
-    let block = state
+    if let Some(row) = hydrate_gateway_balance_at_latest_touch(&state, &gateway, None).await? {
+        return Ok(Json(row));
+    }
+    let head_block = state
         .archive
         .eth_block_number()
         .await
         .map_err(ApiError::internal)? as i64;
-    let row = load_gateway_balance(&state, &gateway, block).await?;
-    Ok(Json(row))
+    let row = load_gateway_balance_from_rpc(&state, &gateway, head_block).await?;
+    Ok(Json(
+        persist_gateway_balance_snapshot(&state, &row, None).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -293,7 +308,15 @@ pub async fn balance_at_block(
     if let Some(row) = load_gateway_balance_materialized(&state, &gateway, block).await? {
         return Ok(Json(row));
     }
-    Ok(Json(load_gateway_balance(&state, &gateway, block).await?))
+    if let Some(row) =
+        hydrate_gateway_balance_at_latest_touch(&state, &gateway, Some(block)).await?
+    {
+        return Ok(Json(row));
+    }
+    let row = load_gateway_balance_from_rpc(&state, &gateway, block).await?;
+    Ok(Json(
+        persist_gateway_balance_snapshot(&state, &row, None).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -732,7 +755,7 @@ pub async fn analytics_summary(
     }))
 }
 
-async fn load_gateway_balance(
+async fn load_gateway_balance_from_rpc(
     state: &AppState,
     gateway: &str,
     block: i64,
@@ -840,7 +863,8 @@ async fn load_gateway_balance_materialized(
              FROM gateway_balances_by_block
             WHERE chain_id = $1
               AND gateway_address = $2
-              AND block_number = $3
+              AND block_number <= $3
+            ORDER BY block_number DESC
             LIMIT 1"#,
     )
     .bind(state.chain_id)
@@ -849,6 +873,159 @@ async fn load_gateway_balance_materialized(
     .fetch_optional(&state.pg)
     .await?;
     Ok(row.as_ref().map(materialized_balance_row))
+}
+
+#[derive(Debug)]
+struct GatewayTouchRow {
+    event_id: i64,
+    block_number: i64,
+    block_timestamp: DateTime<Utc>,
+    block_hash: String,
+}
+
+async fn hydrate_gateway_balance_at_latest_touch(
+    state: &AppState,
+    gateway: &str,
+    block: Option<i64>,
+) -> Result<Option<GatewayBalanceRow>, ApiError> {
+    let touch = load_gateway_latest_touch(state, gateway, block).await?;
+    let Some(touch) = touch else {
+        return Ok(None);
+    };
+    if let Some(row) = load_gateway_balance_materialized(state, gateway, touch.block_number).await?
+    {
+        return Ok(Some(row));
+    }
+    let row = load_gateway_balance_from_rpc(state, gateway, touch.block_number).await?;
+    let persisted = persist_gateway_balance_snapshot(state, &row, Some(&touch)).await?;
+    Ok(Some(persisted))
+}
+
+async fn load_gateway_latest_touch(
+    state: &AppState,
+    gateway: &str,
+    block: Option<i64>,
+) -> Result<Option<GatewayTouchRow>, ApiError> {
+    let row = sqlx::query(
+        r#"SELECT id AS event_id, block_number, block_timestamp, block_hash
+             FROM raw_protocol_events
+            WHERE chain_id = $1
+              AND is_canonical = TRUE
+              AND contract_name = 'TicketBroker'
+              AND from_address = $2
+              AND event_name = ANY($3)
+              AND ($4::bigint IS NULL OR block_number <= $4)
+            ORDER BY block_number DESC, log_index DESC
+            LIMIT 1"#,
+    )
+    .bind(state.chain_id)
+    .bind(gateway)
+    .bind(GATEWAY_TOUCH_EVENTS)
+    .bind(block)
+    .fetch_optional(&state.pg)
+    .await?;
+
+    Ok(row.map(|r| GatewayTouchRow {
+        event_id: r.get("event_id"),
+        block_number: r.get("block_number"),
+        block_timestamp: r.get("block_timestamp"),
+        block_hash: r.get("block_hash"),
+    }))
+}
+
+async fn persist_gateway_balance_snapshot(
+    state: &AppState,
+    row: &GatewayBalanceRow,
+    touch: Option<&GatewayTouchRow>,
+) -> Result<GatewayBalanceRow, ApiError> {
+    let block_number = row
+        .block_number
+        .parse::<i64>()
+        .map_err(ApiError::internal)?;
+    let block_timestamp = if let Some(touch) = touch {
+        touch.block_timestamp
+    } else {
+        let header = state
+            .archive
+            .eth_get_block_header(BlockTag::Number(block_number as u64))
+            .await
+            .map_err(ApiError::internal)?;
+        decode_block_timestamp(&header)?
+    };
+    let block_hash = if let Some(touch) = touch {
+        touch.block_hash.clone()
+    } else {
+        let header = state
+            .archive
+            .eth_get_block_header(BlockTag::Number(block_number as u64))
+            .await
+            .map_err(ApiError::internal)?;
+        decode_block_hash(&header)?
+    };
+
+    sqlx::query(
+        r#"INSERT INTO gateway_balances_by_block (
+               chain_id, gateway_address, block_number, block_timestamp, block_hash,
+               deposit, reserve_funds_remaining, reserve_claimed_in_current_round,
+               withdraw_round, unlock_in_progress, source, raw_call, triggering_event_id
+           ) VALUES (
+               $1, $2, $3, $4, $5,
+               $6, $7, $8,
+               $9, $10, $11, NULL, $12
+           )
+           ON CONFLICT (chain_id, gateway_address, block_number) DO UPDATE
+               SET block_timestamp = EXCLUDED.block_timestamp,
+                   block_hash = EXCLUDED.block_hash,
+                   deposit = EXCLUDED.deposit,
+                   reserve_funds_remaining = EXCLUDED.reserve_funds_remaining,
+                   reserve_claimed_in_current_round = EXCLUDED.reserve_claimed_in_current_round,
+                   withdraw_round = EXCLUDED.withdraw_round,
+                   unlock_in_progress = EXCLUDED.unlock_in_progress,
+                   source = EXCLUDED.source,
+                   triggering_event_id = EXCLUDED.triggering_event_id"#,
+    )
+    .bind(state.chain_id)
+    .bind(&row.gateway_address)
+    .bind(block_number)
+    .bind(block_timestamp)
+    .bind(block_hash)
+    .bind(BigDecimal::from_str(&row.deposit).map_err(ApiError::internal)?)
+    .bind(BigDecimal::from_str(&row.reserve_funds_remaining).map_err(ApiError::internal)?)
+    .bind(BigDecimal::from_str(&row.reserve_claimed_in_current_round).map_err(ApiError::internal)?)
+    .bind(
+        row.withdraw_round
+            .parse::<i64>()
+            .map_err(ApiError::internal)?,
+    )
+    .bind(row.unlock_in_progress)
+    .bind("rpc_reconciled")
+    .bind(touch.map(|t| t.event_id))
+    .execute(&state.pg)
+    .await?;
+
+    Ok(GatewayBalanceRow {
+        source: "rpc_reconciled_materialized".to_string(),
+        ..row.clone()
+    })
+}
+
+fn decode_block_hash(header: &serde_json::Value) -> Result<String, ApiError> {
+    header
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| ApiError::internal("missing block hash in eth_getBlockByNumber"))
+}
+
+fn decode_block_timestamp(header: &serde_json::Value) -> Result<DateTime<Utc>, ApiError> {
+    let ts_hex = header
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ApiError::internal("missing block timestamp in eth_getBlockByNumber"))?;
+    let ts = u64::from_str_radix(ts_hex.trim_start_matches("0x"), 16).map_err(ApiError::internal)?
+        as i64;
+    DateTime::<Utc>::from_timestamp(ts, 0)
+        .ok_or_else(|| ApiError::internal("invalid block timestamp"))
 }
 
 fn materialized_balance_row(r: &sqlx::postgres::PgRow) -> GatewayBalanceRow {

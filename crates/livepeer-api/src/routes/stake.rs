@@ -187,23 +187,32 @@ pub async fn delegators_at_block(
 ) -> Result<Json<DelegatorListResponse>, ApiError> {
     let transcoder_lower = transcoder.to_lowercase();
     let rows = sqlx::query(
-        r#"WITH latest AS (
-               SELECT DISTINCT ON (delegator_address)
-                      delegator_address, delegate_address,
-                      block_number, block_timestamp, block_hash,
-                      bonded_principal, pending_stake, pending_fees, pending_round, source
+        r#"WITH candidate_delegators AS (
+               SELECT DISTINCT delegator_address
                  FROM stake_balances_by_block
                 WHERE chain_id = $1
+                  AND delegate_address = $3
                   AND block_number <= $2
-                ORDER BY delegator_address, block_number DESC
            )
-           SELECT delegator_address, delegate_address,
-                  block_number, block_timestamp, block_hash,
-                  bonded_principal, pending_stake, pending_fees, pending_round, source
-             FROM latest
-            WHERE delegate_address = $3
-              AND bonded_principal > 0
-            ORDER BY bonded_principal DESC, delegator_address ASC"#,
+           SELECT latest.delegator_address, latest.delegate_address,
+                  latest.block_number, latest.block_timestamp, latest.block_hash,
+                  latest.bonded_principal, latest.pending_stake, latest.pending_fees,
+                  latest.pending_round, latest.source
+             FROM candidate_delegators d
+             CROSS JOIN LATERAL (
+               SELECT delegator_address, delegate_address,
+                      block_number, block_timestamp, block_hash,
+                      bonded_principal, pending_stake, pending_fees, pending_round, source
+                 FROM stake_balances_by_block s
+                WHERE s.chain_id = $1
+                  AND s.delegator_address = d.delegator_address
+                  AND s.block_number <= $2
+                ORDER BY s.block_number DESC
+                LIMIT 1
+             ) latest
+            WHERE latest.delegate_address = $3
+              AND latest.bonded_principal > 0
+            ORDER BY latest.bonded_principal DESC, latest.delegator_address ASC"#,
     )
     .bind(state.chain_id)
     .bind(block)

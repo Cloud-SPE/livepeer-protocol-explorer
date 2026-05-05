@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_events_governor_votecast_proposal;
+DROP INDEX IF EXISTS idx_events_governor_executed_proposal;
+DROP INDEX IF EXISTS idx_events_governor_created_proposal;

@@ -6,11 +6,9 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
-use std::str::FromStr;
 use utoipa::{IntoParams, ToSchema};
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -73,31 +71,72 @@ pub async fn list(
     Query(q): Query<ProposalsQuery>,
 ) -> Result<Json<ProposalListResponse>, ApiError> {
     let limit = q.limit.unwrap_or(100).min(1000) as i64;
-    // Pull all ProposalCreated rows and join executions.
+    let status = parse_status_filter(q.status.as_deref())?;
     let rows = sqlx::query(
-        r#"SELECT pc.id,
-                  pc.block_number, pc.block_timestamp, pc.tx_hash,
-                  pc.raw_event -> 'decoded' ->> 'proposalId'  AS proposal_id,
-                  pc.raw_event -> 'decoded' ->> 'proposer'    AS proposer,
-                  pc.raw_event -> 'decoded' ->> 'voteStart'   AS vote_start,
-                  pc.raw_event -> 'decoded' ->> 'voteEnd'     AS vote_end,
-                  pc.raw_event -> 'decoded' ->> 'description' AS description,
-                  pe.block_number AS executed_block,
-                  pe.block_timestamp AS executed_at
-             FROM raw_protocol_events pc
-             LEFT JOIN raw_protocol_events pe
-               ON pe.chain_id = pc.chain_id
-              AND pe.event_name = 'ProposalExecuted'
-              AND pe.is_canonical = TRUE
-              AND pe.raw_event -> 'decoded' ->> 'proposalId'
-                = pc.raw_event -> 'decoded' ->> 'proposalId'
-            WHERE pc.chain_id = $1
-              AND pc.event_name = 'ProposalCreated'
-              AND pc.is_canonical = TRUE
-            ORDER BY pc.block_number DESC, pc.log_index DESC
-            LIMIT $2"#,
+        r#"WITH proposal_rows AS (
+               SELECT pc.block_number,
+                      pc.block_timestamp,
+                      pc.tx_hash,
+                      pc.log_index,
+                      pc.raw_event -> 'decoded' ->> 'proposalId'  AS proposal_id,
+                      pc.raw_event -> 'decoded' ->> 'proposer'    AS proposer,
+                      pc.raw_event -> 'decoded' ->> 'voteStart'   AS vote_start,
+                      pc.raw_event -> 'decoded' ->> 'voteEnd'     AS vote_end,
+                      pc.raw_event -> 'decoded' ->> 'description' AS description,
+                      pe.block_number AS executed_block,
+                      pe.block_timestamp AS executed_at
+                 FROM raw_protocol_events pc
+                 LEFT JOIN raw_protocol_events pe
+                   ON pe.chain_id = pc.chain_id
+                  AND pe.event_name = 'ProposalExecuted'
+                  AND pe.is_canonical = TRUE
+                  AND pe.raw_event -> 'decoded' ->> 'proposalId'
+                    = pc.raw_event -> 'decoded' ->> 'proposalId'
+                WHERE pc.chain_id = $1
+                  AND pc.event_name = 'ProposalCreated'
+                  AND pc.is_canonical = TRUE
+                  AND COALESCE(pc.raw_event -> 'decoded' ->> 'proposalId', '') <> ''
+                  AND (
+                        $2 = 'all'
+                        OR ($2 = 'executed' AND pe.block_number IS NOT NULL)
+                        OR ($2 IN ('not_executed', 'active') AND pe.block_number IS NULL)
+                  )
+                ORDER BY pc.block_number DESC, pc.log_index DESC
+                LIMIT $3
+           ),
+           vote_tallies AS (
+               SELECT rv.raw_event -> 'decoded' ->> 'proposalId' AS proposal_id,
+                      COALESCE(SUM(CASE WHEN rv.raw_event -> 'decoded' ->> 'support' = '0'
+                                        THEN (rv.raw_event -> 'decoded' ->> 'weight')::numeric
+                                        ELSE 0 END), 0)::text AS against_weight,
+                      COALESCE(SUM(CASE WHEN rv.raw_event -> 'decoded' ->> 'support' = '1'
+                                        THEN (rv.raw_event -> 'decoded' ->> 'weight')::numeric
+                                        ELSE 0 END), 0)::text AS for_weight,
+                      COALESCE(SUM(CASE WHEN rv.raw_event -> 'decoded' ->> 'support' = '2'
+                                        THEN (rv.raw_event -> 'decoded' ->> 'weight')::numeric
+                                        ELSE 0 END), 0)::text AS abstain_weight,
+                      COUNT(*)::bigint::text AS vote_count
+                 FROM raw_protocol_events rv
+                 JOIN proposal_rows p
+                   ON p.proposal_id = rv.raw_event -> 'decoded' ->> 'proposalId'
+                WHERE rv.chain_id = $1
+                  AND rv.event_name = 'VoteCast'
+                  AND rv.is_canonical = TRUE
+                GROUP BY rv.raw_event -> 'decoded' ->> 'proposalId'
+           )
+           SELECT p.block_number, p.block_timestamp, p.tx_hash, p.proposal_id,
+                  p.proposer, p.vote_start, p.vote_end, p.description,
+                  p.executed_block, p.executed_at,
+                  COALESCE(vt.against_weight, '0') AS against_weight,
+                  COALESCE(vt.for_weight, '0') AS for_weight,
+                  COALESCE(vt.abstain_weight, '0') AS abstain_weight,
+                  COALESCE(vt.vote_count, '0') AS vote_count
+             FROM proposal_rows p
+             LEFT JOIN vote_tallies vt USING (proposal_id)
+            ORDER BY p.block_number DESC, p.log_index DESC"#,
     )
     .bind(state.chain_id)
+    .bind(status)
     .bind(limit)
     .fetch_all(&state.pg)
     .await?;
@@ -109,32 +148,9 @@ pub async fn list(
             continue;
         };
 
-        // Filter by lifecycle status (basic): executed | not_executed | all.
         let executed_block: Option<i64> = r.try_get("executed_block").ok();
         let executed = executed_block.is_some();
-        if let Some(filter) = q.status.as_deref() {
-            match filter {
-                "executed" => {
-                    if !executed {
-                        continue;
-                    }
-                }
-                "not_executed" | "active" => {
-                    if executed {
-                        continue;
-                    }
-                }
-                "all" => {}
-                other => {
-                    return Err(ApiError::bad_request(format!(
-                        "invalid status {other:?}; use executed | not_executed | active | all"
-                    )))
-                }
-            }
-        }
-
         let executed_at: Option<DateTime<Utc>> = r.try_get("executed_at").ok();
-        let tally = vote_tally_for(&state, &proposal_id).await?;
 
         let created_block: i64 = r.get("block_number");
         let created_at: DateTime<Utc> = r.get("block_timestamp");
@@ -156,7 +172,12 @@ pub async fn list(
             executed,
             executed_block: executed_block.map(|n| n.to_string()),
             executed_at,
-            vote_tally: tally,
+            vote_tally: VoteTally {
+                against_weight: r.get("against_weight"),
+                for_weight: r.get("for_weight"),
+                abstain_weight: r.get("abstain_weight"),
+                vote_count: r.get("vote_count"),
+            },
         });
     }
 
@@ -180,28 +201,53 @@ pub async fn get_one(
     State(state): State<AppState>,
     Path(proposal_id): Path<String>,
 ) -> Result<Json<ProposalRow>, ApiError> {
-    // Re-use list machinery by selecting one. Cheap because each step queries a
-    // small set, and the data volume of governance events is sparse.
     let row = sqlx::query(
-        r#"SELECT pc.block_number, pc.block_timestamp, pc.tx_hash,
-                  pc.raw_event -> 'decoded' ->> 'proposalId'  AS proposal_id,
-                  pc.raw_event -> 'decoded' ->> 'proposer'    AS proposer,
-                  pc.raw_event -> 'decoded' ->> 'voteStart'   AS vote_start,
-                  pc.raw_event -> 'decoded' ->> 'voteEnd'     AS vote_end,
-                  pc.raw_event -> 'decoded' ->> 'description' AS description,
-                  pe.block_number AS executed_block,
-                  pe.block_timestamp AS executed_at
-             FROM raw_protocol_events pc
-             LEFT JOIN raw_protocol_events pe
-               ON pe.chain_id = pc.chain_id
-              AND pe.event_name = 'ProposalExecuted'
-              AND pe.is_canonical = TRUE
-              AND pe.raw_event -> 'decoded' ->> 'proposalId'
-                = pc.raw_event -> 'decoded' ->> 'proposalId'
-            WHERE pc.chain_id = $1
-              AND pc.event_name = 'ProposalCreated'
-              AND pc.is_canonical = TRUE
-              AND pc.raw_event -> 'decoded' ->> 'proposalId' = $2"#,
+        r#"WITH proposal_row AS (
+               SELECT pc.block_number,
+                      pc.block_timestamp,
+                      pc.tx_hash,
+                      pc.raw_event -> 'decoded' ->> 'proposalId'  AS proposal_id,
+                      pc.raw_event -> 'decoded' ->> 'proposer'    AS proposer,
+                      pc.raw_event -> 'decoded' ->> 'voteStart'   AS vote_start,
+                      pc.raw_event -> 'decoded' ->> 'voteEnd'     AS vote_end,
+                      pc.raw_event -> 'decoded' ->> 'description' AS description,
+                      pe.block_number AS executed_block,
+                      pe.block_timestamp AS executed_at
+                 FROM raw_protocol_events pc
+                 LEFT JOIN raw_protocol_events pe
+                   ON pe.chain_id = pc.chain_id
+                  AND pe.event_name = 'ProposalExecuted'
+                  AND pe.is_canonical = TRUE
+                  AND pe.raw_event -> 'decoded' ->> 'proposalId'
+                    = pc.raw_event -> 'decoded' ->> 'proposalId'
+                WHERE pc.chain_id = $1
+                  AND pc.event_name = 'ProposalCreated'
+                  AND pc.is_canonical = TRUE
+                  AND pc.raw_event -> 'decoded' ->> 'proposalId' = $2
+           ),
+           vote_tally AS (
+               SELECT COALESCE(SUM(CASE WHEN rv.raw_event -> 'decoded' ->> 'support' = '0'
+                                        THEN (rv.raw_event -> 'decoded' ->> 'weight')::numeric
+                                        ELSE 0 END), 0)::text AS against_weight,
+                      COALESCE(SUM(CASE WHEN rv.raw_event -> 'decoded' ->> 'support' = '1'
+                                        THEN (rv.raw_event -> 'decoded' ->> 'weight')::numeric
+                                        ELSE 0 END), 0)::text AS for_weight,
+                      COALESCE(SUM(CASE WHEN rv.raw_event -> 'decoded' ->> 'support' = '2'
+                                        THEN (rv.raw_event -> 'decoded' ->> 'weight')::numeric
+                                        ELSE 0 END), 0)::text AS abstain_weight,
+                      COUNT(*)::bigint::text AS vote_count
+                 FROM raw_protocol_events rv
+                WHERE rv.chain_id = $1
+                  AND rv.event_name = 'VoteCast'
+                  AND rv.is_canonical = TRUE
+                  AND rv.raw_event -> 'decoded' ->> 'proposalId' = $2
+           )
+           SELECT p.block_number, p.block_timestamp, p.tx_hash, p.proposal_id,
+                  p.proposer, p.vote_start, p.vote_end, p.description,
+                  p.executed_block, p.executed_at,
+                  vt.against_weight, vt.for_weight, vt.abstain_weight, vt.vote_count
+             FROM proposal_row p
+             CROSS JOIN vote_tally vt"#,
     )
     .bind(state.chain_id)
     .bind(&proposal_id)
@@ -211,7 +257,6 @@ pub async fn get_one(
         return Err(ApiError::not_found(format!("proposal {proposal_id}")));
     };
     let executed_block: Option<i64> = r.try_get("executed_block").ok();
-    let tally = vote_tally_for(&state, &proposal_id).await?;
     Ok(Json(ProposalRow {
         proposal_id: proposal_id.clone(),
         proposer: r.try_get("proposer").ok(),
@@ -224,49 +269,20 @@ pub async fn get_one(
         executed: executed_block.is_some(),
         executed_block: executed_block.map(|n| n.to_string()),
         executed_at: r.try_get("executed_at").ok(),
-        vote_tally: tally,
+        vote_tally: VoteTally {
+            against_weight: r.get("against_weight"),
+            for_weight: r.get("for_weight"),
+            abstain_weight: r.get("abstain_weight"),
+            vote_count: r.get("vote_count"),
+        },
     }))
 }
 
-async fn vote_tally_for(state: &AppState, proposal_id: &str) -> Result<VoteTally, ApiError> {
-    let rows = sqlx::query(
-        r#"SELECT raw_event -> 'decoded' ->> 'support' AS support,
-                  raw_event -> 'decoded' ->> 'weight'  AS weight
-             FROM raw_protocol_events
-            WHERE chain_id = $1
-              AND event_name = 'VoteCast'
-              AND is_canonical = TRUE
-              AND raw_event -> 'decoded' ->> 'proposalId' = $2"#,
-    )
-    .bind(state.chain_id)
-    .bind(proposal_id)
-    .fetch_all(&state.pg)
-    .await?;
-
-    let zero = BigDecimal::from(0u64);
-    let mut against = zero.clone();
-    let mut votes_for = zero.clone();
-    let mut abstain = zero.clone();
-    let mut count = 0u64;
-    for r in &rows {
-        count += 1;
-        let support: Option<String> = r.try_get("support").ok();
-        let weight: Option<String> = r.try_get("weight").ok();
-        let weight_bd = weight
-            .as_deref()
-            .and_then(|s| BigDecimal::from_str(s).ok())
-            .unwrap_or_else(|| zero.clone());
-        match support.as_deref() {
-            Some("0") => against += &weight_bd,
-            Some("1") => votes_for += &weight_bd,
-            Some("2") => abstain += &weight_bd,
-            _ => {}
-        }
+fn parse_status_filter(status: Option<&str>) -> Result<&str, ApiError> {
+    match status.unwrap_or("all") {
+        "executed" | "not_executed" | "active" | "all" => Ok(status.unwrap_or("all")),
+        other => Err(ApiError::bad_request(format!(
+            "invalid status {other:?}; use executed | not_executed | active | all"
+        ))),
     }
-    Ok(VoteTally {
-        against_weight: against.to_string(),
-        for_weight: votes_for.to_string(),
-        abstain_weight: abstain.to_string(),
-        vote_count: count.to_string(),
-    })
 }

@@ -1,5 +1,6 @@
 pub mod aggregations;
 pub mod events;
+pub mod gateways;
 pub mod governance;
 pub mod operational;
 pub mod prices;

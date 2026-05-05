@@ -5,3 +5,9 @@ sol!(
     BondingManager,
     "../../abi/BondingManager.json"
 );
+
+sol!(
+    #[allow(missing_docs)]
+    TicketBroker,
+    "../../abi/TicketBroker.json"
+);

@@ -385,6 +385,19 @@ async fn staker_loop(
             }
         };
         info!(?backfill, "daemon: staker backfill iteration complete");
+        let gateway = with_rpc_task_label(
+            "staker",
+            staker_runner::run_gateway_backfill(&pg, archive.as_ref(), &cfg, include_tentative),
+        )
+        .await;
+        let gateway = match gateway {
+            Ok(summary) => summary,
+            Err(e) => {
+                metrics.record_failure("staker", &e, started.elapsed().as_secs_f64());
+                return Err(e);
+            }
+        };
+        info!(?gateway, "daemon: gateway backfill iteration complete");
         let refresh = with_rpc_task_label(
             "staker",
             staker_runner::run_refresh_pending(&pg, archive.as_ref(), &cfg, include_tentative),

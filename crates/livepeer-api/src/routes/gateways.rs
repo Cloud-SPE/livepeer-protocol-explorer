@@ -34,6 +34,24 @@ pub struct GatewayBalanceRow {
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query parameters for gateway balance history snapshots.")]
+pub struct GatewayBalanceHistoryQuery {
+    /// Inclusive lower block bound.
+    pub from_block: Option<i64>,
+    /// Inclusive upper block bound.
+    pub to_block: Option<i64>,
+    /// Maximum number of balance snapshots to return.
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Historical TicketBroker sender balance snapshots for a gateway.")]
+pub struct GatewayBalanceHistoryResponse {
+    pub gateway_address: String,
+    pub data: Vec<GatewayBalanceRow>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
 #[schema(description = "Query parameters for gateway flow history.")]
 pub struct GatewayFlowsQuery {
     /// Optional lower block bound.
@@ -116,6 +134,9 @@ pub async fn balance_latest(
     Path(gateway): Path<String>,
 ) -> Result<Json<GatewayBalanceRow>, ApiError> {
     let gateway = normalize_addr(&gateway)?;
+    if let Some(row) = load_gateway_balance_latest_materialized(&state, &gateway).await? {
+        return Ok(Json(row));
+    }
     let block = state
         .archive
         .eth_block_number()
@@ -147,7 +168,60 @@ pub async fn balance_at_block(
         return Err(ApiError::bad_request("block must be non-negative"));
     }
     let gateway = normalize_addr(&gateway)?;
+    if let Some(row) = load_gateway_balance_materialized(&state, &gateway, block).await? {
+        return Ok(Json(row));
+    }
     Ok(Json(load_gateway_balance(&state, &gateway, block).await?))
+}
+
+#[utoipa::path(
+    get,
+    path = "/gateways/{gateway}/balance/history",
+    tag = "Gateways",
+    params(
+        ("gateway" = String, Path, description = "Gateway/sender address to inspect."),
+        GatewayBalanceHistoryQuery
+    ),
+    responses(
+        (status = 200, description = "Materialized historical balance snapshots for the gateway.", body = GatewayBalanceHistoryResponse),
+        (status = 400, description = "Invalid gateway address or range parameters.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
+pub async fn balance_history(
+    State(state): State<AppState>,
+    Path(gateway): Path<String>,
+    Query(q): Query<GatewayBalanceHistoryQuery>,
+) -> Result<Json<GatewayBalanceHistoryResponse>, ApiError> {
+    let gateway = normalize_addr(&gateway)?;
+    if let (Some(from), Some(to)) = (q.from_block, q.to_block) {
+        if to < from {
+            return Err(ApiError::bad_request("to_block < from_block"));
+        }
+    }
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64;
+    let rows = sqlx::query(
+        r#"SELECT gateway_address, block_number, deposit, reserve_funds_remaining,
+                  reserve_claimed_in_current_round, withdraw_round, unlock_in_progress, source
+             FROM gateway_balances_by_block
+            WHERE chain_id = $1
+              AND gateway_address = $2
+              AND ($3::bigint IS NULL OR block_number >= $3)
+              AND ($4::bigint IS NULL OR block_number <= $4)
+            ORDER BY block_number ASC
+            LIMIT $5"#,
+    )
+    .bind(state.chain_id)
+    .bind(&gateway)
+    .bind(q.from_block)
+    .bind(q.to_block)
+    .bind(limit)
+    .fetch_all(&state.pg)
+    .await?;
+    Ok(Json(GatewayBalanceHistoryResponse {
+        gateway_address: gateway,
+        data: rows.iter().map(materialized_balance_row).collect(),
+    }))
 }
 
 #[utoipa::path(
@@ -395,6 +469,65 @@ async fn load_gateway_balance(
         unlock_in_progress: unlock._0,
         source: "ticketbroker_getSenderInfo_rpc".to_string(),
     })
+}
+
+async fn load_gateway_balance_latest_materialized(
+    state: &AppState,
+    gateway: &str,
+) -> Result<Option<GatewayBalanceRow>, ApiError> {
+    let row = sqlx::query(
+        r#"SELECT gateway_address, block_number, deposit, reserve_funds_remaining,
+                  reserve_claimed_in_current_round, withdraw_round, unlock_in_progress, source
+             FROM gateway_balances_by_block
+            WHERE chain_id = $1
+              AND gateway_address = $2
+            ORDER BY block_number DESC
+            LIMIT 1"#,
+    )
+    .bind(state.chain_id)
+    .bind(gateway)
+    .fetch_optional(&state.pg)
+    .await?;
+    Ok(row.as_ref().map(materialized_balance_row))
+}
+
+async fn load_gateway_balance_materialized(
+    state: &AppState,
+    gateway: &str,
+    block: i64,
+) -> Result<Option<GatewayBalanceRow>, ApiError> {
+    let row = sqlx::query(
+        r#"SELECT gateway_address, block_number, deposit, reserve_funds_remaining,
+                  reserve_claimed_in_current_round, withdraw_round, unlock_in_progress, source
+             FROM gateway_balances_by_block
+            WHERE chain_id = $1
+              AND gateway_address = $2
+              AND block_number = $3
+            LIMIT 1"#,
+    )
+    .bind(state.chain_id)
+    .bind(gateway)
+    .bind(block)
+    .fetch_optional(&state.pg)
+    .await?;
+    Ok(row.as_ref().map(materialized_balance_row))
+}
+
+fn materialized_balance_row(r: &sqlx::postgres::PgRow) -> GatewayBalanceRow {
+    GatewayBalanceRow {
+        gateway_address: r.get("gateway_address"),
+        block_number: r.get::<i64, _>("block_number").to_string(),
+        deposit: r.get::<BigDecimal, _>("deposit").to_string(),
+        reserve_funds_remaining: r
+            .get::<BigDecimal, _>("reserve_funds_remaining")
+            .to_string(),
+        reserve_claimed_in_current_round: r
+            .get::<BigDecimal, _>("reserve_claimed_in_current_round")
+            .to_string(),
+        withdraw_round: r.get::<i64, _>("withdraw_round").to_string(),
+        unlock_in_progress: r.get("unlock_in_progress"),
+        source: r.get("source"),
+    }
 }
 
 fn normalize_addr(addr: &str) -> Result<String, ApiError> {

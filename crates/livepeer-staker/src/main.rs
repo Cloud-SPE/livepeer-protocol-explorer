@@ -40,6 +40,9 @@ enum Command {
     /// events in (block, log_index) order; populates stake_balances_by_block and
     /// delegator_registry. Idempotent.
     Backfill,
+    /// (S9.x) Materialize historical TicketBroker gateway sender balances at
+    /// gateway-touching blocks into gateway_balances_by_block.
+    GatewayBackfill,
     /// (S9.2) Refresh pending_stake / pending_fees on existing stake rows by
     /// calling BondingManager.pendingStake / pendingFees at each EarningsClaimed
     /// event block.
@@ -69,6 +72,18 @@ async fn main() -> Result<()> {
                 delegators_registered = summary.delegators_registered,
                 skipped_unregistered = summary.skipped_unregistered,
                 "staker flow backfill summary"
+            );
+        }
+        Command::GatewayBackfill => {
+            let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
+            let archive = Provider::new("chainstack", archive_url)?;
+            let summary =
+                runner::run_gateway_backfill(&pg, &archive, &cfg, cli.include_tentative).await?;
+            info!(
+                candidates_seen = summary.candidates_seen,
+                rows_written = summary.rows_written,
+                gateways_touched = summary.gateways_touched,
+                "gateway backfill summary"
             );
         }
         Command::RefreshPending => {

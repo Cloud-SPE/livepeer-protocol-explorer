@@ -17,8 +17,10 @@ Phase 1 ships:
 
 Phase 2 target schema:
 - `gateway_balances_by_block`
-- optional `gateway_claimants_by_block`
-- optional `gateway_flows` materialized convenience table
+
+Phase 3 target schema:
+- `gateway_claimants_by_block`
+- `gateway_flows` materialized convenience table
 
 ## Why
 
@@ -103,17 +105,57 @@ Indexes:
 - primary key `(chain_id, gateway_address, block_number)`
 - `(chain_id, gateway_address, block_number desc)`
 
-### Optional `gateway_claimants_by_block`
+## Phase 3 target schema
 
-Use only if claimant-level reserve state becomes a first-class product need.
+### `gateway_claimants_by_block`
 
 Key:
 - `(chain_id, gateway_address, claimant_address, block_number)`
 
-### Optional `gateway_flows`
+Columns:
+- `chain_id bigint not null`
+- `gateway_address text not null`
+- `claimant_address text not null`
+- `block_number bigint not null`
+- `block_timestamp timestamptz not null`
+- `block_hash text not null`
+- `claimable_reserve numeric(38,18) not null`
+- `claimed_reserve numeric(38,18) not null`
+- `source text not null`
+- `triggering_event_id bigint`
+- `created_at timestamptz not null default now()`
 
-Not required for correctness because `raw_protocol_events` already stores the flow
-ledger, but useful if API query pressure makes the raw-event path too heavy.
+Primary use:
+- claimant-level payout/release state at a historical block
+- reserve recipient analytics that cannot be answered from sender-only balance state
+
+### `gateway_flows`
+
+Key:
+- `id bigint generated always as identity primary key`
+
+Columns:
+- `chain_id bigint not null`
+- `event_id bigint not null references raw_protocol_events(id)`
+- `gateway_address text not null`
+- `claimant_address text`
+- `counterparty_address text`
+- `block_number bigint not null`
+- `block_timestamp timestamptz not null`
+- `tx_hash text not null`
+- `log_index integer not null`
+- `event_name text not null`
+- `flow_kind text not null`
+- `asset text`
+- `amount_native numeric(38,18)`
+- `amount_usd numeric(38,18)`
+- `valuation_version text`
+- `created_at timestamptz not null default now()`
+
+Primary use:
+- faster gateway analytics than joining `raw_protocol_events` + `event_valuations`
+- preclassified funding/payout rows
+- easier recipient/gateway leaderboards and time-bucket summaries
 
 ## Important nuance
 

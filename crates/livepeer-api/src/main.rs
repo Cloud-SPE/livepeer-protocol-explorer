@@ -115,8 +115,16 @@ async fn main() -> Result<()> {
             get(routes::gateways::payouts),
         )
         .route(
+            "/gateways/{gateway}/recipients",
+            get(routes::gateways::recipients),
+        )
+        .route(
             "/gateways/{gateway}/summary",
             get(routes::gateways::summary),
+        )
+        .route(
+            "/gateways/{gateway}/analytics/summary",
+            get(routes::gateways::analytics_summary),
         )
         // Stake
         .route(

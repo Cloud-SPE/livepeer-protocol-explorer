@@ -42,7 +42,7 @@ so the backfill remains deterministic under replay.
 
 Phase 2 closure intentionally does **not** include claimant-level reserve state
 or a materialized gateway flow ledger. Those are now tracked separately under
-[td-015-gateway-phase-3.md](../active/td-015-gateway-phase-3.md).
+[td-015-gateway-phase-3.md](./td-015-gateway-phase-3.md).
 
 ## Progress log
 

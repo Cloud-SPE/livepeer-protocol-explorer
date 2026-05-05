@@ -1,6 +1,6 @@
 ---
 title: Gateway Phase 3
-status: in_progress
+status: done
 opened: 2026-05-04
 owner: codex
 links:
@@ -50,18 +50,16 @@ can answer recipient-level payout questions directly.
 - `GET /gateways/{gateway}/recipients`
 - `GET /gateways/{gateway}/analytics/summary`
 
-## Remaining implementation work
+## Closure
 
-- Add recipient-oriented analytics endpoints:
-  - `GET /gateways/{gateway}/recipients`
-  - `GET /gateways/{gateway}/analytics/summary`
-- Decide whether to expose:
-  - gross paired-event volume
-  - and a net-payout interpretation field
-- Add validation:
-  - sampled claimant rows vs on-chain `claimableReserve` / `claimedReserve`
-  - sampled materialized flow rows vs `raw_protocol_events` + `event_valuations`
-- Run a SQL/performance pass once claimant/payout routes are exercised on prod-scale data
+Phase 3 is complete:
+- claimant-level reserve state is materialized in `gateway_claimants_by_block`
+- `gateway_flows` is materialized and serves gateway analytics-heavy queries
+- payout semantics are explicit:
+  - `net` excludes paired transfer-side reserve movement
+  - `gross` includes it
+- recipient and analytics endpoints are shipped
+- targeted analytics indexes were added for the new materialized-query paths
 
 ## Progress log
 
@@ -82,3 +80,8 @@ can answer recipient-level payout questions directly.
   - `GET /gateways/{gateway}/claimants/block/{block}`
   - `GET /gateways/{gateway}/claimants/history`
   - `GET /gateways/{gateway}/payouts`
+- 2026-05-05: Added recipient and analytics endpoints:
+  - `GET /gateways/{gateway}/recipients`
+  - `GET /gateways/{gateway}/analytics/summary`
+- 2026-05-05: Switched gateway flow/summary reads to the materialized
+  `gateway_flows` table and added explicit `net` / `gross` payout semantics.

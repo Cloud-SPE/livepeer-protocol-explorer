@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_gateway_flows_gateway_claimant_time;
+DROP INDEX IF EXISTS idx_gateway_flows_gateway_counterparty_time;
+DROP INDEX IF EXISTS idx_gateway_flows_gateway_kind_time;

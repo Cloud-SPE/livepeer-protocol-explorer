@@ -80,6 +80,17 @@ pub struct GatewayClaimantsResponse {
     pub data: Vec<GatewayClaimantRow>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(description = "Interpretation mode for payout-side gateway analytics.")]
+pub enum GatewayPayoutSemantics {
+    /// Canonical payout view. Counts redemption and reserve-claim rows as economic payouts and excludes paired transfer-side reserve movement.
+    #[default]
+    Net,
+    /// Gross event-volume view. Includes transfer-side reserve movement rows alongside redemption and reserve-claim rows.
+    Gross,
+}
+
 #[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
 #[schema(description = "Query parameters for gateway flow history.")]
 pub struct GatewayFlowsQuery {
@@ -114,6 +125,7 @@ pub struct GatewayFlowRow {
 #[schema(description = "Historical funding and payout flow rows for a gateway.")]
 pub struct GatewayFlowsResponse {
     pub gateway_address: String,
+    pub semantics: Option<String>,
     pub data: Vec<GatewayFlowRow>,
 }
 
@@ -126,8 +138,47 @@ pub struct GatewayPayoutsQuery {
     pub to_block: Option<i64>,
     /// Maximum number of payout rows to return.
     pub limit: Option<u32>,
-    /// If true, include transfer-side reserve movement rows alongside redemption and reserve-claim rows.
+    /// Deprecated compatibility flag. If true and `semantics` is omitted, treat the response as `gross`.
     pub include_transfers: Option<bool>,
+    /// Payout interpretation mode. `net` excludes paired `WinningTicketTransfer` rows; `gross` includes them.
+    pub semantics: Option<GatewayPayoutSemantics>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query parameters for gateway recipient leaderboard views.")]
+pub struct GatewayRecipientsQuery {
+    /// Optional lower block bound.
+    pub from_block: Option<i64>,
+    /// Optional upper block bound.
+    pub to_block: Option<i64>,
+    /// Maximum number of recipient rows to return.
+    pub limit: Option<u32>,
+    /// Payout interpretation mode. `net` excludes paired `WinningTicketTransfer` rows; `gross` includes them.
+    pub semantics: Option<GatewayPayoutSemantics>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Aggregated payout totals for one gateway recipient address.")]
+pub struct GatewayRecipientRow {
+    pub recipient_address: String,
+    pub payout_event_count: String,
+    pub total_amount_native: String,
+    pub total_amount_usd: String,
+    pub usd_rows_priced: String,
+    pub ticket_redeemed_count: String,
+    pub reserve_claimed_count: String,
+    pub reserve_transfer_count: String,
+    pub latest_block_number: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(
+    description = "Recipient leaderboard for one gateway under a chosen payout interpretation."
+)]
+pub struct GatewayRecipientsResponse {
+    pub gateway_address: String,
+    pub semantics: String,
+    pub data: Vec<GatewayRecipientRow>,
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
@@ -135,6 +186,8 @@ pub struct GatewayPayoutsQuery {
 pub struct GatewaySummaryQuery {
     /// Rolling window length in days. Defaults to 7.
     pub days: Option<i64>,
+    /// Payout interpretation mode. `net` excludes paired `WinningTicketTransfer` rows; `gross` includes them.
+    pub semantics: Option<GatewayPayoutSemantics>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -149,12 +202,39 @@ pub struct GatewaySummaryRow {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Aggregate totals for one gateway analytics bucket.")]
+pub struct GatewayAnalyticsBucket {
+    pub count: String,
+    pub total_amount_native: String,
+    pub total_amount_usd: String,
+    pub usd_rows_priced: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 #[schema(description = "Rolling gateway funding and payout summary over a recent time window.")]
 pub struct GatewaySummaryResponse {
     pub gateway_address: String,
     pub days: String,
+    pub semantics: String,
     pub from_timestamp: DateTime<Utc>,
     pub to_timestamp: DateTime<Utc>,
+    pub data: Vec<GatewaySummaryRow>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(
+    description = "Higher-level gateway analytics summary composed from the materialized gateway flow ledger."
+)]
+pub struct GatewayAnalyticsSummaryResponse {
+    pub gateway_address: String,
+    pub days: String,
+    pub semantics: String,
+    pub from_timestamp: DateTime<Utc>,
+    pub to_timestamp: DateTime<Utc>,
+    pub funding: GatewayAnalyticsBucket,
+    pub payouts: GatewayAnalyticsBucket,
+    pub withdrawals: GatewayAnalyticsBucket,
+    pub distinct_recipients: String,
     pub data: Vec<GatewaySummaryRow>,
 }
 
@@ -387,28 +467,15 @@ pub async fn flows(
     let gateway = normalize_addr(&gateway)?;
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64;
     let rows = sqlx::query(
-        r#"SELECT r.id, r.event_name, r.block_number, r.block_timestamp, r.tx_hash, r.log_index,
-                  r.asset, r.amount_normalized, r.from_address, r.to_address,
-                  v.amount_usd
-             FROM raw_protocol_events r
-             LEFT JOIN event_valuations v
-               ON v.event_id = r.id
-              AND v.status = 'priced'
-            WHERE r.chain_id = $1
-              AND r.is_canonical = TRUE
-              AND r.contract_name = 'TicketBroker'
-              AND r.from_address = $2
-              AND r.event_name IN (
-                    'DepositFunded',
-                    'ReserveFunded',
-                    'WinningTicketTransfer',
-                    'WinningTicketRedeemed',
-                    'ReserveClaimed',
-                    'Withdrawal'
-              )
-              AND ($3::bigint IS NULL OR r.block_number >= $3)
-              AND ($4::bigint IS NULL OR r.block_number <= $4)
-            ORDER BY r.block_number DESC, r.log_index DESC
+        r#"SELECT event_id, gateway_address, claimant_address, counterparty_address,
+                  block_number, block_timestamp, tx_hash, log_index, event_name, flow_kind,
+                  asset, amount_native, amount_usd
+             FROM gateway_flows
+            WHERE chain_id = $1
+              AND gateway_address = $2
+              AND ($3::bigint IS NULL OR block_number >= $3)
+              AND ($4::bigint IS NULL OR block_number <= $4)
+            ORDER BY block_number DESC, log_index DESC
             LIMIT $5"#,
     )
     .bind(state.chain_id)
@@ -419,34 +486,10 @@ pub async fn flows(
     .fetch_all(&state.pg)
     .await?;
 
-    let data = rows
-        .iter()
-        .map(|r| GatewayFlowRow {
-            event_id: r.get::<i64, _>("id").to_string(),
-            event_name: r.get("event_name"),
-            flow_kind: flow_kind_for_event_name(r.get::<String, _>("event_name").as_str())
-                .to_string(),
-            block_number: r.get::<i64, _>("block_number").to_string(),
-            block_timestamp: r.get("block_timestamp"),
-            tx_hash: r.get("tx_hash"),
-            log_index: r.get::<i32, _>("log_index") as u32,
-            asset: r.try_get("asset").ok(),
-            amount_native: r
-                .try_get::<BigDecimal, _>("amount_normalized")
-                .ok()
-                .map(|v| v.to_string()),
-            amount_usd: r
-                .try_get::<BigDecimal, _>("amount_usd")
-                .ok()
-                .map(|v| v.to_string()),
-            from_address: r.try_get("from_address").ok(),
-            to_address: r.try_get("to_address").ok(),
-        })
-        .collect();
-
     Ok(Json(GatewayFlowsResponse {
         gateway_address: gateway,
-        data,
+        semantics: None,
+        data: rows.iter().map(materialized_flow_row).collect(),
     }))
 }
 
@@ -470,7 +513,7 @@ pub async fn payouts(
     Query(q): Query<GatewayPayoutsQuery>,
 ) -> Result<Json<GatewayFlowsResponse>, ApiError> {
     let gateway = normalize_addr(&gateway)?;
-    let include_transfers = q.include_transfers.unwrap_or(false);
+    let semantics = resolve_payout_semantics(q.semantics, q.include_transfers);
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64;
     let rows = sqlx::query(
         r#"SELECT event_id, gateway_address, claimant_address, counterparty_address,
@@ -492,13 +535,88 @@ pub async fn payouts(
     .bind(&gateway)
     .bind(q.from_block)
     .bind(q.to_block)
-    .bind(include_transfers)
+    .bind(semantics.includes_transfers())
     .bind(limit)
     .fetch_all(&state.pg)
     .await?;
     Ok(Json(GatewayFlowsResponse {
         gateway_address: gateway,
+        semantics: Some(semantics.as_str().to_string()),
         data: rows.iter().map(materialized_flow_row).collect(),
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/gateways/{gateway}/recipients",
+    tag = "Gateways",
+    params(
+        ("gateway" = String, Path, description = "Gateway/sender address to inspect."),
+        GatewayRecipientsQuery
+    ),
+    responses(
+        (status = 200, description = "Recipient leaderboard for payout-side gateway activity.", body = GatewayRecipientsResponse),
+        (status = 400, description = "Invalid gateway address.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
+pub async fn recipients(
+    State(state): State<AppState>,
+    Path(gateway): Path<String>,
+    Query(q): Query<GatewayRecipientsQuery>,
+) -> Result<Json<GatewayRecipientsResponse>, ApiError> {
+    let gateway = normalize_addr(&gateway)?;
+    let semantics = q.semantics.unwrap_or_default();
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as i64;
+    let rows = sqlx::query(
+        r#"SELECT COALESCE(claimant_address, counterparty_address) AS recipient_address,
+                  COUNT(*)::bigint AS payout_event_count,
+                  COALESCE(SUM(amount_native), 0) AS total_amount_native,
+                  COALESCE(SUM(amount_usd), 0) AS total_amount_usd,
+                  COUNT(amount_usd)::bigint AS usd_rows_priced,
+                  SUM(CASE WHEN flow_kind = 'ticket_redeemed' THEN 1 ELSE 0 END)::bigint AS ticket_redeemed_count,
+                  SUM(CASE WHEN flow_kind = 'reserve_claimed' THEN 1 ELSE 0 END)::bigint AS reserve_claimed_count,
+                  SUM(CASE WHEN flow_kind = 'reserve_transfer' THEN 1 ELSE 0 END)::bigint AS reserve_transfer_count,
+                  MAX(block_number)::bigint AS latest_block_number
+             FROM gateway_flows
+            WHERE chain_id = $1
+              AND gateway_address = $2
+              AND ($3::bigint IS NULL OR block_number >= $3)
+              AND ($4::bigint IS NULL OR block_number <= $4)
+              AND (
+                    flow_kind IN ('ticket_redeemed', 'reserve_claimed')
+                    OR ($5::boolean = TRUE AND flow_kind = 'reserve_transfer')
+              )
+              AND COALESCE(claimant_address, counterparty_address) IS NOT NULL
+            GROUP BY COALESCE(claimant_address, counterparty_address)
+            ORDER BY total_amount_native DESC, recipient_address ASC
+            LIMIT $6"#,
+    )
+    .bind(state.chain_id)
+    .bind(&gateway)
+    .bind(q.from_block)
+    .bind(q.to_block)
+    .bind(semantics.includes_transfers())
+    .bind(limit)
+    .fetch_all(&state.pg)
+    .await?;
+    Ok(Json(GatewayRecipientsResponse {
+        gateway_address: gateway,
+        semantics: semantics.as_str().to_string(),
+        data: rows
+            .iter()
+            .map(|r| GatewayRecipientRow {
+                recipient_address: r.get("recipient_address"),
+                payout_event_count: r.get::<i64, _>("payout_event_count").to_string(),
+                total_amount_native: r.get::<BigDecimal, _>("total_amount_native").to_string(),
+                total_amount_usd: r.get::<BigDecimal, _>("total_amount_usd").to_string(),
+                usd_rows_priced: r.get::<i64, _>("usd_rows_priced").to_string(),
+                ticket_redeemed_count: r.get::<i64, _>("ticket_redeemed_count").to_string(),
+                reserve_claimed_count: r.get::<i64, _>("reserve_claimed_count").to_string(),
+                reserve_transfer_count: r.get::<i64, _>("reserve_transfer_count").to_string(),
+                latest_block_number: r.get::<i64, _>("latest_block_number").to_string(),
+            })
+            .collect(),
     }))
 }
 
@@ -526,63 +644,90 @@ pub async fn summary(
     if !(1..=3650).contains(&days) {
         return Err(ApiError::bad_request("days must be between 1 and 3650"));
     }
+    let semantics = q.semantics.unwrap_or_default();
     let to_ts = Utc::now();
     let from_ts = to_ts - Duration::days(days);
+    let data = load_gateway_summary_rows(&state, &gateway, from_ts, to_ts, semantics).await?;
 
-    let rows = sqlx::query(
-        r#"SELECT r.event_name,
-                  COUNT(*)::bigint AS count,
-                  COALESCE(SUM(r.amount_normalized), 0) AS total_amount_native,
-                  COALESCE(SUM(v.amount_usd), 0) AS total_amount_usd,
-                  COUNT(v.amount_usd)::bigint AS usd_rows_priced
-             FROM raw_protocol_events r
-             LEFT JOIN event_valuations v
-               ON v.event_id = r.id
-              AND v.status = 'priced'
-            WHERE r.chain_id = $1
-              AND r.is_canonical = TRUE
-              AND r.contract_name = 'TicketBroker'
-              AND r.from_address = $2
-              AND r.event_name IN (
-                    'DepositFunded',
-                    'ReserveFunded',
-                    'WinningTicketTransfer',
-                    'WinningTicketRedeemed',
-                    'ReserveClaimed',
-                    'Withdrawal'
+    Ok(Json(GatewaySummaryResponse {
+        gateway_address: gateway,
+        days: days.to_string(),
+        semantics: semantics.as_str().to_string(),
+        from_timestamp: from_ts,
+        to_timestamp: to_ts,
+        data,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/gateways/{gateway}/analytics/summary",
+    tag = "Gateways",
+    params(
+        ("gateway" = String, Path, description = "Gateway/sender address to inspect."),
+        GatewaySummaryQuery
+    ),
+    responses(
+        (status = 200, description = "Materialized gateway analytics summary with explicit payout semantics.", body = GatewayAnalyticsSummaryResponse),
+        (status = 400, description = "Invalid gateway address or days value.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
+pub async fn analytics_summary(
+    State(state): State<AppState>,
+    Path(gateway): Path<String>,
+    Query(q): Query<GatewaySummaryQuery>,
+) -> Result<Json<GatewayAnalyticsSummaryResponse>, ApiError> {
+    let gateway = normalize_addr(&gateway)?;
+    let days = q.days.unwrap_or(7);
+    if !(1..=3650).contains(&days) {
+        return Err(ApiError::bad_request("days must be between 1 and 3650"));
+    }
+    let semantics = q.semantics.unwrap_or_default();
+    let to_ts = Utc::now();
+    let from_ts = to_ts - Duration::days(days);
+    let data = load_gateway_summary_rows(&state, &gateway, from_ts, to_ts, semantics).await?;
+    let funding = sum_summary_bucket(&data, &["deposit_in", "reserve_in"]);
+    let payouts = sum_summary_bucket(
+        &data,
+        if semantics.includes_transfers() {
+            &["ticket_redeemed", "reserve_claimed", "reserve_transfer"]
+        } else {
+            &["ticket_redeemed", "reserve_claimed"]
+        },
+    );
+    let withdrawals = sum_summary_bucket(&data, &["withdrawal"]);
+    let distinct_recipients = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(DISTINCT COALESCE(claimant_address, counterparty_address))
+             FROM gateway_flows
+            WHERE chain_id = $1
+              AND gateway_address = $2
+              AND block_timestamp >= $3
+              AND block_timestamp <= $4
+              AND (
+                    flow_kind IN ('ticket_redeemed', 'reserve_claimed')
+                    OR ($5::boolean = TRUE AND flow_kind = 'reserve_transfer')
               )
-              AND r.block_timestamp >= $3
-              AND r.block_timestamp <= $4
-            GROUP BY r.event_name
-            ORDER BY MIN(r.block_timestamp) DESC, r.event_name ASC"#,
+              AND COALESCE(claimant_address, counterparty_address) IS NOT NULL"#,
     )
     .bind(state.chain_id)
     .bind(&gateway)
     .bind(from_ts)
     .bind(to_ts)
-    .fetch_all(&state.pg)
+    .bind(semantics.includes_transfers())
+    .fetch_one(&state.pg)
     .await?;
 
-    let data = rows
-        .iter()
-        .map(|r| {
-            let event_name: String = r.get("event_name");
-            GatewaySummaryRow {
-                flow_kind: flow_kind_for_event_name(&event_name).to_string(),
-                event_name,
-                count: r.get::<i64, _>("count").to_string(),
-                total_amount_native: r.get::<BigDecimal, _>("total_amount_native").to_string(),
-                total_amount_usd: r.get::<BigDecimal, _>("total_amount_usd").to_string(),
-                usd_rows_priced: r.get::<i64, _>("usd_rows_priced").to_string(),
-            }
-        })
-        .collect();
-
-    Ok(Json(GatewaySummaryResponse {
+    Ok(Json(GatewayAnalyticsSummaryResponse {
         gateway_address: gateway,
         days: days.to_string(),
+        semantics: semantics.as_str().to_string(),
         from_timestamp: from_ts,
         to_timestamp: to_ts,
+        funding,
+        payouts,
+        withdrawals,
+        distinct_recipients: distinct_recipients.to_string(),
         data,
     }))
 }
@@ -760,6 +905,104 @@ fn materialized_flow_row(r: &sqlx::postgres::PgRow) -> GatewayFlowRow {
     }
 }
 
+async fn load_gateway_summary_rows(
+    state: &AppState,
+    gateway: &str,
+    from_ts: DateTime<Utc>,
+    to_ts: DateTime<Utc>,
+    semantics: GatewayPayoutSemantics,
+) -> Result<Vec<GatewaySummaryRow>, ApiError> {
+    let rows = sqlx::query(
+        r#"SELECT event_name,
+                  flow_kind,
+                  COUNT(*)::bigint AS count,
+                  COALESCE(SUM(amount_native), 0) AS total_amount_native,
+                  COALESCE(SUM(amount_usd), 0) AS total_amount_usd,
+                  COUNT(amount_usd)::bigint AS usd_rows_priced
+             FROM gateway_flows
+            WHERE chain_id = $1
+              AND gateway_address = $2
+              AND block_timestamp >= $3
+              AND block_timestamp <= $4
+              AND (
+                    flow_kind IN ('deposit_in', 'reserve_in', 'ticket_redeemed', 'reserve_claimed', 'withdrawal')
+                    OR ($5::boolean = TRUE AND flow_kind = 'reserve_transfer')
+              )
+            GROUP BY event_name, flow_kind
+            ORDER BY MIN(block_timestamp) DESC, event_name ASC"#,
+    )
+    .bind(state.chain_id)
+    .bind(gateway)
+    .bind(from_ts)
+    .bind(to_ts)
+    .bind(semantics.includes_transfers())
+    .fetch_all(&state.pg)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| GatewaySummaryRow {
+            event_name: r.get("event_name"),
+            flow_kind: r.get("flow_kind"),
+            count: r.get::<i64, _>("count").to_string(),
+            total_amount_native: r.get::<BigDecimal, _>("total_amount_native").to_string(),
+            total_amount_usd: r.get::<BigDecimal, _>("total_amount_usd").to_string(),
+            usd_rows_priced: r.get::<i64, _>("usd_rows_priced").to_string(),
+        })
+        .collect())
+}
+
+fn sum_summary_bucket(rows: &[GatewaySummaryRow], kinds: &[&str]) -> GatewayAnalyticsBucket {
+    let mut count = 0i64;
+    let mut usd_rows_priced = 0i64;
+    let mut total_amount_native = BigDecimal::from(0);
+    let mut total_amount_usd = BigDecimal::from(0);
+
+    for row in rows {
+        if kinds.contains(&row.flow_kind.as_str()) {
+            count += row.count.parse::<i64>().unwrap_or_default();
+            usd_rows_priced += row.usd_rows_priced.parse::<i64>().unwrap_or_default();
+            total_amount_native += BigDecimal::from_str(&row.total_amount_native)
+                .unwrap_or_else(|_| BigDecimal::from(0));
+            total_amount_usd +=
+                BigDecimal::from_str(&row.total_amount_usd).unwrap_or_else(|_| BigDecimal::from(0));
+        }
+    }
+
+    GatewayAnalyticsBucket {
+        count: count.to_string(),
+        total_amount_native: total_amount_native.to_string(),
+        total_amount_usd: total_amount_usd.to_string(),
+        usd_rows_priced: usd_rows_priced.to_string(),
+    }
+}
+
+impl GatewayPayoutSemantics {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Net => "net",
+            Self::Gross => "gross",
+        }
+    }
+
+    fn includes_transfers(self) -> bool {
+        matches!(self, Self::Gross)
+    }
+}
+
+fn resolve_payout_semantics(
+    semantics: Option<GatewayPayoutSemantics>,
+    include_transfers: Option<bool>,
+) -> GatewayPayoutSemantics {
+    semantics.unwrap_or_else(|| {
+        if include_transfers.unwrap_or(false) {
+            GatewayPayoutSemantics::Gross
+        } else {
+            GatewayPayoutSemantics::Net
+        }
+    })
+}
+
 fn normalize_addr(addr: &str) -> Result<String, ApiError> {
     let parsed = Address::from_str(addr).map_err(|_| ApiError::bad_request("invalid address"))?;
     Ok(format!("{parsed:#x}").to_lowercase())
@@ -774,16 +1017,4 @@ fn decode_hex_result(bytes: &[u8]) -> Result<Vec<u8>, ApiError> {
 fn u256_to_decimal(u: &U256, decimals: u32) -> BigDecimal {
     let raw = BigDecimal::from_str(&u.to_string()).unwrap_or_default();
     raw / BigDecimal::from(10u128.pow(decimals))
-}
-
-fn flow_kind_for_event_name(event_name: &str) -> &'static str {
-    match event_name {
-        "DepositFunded" => "deposit_in",
-        "ReserveFunded" => "reserve_in",
-        "WinningTicketTransfer" => "reserve_transfer",
-        "WinningTicketRedeemed" => "ticket_redeemed",
-        "ReserveClaimed" => "reserve_claimed",
-        "Withdrawal" => "withdrawal",
-        _ => "other",
-    }
 }

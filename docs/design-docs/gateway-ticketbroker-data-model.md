@@ -1,7 +1,7 @@
 ---
 title: Gateway TicketBroker Data Model
 status: accepted
-verified: 2026-05-04
+verified: 2026-05-05
 ---
 
 # Gateway TicketBroker Data Model
@@ -21,6 +21,13 @@ Phase 2 target schema:
 Phase 3 target schema:
 - `gateway_claimants_by_block`
 - `gateway_flows` materialized convenience table
+
+Phase 3 API surface:
+- `GET /gateways/{gateway}/claimants/block/{block}`
+- `GET /gateways/{gateway}/claimants/history`
+- `GET /gateways/{gateway}/payouts`
+- `GET /gateways/{gateway}/recipients`
+- `GET /gateways/{gateway}/analytics/summary`
 
 ## Why
 
@@ -163,6 +170,18 @@ Primary use:
 lifecycle. Consumers should not blindly sum both as independent net payouts unless
 they explicitly want "all payout-related event volume" rather than net economic
 outflow.
+
+The API now exposes that distinction explicitly:
+- `net` payout semantics:
+  - includes `ticket_redeemed`
+  - includes `reserve_claimed`
+  - excludes paired `reserve_transfer`
+- `gross` payout semantics:
+  - includes `ticket_redeemed`
+  - includes `reserve_claimed`
+  - includes paired `reserve_transfer`
+
+Recipient leaderboards and payout analytics default to `net`.
 
 `ReserveClaimed` is tracked as a flow, but valuation semantics should be handled
 carefully if it overlaps economically with `WinningTicketRedeemed.faceValue`.

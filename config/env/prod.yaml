@@ -24,14 +24,3 @@ alerting:
     bot_token_env: TELEGRAM_BOT_TOKEN
     chat_id_env: TELEGRAM_CHAT_ID
     enabled: true
-
-metrics:
-  port_indexer:           9101
-  port_reorg_watcher:     9102
-  port_finality_watcher:  9103
-  port_valuator:          9104
-  port_staker:            9105
-  port_api_metrics:       9106
-
-api:
-  bind: "0.0.0.0:8080"

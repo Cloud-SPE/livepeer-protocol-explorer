@@ -27,7 +27,7 @@ Server expectations:
 
 Recommended exposed ports:
 - `8080` for the API if you want remote access
-- `9106` and `9107` only to trusted Prometheus hosts
+- `9107` only to trusted Prometheus hosts if you expose daemon metrics directly
 - `5432` bound to localhost/private only
 
 ## 2. Environment
@@ -170,7 +170,6 @@ Before deploy:
 Deploy:
 
 ```bash
-docker compose -f docker-compose.prod.yml build
 docker compose -f docker-compose.prod.yml up -d postgres
 docker compose -f docker-compose.prod.yml run --rm livepeer-orchestrator migrate-only
 docker compose -f docker-compose.prod.yml up -d livepeer-daemon livepeer-api

@@ -259,6 +259,23 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - [x] `GET /transcoders/{transcoder}/delegators/block/{block}`
 - [x] Query-path indexes landed in migration `021_api_transcoder_indexes`
 
+#### S10.5 — gateway / TicketBroker endpoints ✅ done
+- [x] `GET /gateways/{gateway}/balance/latest`
+- [x] `GET /gateways/{gateway}/balance/block/{block}`
+- [x] `GET /gateways/{gateway}/balance/history`
+- [x] `GET /gateways/{gateway}/claimants/block/{block}`
+- [x] `GET /gateways/{gateway}/claimants/history`
+- [x] `GET /gateways/{gateway}/flows`
+- [x] `GET /gateways/{gateway}/payouts`
+- [x] `GET /gateways/{gateway}/recipients`
+- [x] `GET /gateways/{gateway}/summary`
+- [x] `GET /gateways/{gateway}/analytics/summary`
+- [x] Materialized gateway tables landed:
+  - `gateway_balances_by_block`
+  - `gateway_claimants_by_block`
+  - `gateway_flows`
+- [x] Gateway query-path indexes landed in migrations `022` / `023` / `024` / `025`
+
 ### S11 — cross-check + determinism CI (in_progress)
 
 #### S11.1 — cross-check binary ✅ done
@@ -337,3 +354,4 @@ Goal: all 14 migrations land. Schema verified with `psql \d`.
 - **2026-05-04** TD-012 Phase 1 tightened — `livepeer-orchestrator replay` is now strict by default: it requires explicit `--to-block`, routes indexer `eth_getLogs` through `rpc_call_cache`, records finality replay inputs during live runs, and fails on missing cached RPC inputs unless `--allow-live-rpc` is explicitly requested.
 - **2026-05-03** S9.2 strengthened — pending refresh is now bulk and exact-state-aware. `refresh-pending` first reconciles every stored stake row against `BondingManager.getDelegator()` and then bulk-refreshes `pendingStake` / `pendingFees` for every `EarningsClaimed` row from cached RPC inputs. Fresh rerun validation: `no_stake_row = 0`, self-delegated orchestrator spot-checks match on-chain `bondedAmount`.
 - **2026-05-04** S10.4 done — transcoder context API shipped: params/history, lifecycle/history, point-in-time profile, and delegators-at-block. Migration `021_api_transcoder_indexes` added the required raw-event expression index plus stake covering index; measured route latencies dropped to ~1ms for params/lifecycle/profile and ~42ms for delegators-at-block.
+- **2026-05-05** S10.5 done — gateway/TicketBroker API shipped end-to-end: exact sender balance reads, materialized sender balance history, claimant reserve history, materialized gateway flow ledger, recipient leaderboards, and analytics summaries with explicit `net` / `gross` payout semantics. Migrations `022`–`025` added the gateway materialization and analytics indexes.

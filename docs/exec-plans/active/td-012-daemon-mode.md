@@ -694,7 +694,7 @@ it is no longer a blocker for calling replay determinism CI real.
 
 #### 3e — Operator runbook outline
 
-Lives at `docs/operator/runbook.md` (to be created). Sections:
+Lives at `docs/RUNBOOK.md`. Sections:
 
 - **Startup**: env vars, config validation, "is this catching up?" check
 - **Healthy indicators**: lag gauges expected ranges, expected per-task

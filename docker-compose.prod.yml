@@ -69,7 +69,6 @@ services:
         condition: service_healthy
     ports:
       - "8080:8080"
-      - "9106:9106"
 
   livepeer-alert-bot:
     image: livepeer-valuation-system:latest

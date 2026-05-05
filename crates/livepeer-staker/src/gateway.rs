@@ -24,6 +24,12 @@ sol!(
 const ARBITRUM_CHAIN_ID: i64 = 42161;
 const ETH_DECIMALS: u32 = 18;
 const SOURCE_RPC_RECONCILED: &str = "rpc_reconciled";
+const GATEWAY_FLOW_BATCH_LIMIT: i64 = 2_000;
+const GATEWAY_CLAIMANT_BATCH_LIMIT: i64 = 1_000;
+const GATEWAY_BALANCE_BATCH_LIMIT: i64 = 250;
+const GATEWAY_FLOW_CHECKPOINT: &str = "gateway_flow_backfill";
+const GATEWAY_CLAIMANT_CHECKPOINT: &str = "gateway_claimant_backfill";
+const GATEWAY_BALANCE_CHECKPOINT: &str = "gateway_balance_backfill";
 
 #[derive(Debug, Default, Serialize)]
 pub struct GatewayBackfillSummary {
@@ -31,9 +37,13 @@ pub struct GatewayBackfillSummary {
     pub balance_rows_written: u64,
     pub flow_candidates_seen: u64,
     pub flow_rows_written: u64,
+    pub claimant_candidates_seen: u64,
     pub claimant_rows_written: u64,
     pub gateways_touched: u64,
     pub claimants_touched: u64,
+    pub flow_checkpoint_block: Option<i64>,
+    pub claimant_checkpoint_block: Option<i64>,
+    pub balance_checkpoint_block: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -70,21 +80,91 @@ pub async fn run_gateway_backfill(
     cfg: &Config,
     include_tentative: bool,
 ) -> Result<GatewayBackfillSummary> {
-    let balance_candidates = fetch_balance_candidates(pg, include_tentative).await?;
-    let flow_candidates = fetch_flow_candidates(pg, include_tentative).await?;
+    let flow_checkpoint = load_gateway_checkpoint(pg, GATEWAY_FLOW_CHECKPOINT).await?;
+    let claimant_checkpoint = load_gateway_checkpoint(pg, GATEWAY_CLAIMANT_CHECKPOINT).await?;
+    let balance_checkpoint = load_gateway_checkpoint(pg, GATEWAY_BALANCE_CHECKPOINT).await?;
+
+    let flow_candidates = fetch_flow_candidates_after(
+        pg,
+        include_tentative,
+        flow_checkpoint,
+        GATEWAY_FLOW_BATCH_LIMIT,
+    )
+    .await?;
+    let claimant_candidates = fetch_claimant_candidates_after(
+        pg,
+        include_tentative,
+        claimant_checkpoint,
+        GATEWAY_CLAIMANT_BATCH_LIMIT,
+    )
+    .await?;
+    let balance_candidates = fetch_balance_candidates_after(
+        pg,
+        include_tentative,
+        balance_checkpoint,
+        GATEWAY_BALANCE_BATCH_LIMIT,
+    )
+    .await?;
     info!(
+        flow_checkpoint,
+        claimant_checkpoint,
+        balance_checkpoint,
         balance_candidates = balance_candidates.len(),
         flow_candidates = flow_candidates.len(),
+        claimant_candidates = claimant_candidates.len(),
         "gateway backfill starting"
     );
 
     let mut summary = GatewayBackfillSummary {
         balance_candidates_seen: balance_candidates.len() as u64,
         flow_candidates_seen: flow_candidates.len() as u64,
+        claimant_candidates_seen: claimant_candidates.len() as u64,
+        flow_checkpoint_block: flow_checkpoint,
+        claimant_checkpoint_block: claimant_checkpoint,
+        balance_checkpoint_block: balance_checkpoint,
         ..Default::default()
     };
+    let mut flow_touched = None;
+    let mut claimant_touched = None;
     let mut gateways = HashSet::new();
     let mut claimants = HashSet::new();
+
+    for candidate in flow_candidates {
+        upsert_gateway_flow(pg, &candidate).await?;
+        summary.flow_rows_written += 1;
+        flow_touched = Some(candidate.block_number);
+        gateways.insert(candidate.gateway_address.clone());
+    }
+
+    if let Some(block) = flow_touched {
+        advance_gateway_checkpoint(pg, GATEWAY_FLOW_CHECKPOINT, block).await?;
+        summary.flow_checkpoint_block = Some(block);
+    }
+
+    for candidate in claimant_candidates {
+        let claimant = match candidate.claimant_address.as_ref() {
+            Some(v) => v,
+            None => continue,
+        };
+        let claimant_snapshot = read_claimant_state(
+            pg,
+            archive,
+            &cfg.static_.contracts.ticket_broker.to_lowercase(),
+            &candidate.gateway_address,
+            claimant,
+            candidate.block_number,
+        )
+        .await?;
+        upsert_gateway_claimant_row(pg, &candidate, &claimant_snapshot).await?;
+        summary.claimant_rows_written += 1;
+        claimant_touched = Some(candidate.block_number);
+        claimants.insert((candidate.gateway_address.clone(), claimant.to_string()));
+    }
+
+    if let Some(block) = claimant_touched {
+        advance_gateway_checkpoint(pg, GATEWAY_CLAIMANT_CHECKPOINT, block).await?;
+        summary.claimant_checkpoint_block = Some(block);
+    }
 
     for candidate in balance_candidates {
         let snapshot = read_gateway_state(
@@ -96,29 +176,15 @@ pub async fn run_gateway_backfill(
         )
         .await?;
         upsert_gateway_row(pg, &candidate, &snapshot).await?;
-        gateways.insert(candidate.gateway_address);
         summary.balance_rows_written += 1;
+        summary.balance_checkpoint_block = Some(candidate.block_number);
+        gateways.insert(candidate.gateway_address);
     }
 
-    for candidate in flow_candidates {
-        upsert_gateway_flow(pg, &candidate).await?;
-        gateways.insert(candidate.gateway_address.clone());
-        if let Some(claimant) = candidate.claimant_address.as_ref() {
-            let claimant_snapshot = read_claimant_state(
-                pg,
-                archive,
-                &cfg.static_.contracts.ticket_broker.to_lowercase(),
-                &candidate.gateway_address,
-                claimant,
-                candidate.block_number,
-            )
-            .await?;
-            upsert_gateway_claimant_row(pg, &candidate, &claimant_snapshot).await?;
-            claimants.insert((candidate.gateway_address.clone(), claimant.clone()));
-            summary.claimant_rows_written += 1;
-        }
-        summary.flow_rows_written += 1;
+    if let Some(block) = summary.balance_checkpoint_block {
+        advance_gateway_checkpoint(pg, GATEWAY_BALANCE_CHECKPOINT, block).await?;
     }
+
     summary.gateways_touched = gateways.len() as u64;
     summary.claimants_touched = claimants.len() as u64;
     info!(?summary, "gateway backfill complete");
@@ -142,9 +208,11 @@ struct ClaimantSnapshot {
     raw_call: serde_json::Value,
 }
 
-async fn fetch_balance_candidates(
+async fn fetch_balance_candidates_after(
     pg: &PgPool,
     include_tentative: bool,
+    resume_from_block: Option<i64>,
+    limit: i64,
 ) -> Result<Vec<GatewayCandidate>> {
     let finality_filter = if include_tentative {
         ""
@@ -184,10 +252,14 @@ async fn fetch_balance_candidates(
               AND g.gateway_address = l.gateway_address
               AND g.block_number = l.block_number
             WHERE g.gateway_address IS NULL
-            ORDER BY l.block_number ASC, l.gateway_address ASC"#,
+              AND ($2::bigint IS NULL OR l.block_number >= $2)
+            ORDER BY l.block_number ASC, l.gateway_address ASC
+            LIMIT $3"#,
     );
     let rows = sqlx::query(&sql)
         .bind(ARBITRUM_CHAIN_ID)
+        .bind(resume_from_block)
+        .bind(limit)
         .fetch_all(pg)
         .await?;
     Ok(rows
@@ -202,9 +274,11 @@ async fn fetch_balance_candidates(
         .collect())
 }
 
-async fn fetch_flow_candidates(
+async fn fetch_flow_candidates_after(
     pg: &PgPool,
     include_tentative: bool,
+    resume_from_block: Option<i64>,
+    limit: i64,
 ) -> Result<Vec<GatewayFlowCandidate>> {
     let finality_filter = if include_tentative {
         ""
@@ -256,6 +330,7 @@ async fn fetch_flow_candidates(
                     'Withdrawal'
               )
               {finality_filter}
+              AND ($2::bigint IS NULL OR r.block_number >= $2)
               AND NOT EXISTS (
                     SELECT 1
                       FROM gateway_flows gf
@@ -270,10 +345,98 @@ async fn fetch_flow_candidates(
                            ELSE 'other'
                        END
               )
-            ORDER BY r.block_number ASC, r.log_index ASC"#,
+            ORDER BY r.block_number ASC, r.log_index ASC
+            LIMIT $3"#,
     );
     let rows = sqlx::query(&sql)
         .bind(ARBITRUM_CHAIN_ID)
+        .bind(resume_from_block)
+        .bind(limit)
+        .fetch_all(pg)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| GatewayFlowCandidate {
+            event_id: r.get("event_id"),
+            gateway_address: r.get("gateway_address"),
+            claimant_address: r.try_get("claimant_address").ok(),
+            counterparty_address: r.try_get("counterparty_address").ok(),
+            event_name: r.get("event_name"),
+            flow_kind: r.get("flow_kind"),
+            block_number: r.get("block_number"),
+            block_timestamp: r.get("block_timestamp"),
+            tx_hash: r.get("tx_hash"),
+            log_index: r.get("log_index"),
+            asset: r.try_get("asset").ok(),
+            amount_native: r.try_get("amount_normalized").ok(),
+            amount_usd: r.try_get("amount_usd").ok(),
+            valuation_version: r.try_get("valuation_version").ok(),
+            block_hash: r.get("block_hash"),
+        })
+        .collect())
+}
+
+async fn fetch_claimant_candidates_after(
+    pg: &PgPool,
+    include_tentative: bool,
+    resume_from_block: Option<i64>,
+    limit: i64,
+) -> Result<Vec<GatewayFlowCandidate>> {
+    let finality_filter = if include_tentative {
+        ""
+    } else {
+        "AND r.finality = 'finalized'"
+    };
+    let sql = format!(
+        r#"SELECT r.id AS event_id,
+                  r.from_address AS gateway_address,
+                  r.to_address AS claimant_address,
+                  r.to_address AS counterparty_address,
+                  r.event_name,
+                  CASE
+                      WHEN r.event_name = 'WinningTicketTransfer' THEN 'reserve_transfer'
+                      WHEN r.event_name = 'WinningTicketRedeemed' THEN 'ticket_redeemed'
+                      WHEN r.event_name = 'ReserveClaimed' THEN 'reserve_claimed'
+                      ELSE 'other'
+                  END AS flow_kind,
+                  r.block_number,
+                  r.block_timestamp,
+                  r.tx_hash,
+                  r.log_index,
+                  r.asset,
+                  r.amount_normalized,
+                  v.amount_usd,
+                  v.valuation_version,
+                  r.block_hash
+             FROM raw_protocol_events r
+             LEFT JOIN event_valuations v
+               ON v.event_id = r.id
+              AND v.status = 'priced'
+             LEFT JOIN gateway_claimants_by_block gc
+               ON gc.chain_id = $1
+              AND gc.gateway_address = r.from_address
+              AND gc.claimant_address = r.to_address
+              AND gc.block_number = r.block_number
+            WHERE r.chain_id = $1
+              AND r.is_canonical = TRUE
+              AND r.contract_name = 'TicketBroker'
+              AND r.from_address IS NOT NULL
+              AND r.to_address IS NOT NULL
+              AND r.event_name IN (
+                    'WinningTicketTransfer',
+                    'WinningTicketRedeemed',
+                    'ReserveClaimed'
+              )
+              {finality_filter}
+              AND ($2::bigint IS NULL OR r.block_number >= $2)
+              AND gc.gateway_address IS NULL
+            ORDER BY r.block_number ASC, r.log_index ASC
+            LIMIT $3"#,
+    );
+    let rows = sqlx::query(&sql)
+        .bind(ARBITRUM_CHAIN_ID)
+        .bind(resume_from_block)
+        .bind(limit)
         .fetch_all(pg)
         .await?;
     Ok(rows
@@ -583,4 +746,30 @@ fn decode_hex_result(bytes: &[u8]) -> Result<Vec<u8>> {
 fn u256_to_decimal(u: &U256, decimals: u32) -> BigDecimal {
     let raw = BigDecimal::from_str(&u.to_string()).unwrap_or_default();
     raw / BigDecimal::from(10u128.pow(decimals))
+}
+
+async fn load_gateway_checkpoint(pg: &PgPool, name: &str) -> Result<Option<i64>> {
+    let block = sqlx::query_scalar::<_, i64>(
+        "SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1",
+    )
+    .bind(name)
+    .fetch_optional(pg)
+    .await?;
+    Ok(block)
+}
+
+async fn advance_gateway_checkpoint(pg: &PgPool, name: &str, block: i64) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO indexer_checkpoints (name, chain_id, last_processed_block, updated_at)
+           VALUES ($1, $2, $3, now())
+           ON CONFLICT (name) DO UPDATE
+              SET last_processed_block = GREATEST(indexer_checkpoints.last_processed_block, EXCLUDED.last_processed_block),
+                  updated_at = now()"#,
+    )
+    .bind(name)
+    .bind(ARBITRUM_CHAIN_ID)
+    .bind(block)
+    .execute(pg)
+    .await?;
+    Ok(())
 }

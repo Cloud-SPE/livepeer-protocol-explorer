@@ -226,3 +226,9 @@ operators and callers can tell whether a response came from:
   `gateway_flows` and claimant writes are implemented, but the monolithic
   balance-first replay shape starves them operationally during long historical
   runs.
+- 2026-05-05: Code-prep landed locally for bounded gateway phases with
+  independent checkpoint keys under `indexer_checkpoints`
+  (`gateway_flow_backfill`, `gateway_claimant_backfill`,
+  `gateway_balance_backfill`). The refactor compiles, but has not been applied
+  to the running local runtime while the separate Governor repair backfill is in
+  progress.

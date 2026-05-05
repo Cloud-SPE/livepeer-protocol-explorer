@@ -85,7 +85,10 @@ pub async fn run_cross_check(pg: &PgPool, sqlite: &SqlitePool) -> Result<CrossCh
         let block_hash: String = r.get(3);
         indexer_map.insert(
             (tx.to_lowercase(), log_index),
-            LogValue { block_number, block_hash: block_hash.to_lowercase() },
+            LogValue {
+                block_number,
+                block_hash: block_hash.to_lowercase(),
+            },
         );
     }
     let indexer_event_count = indexer_map.len() as u64;
@@ -112,14 +115,28 @@ pub async fn run_cross_check(pg: &PgPool, sqlite: &SqlitePool) -> Result<CrossCh
         let log_index_hex: Option<String> = r.try_get(1).ok();
         let block_number_hex: Option<String> = r.try_get(2).ok();
         let block_hash: Option<String> = r.try_get(3).ok();
-        let Some(log_index_hex) = log_index_hex else { continue };
-        let Some(block_number_hex) = block_number_hex else { continue };
-        let Some(block_hash) = block_hash else { continue };
-        let Ok(log_index) = i32::from_str_radix(log_index_hex.trim_start_matches("0x"), 16) else { continue };
-        let Ok(block_number) = i64::from_str_radix(block_number_hex.trim_start_matches("0x"), 16) else { continue };
+        let Some(log_index_hex) = log_index_hex else {
+            continue;
+        };
+        let Some(block_number_hex) = block_number_hex else {
+            continue;
+        };
+        let Some(block_hash) = block_hash else {
+            continue;
+        };
+        let Ok(log_index) = i32::from_str_radix(log_index_hex.trim_start_matches("0x"), 16) else {
+            continue;
+        };
+        let Ok(block_number) = i64::from_str_radix(block_number_hex.trim_start_matches("0x"), 16)
+        else {
+            continue;
+        };
         seed_map.insert(
             (tx.to_lowercase(), log_index),
-            LogValue { block_number, block_hash: block_hash.to_lowercase() },
+            LogValue {
+                block_number,
+                block_hash: block_hash.to_lowercase(),
+            },
         );
     }
     let seed_event_count_in_window = seed_map.len() as u64;
@@ -139,14 +156,25 @@ pub async fn run_cross_check(pg: &PgPool, sqlite: &SqlitePool) -> Result<CrossCh
                 let mut matched = true;
                 if seed_v.block_number != idx_v.block_number {
                     report.block_number_mismatches += 1;
-                    push_sample(&mut report.samples.block_number_mismatches,
-                        format!("{label}: seed_block={} indexer_block={}", seed_v.block_number, idx_v.block_number));
+                    push_sample(
+                        &mut report.samples.block_number_mismatches,
+                        format!(
+                            "{label}: seed_block={} indexer_block={}",
+                            seed_v.block_number, idx_v.block_number
+                        ),
+                    );
                     matched = false;
                 }
                 if seed_v.block_hash != idx_v.block_hash {
                     report.block_hash_mismatches += 1;
-                    push_sample(&mut report.samples.block_hash_mismatches,
-                        format!("{label}: seed_hash={} indexer_hash={}", &seed_v.block_hash[..10], &idx_v.block_hash[..10]));
+                    push_sample(
+                        &mut report.samples.block_hash_mismatches,
+                        format!(
+                            "{label}: seed_hash={} indexer_hash={}",
+                            &seed_v.block_hash[..10],
+                            &idx_v.block_hash[..10]
+                        ),
+                    );
                     matched = false;
                 }
                 if matched {
@@ -163,7 +191,10 @@ pub async fn run_cross_check(pg: &PgPool, sqlite: &SqlitePool) -> Result<CrossCh
     for (key, _) in &seed_map {
         if !indexer_map.contains_key(key) {
             report.missing_in_indexer += 1;
-            push_sample(&mut report.samples.missing_in_indexer, format!("{}#{}", key.0, key.1));
+            push_sample(
+                &mut report.samples.missing_in_indexer,
+                format!("{}#{}", key.0, key.1),
+            );
         }
     }
 

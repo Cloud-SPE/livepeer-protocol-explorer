@@ -20,21 +20,16 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
 use livepeer_finality_watcher::runner;
-use livepeer_core::{
-    config::Config,
-    db,
-    rpc::Provider,
-    tracing_init,
-};
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{error, info};
 
 const SERVICE: &str = "livepeer-finality-watcher";
-const POSTING_LAG_SECS: i64 = 600;            // ~10 min — typical Arbitrum batch-posting cadence
-const FINALITY_SAFETY_MARGIN_SECS: i64 = 60;  // 1 min past L1 finalized timestamp
-const CADENCE_SECS: u64 = 60;                 // L1 advances slowly; no need to poll fast
+const POSTING_LAG_SECS: i64 = 600; // ~10 min — typical Arbitrum batch-posting cadence
+const FINALITY_SAFETY_MARGIN_SECS: i64 = 60; // 1 min past L1 finalized timestamp
+const CADENCE_SECS: u64 = 60; // L1 advances slowly; no need to poll fast
 
 #[derive(Parser, Debug)]
 #[command(name = SERVICE, about = "Drives raw_protocol_events.finality through tentative → l1_posted → finalized.")]

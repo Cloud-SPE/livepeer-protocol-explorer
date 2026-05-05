@@ -1,8 +1,8 @@
 use crate::metrics::Metrics;
 use crate::rpc_manager::RpcManager;
 use anyhow::{bail, Result};
-use livepeer_core::Config;
 use livepeer_core::rpc::{with_rpc_task_label, Provider};
+use livepeer_core::Config;
 use livepeer_finality_watcher::runner as finality_runner;
 use livepeer_indexer::{backfill::ContractKind, runner as indexer_runner};
 use livepeer_reorg_watcher::runner as reorg_runner;
@@ -39,7 +39,10 @@ pub async fn run_follow(
     let head = rpc.archive.eth_block_number().await?;
     metrics.chain_head_block.set(head as i64);
     let lag = current_indexer_lag(pg, head).await?;
-    metrics.task_lag_blocks.with_label_values(&["indexer"]).set(lag as i64);
+    metrics
+        .task_lag_blocks
+        .with_label_values(&["indexer"])
+        .set(lag as i64);
     for task in ["indexer", "finality", "reorg", "valuator", "staker"] {
         update_task_rpc_metrics(&metrics, task);
     }
@@ -49,7 +52,12 @@ pub async fn run_follow(
             follow.max_start_lag_blocks
         );
     }
-    info!(head, lag, max_start_lag_blocks = follow.max_start_lag_blocks, "follow-mode startup gate passed");
+    info!(
+        head,
+        lag,
+        max_start_lag_blocks = follow.max_start_lag_blocks,
+        "follow-mode startup gate passed"
+    );
 
     let shutdown = Arc::new(Notify::new());
     tokio::spawn({
@@ -139,11 +147,19 @@ async fn indexer_loop(
             ContractKind::RoundsManager,
             ContractKind::Governor,
         ] {
-            let from_block = livepeer_indexer::backfill::resume_from(&pg, contract, "", cfg.static_.chain.livepeer_arbitrum_genesis_block).await?;
+            let from_block = livepeer_indexer::backfill::resume_from(
+                &pg,
+                contract,
+                "",
+                cfg.static_.chain.livepeer_arbitrum_genesis_block,
+            )
+            .await?;
             if from_block > to_block {
                 continue;
             }
-            let bounded_to = from_block.saturating_add(INDEXER_PER_TICK_BLOCKS - 1).min(to_block);
+            let bounded_to = from_block
+                .saturating_add(INDEXER_PER_TICK_BLOCKS - 1)
+                .min(to_block);
             let result = with_rpc_task_label(
                 "indexer",
                 indexer_runner::run_backfill(
@@ -203,7 +219,12 @@ async fn finality_loop(
         }
         let started = std::time::Instant::now();
         update_task_rpc_metrics(&metrics, "finality");
-        let summary = match with_rpc_task_label("finality", finality_runner::run_once(&pg, l1.as_ref())).await {
+        let summary = match with_rpc_task_label(
+            "finality",
+            finality_runner::run_once(&pg, l1.as_ref()),
+        )
+        .await
+        {
             Ok(summary) => summary,
             Err(e) => {
                 metrics.record_failure("finality", &e, started.elapsed().as_secs_f64());
@@ -230,13 +251,16 @@ async fn reorg_loop(
         }
         let started = std::time::Instant::now();
         update_task_rpc_metrics(&metrics, "reorg");
-        let summary = match with_rpc_task_label("reorg", reorg_runner::run_once(&pg, secondary.as_ref())).await {
-            Ok(summary) => summary,
-            Err(e) => {
-                metrics.record_failure("reorg", &e, started.elapsed().as_secs_f64());
-                return Err(e);
-            }
-        };
+        let summary =
+            match with_rpc_task_label("reorg", reorg_runner::run_once(&pg, secondary.as_ref()))
+                .await
+            {
+                Ok(summary) => summary,
+                Err(e) => {
+                    metrics.record_failure("reorg", &e, started.elapsed().as_secs_f64());
+                    return Err(e);
+                }
+            };
         if summary.divergences > 0 {
             metrics
                 .reorgs_detected_total

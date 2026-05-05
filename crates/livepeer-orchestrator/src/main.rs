@@ -4,7 +4,12 @@ mod reset;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use livepeer_core::{config::Config, db, rpc::{cache, Provider}, tracing_init};
+use livepeer_core::{
+    config::Config,
+    db,
+    rpc::{cache, Provider},
+    tracing_init,
+};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -13,10 +18,20 @@ const SERVICE: &str = "livepeer-orchestrator";
 #[derive(Parser, Debug)]
 #[command(name = SERVICE, about = "Bounded orchestration for bootstrap and replay flows.")]
 struct Cli {
-    #[arg(long, env = "STATIC_CONFIG", default_value = "config/arbitrum.yaml", global = true)]
+    #[arg(
+        long,
+        env = "STATIC_CONFIG",
+        default_value = "config/arbitrum.yaml",
+        global = true
+    )]
     static_config: PathBuf,
 
-    #[arg(long, env = "ENV_CONFIG", default_value = "config/env/dev.yaml", global = true)]
+    #[arg(
+        long,
+        env = "ENV_CONFIG",
+        default_value = "config/env/dev.yaml",
+        global = true
+    )]
     env_config: PathBuf,
 
     #[command(subcommand)]
@@ -85,7 +100,10 @@ async fn main() -> Result<()> {
     )
     .await
     .context("connecting to Postgres")?;
-    let archive = Provider::new("chainstack", cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?)?;
+    let archive = Provider::new(
+        "chainstack",
+        cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
+    )?;
     let l1 = match cfg.env.l1.as_ref() {
         Some(l1_cfg) => {
             let l1_url = std::env::var(l1_cfg.url_env.as_str())

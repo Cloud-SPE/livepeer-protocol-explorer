@@ -11,13 +11,48 @@ use std::path::Path;
 pub async fn seed_abi_registry(pg: &PgPool, abi_dir: &Path, cfg: &Config) -> Result<()> {
     let genesis = cfg.static_.chain.livepeer_arbitrum_genesis_block as i64;
     let entries: &[(&str, &str, &str, bool)] = &[
-        ("Controller",     &cfg.static_.contracts.controller,      "Controller.json",       false),
-        ("BondingManager", &cfg.static_.contracts.bonding_manager, "BondingManager.json",   true),
-        ("TicketBroker",   &cfg.static_.contracts.ticket_broker,   "TicketBroker.json",     true),
-        ("RoundsManager",  &cfg.static_.contracts.rounds_manager,  "RoundsManager.json",    false),
-        ("LivepeerToken",  &cfg.static_.contracts.livepeer_token,  "LivepeerToken.json",    true),
-        ("Minter",         &cfg.static_.contracts.minter,          "Minter.json",           false),
-        ("Governor",       &cfg.static_.contracts.governor,        "LivepeerGovernor.json", false),
+        (
+            "Controller",
+            &cfg.static_.contracts.controller,
+            "Controller.json",
+            false,
+        ),
+        (
+            "BondingManager",
+            &cfg.static_.contracts.bonding_manager,
+            "BondingManager.json",
+            true,
+        ),
+        (
+            "TicketBroker",
+            &cfg.static_.contracts.ticket_broker,
+            "TicketBroker.json",
+            true,
+        ),
+        (
+            "RoundsManager",
+            &cfg.static_.contracts.rounds_manager,
+            "RoundsManager.json",
+            false,
+        ),
+        (
+            "LivepeerToken",
+            &cfg.static_.contracts.livepeer_token,
+            "LivepeerToken.json",
+            true,
+        ),
+        (
+            "Minter",
+            &cfg.static_.contracts.minter,
+            "Minter.json",
+            false,
+        ),
+        (
+            "Governor",
+            &cfg.static_.contracts.governor,
+            "LivepeerGovernor.json",
+            false,
+        ),
     ];
     for (name, proxy, fname, strict) in entries {
         let abi_path = abi_dir.join(fname);

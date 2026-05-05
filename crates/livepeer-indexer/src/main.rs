@@ -10,10 +10,20 @@ const SERVICE: &str = "livepeer-indexer";
 #[derive(Parser, Debug)]
 #[command(name = SERVICE, about = "Pulls logs from RPC, decodes against the ABI registry, writes raw_protocol_events.")]
 struct Cli {
-    #[arg(long, env = "STATIC_CONFIG", default_value = "config/arbitrum.yaml", global = true)]
+    #[arg(
+        long,
+        env = "STATIC_CONFIG",
+        default_value = "config/arbitrum.yaml",
+        global = true
+    )]
     static_config: PathBuf,
 
-    #[arg(long, env = "ENV_CONFIG", default_value = "config/env/dev.yaml", global = true)]
+    #[arg(
+        long,
+        env = "ENV_CONFIG",
+        default_value = "config/env/dev.yaml",
+        global = true
+    )]
     env_config: PathBuf,
 
     #[command(subcommand)]
@@ -101,7 +111,10 @@ async fn main() -> Result<()> {
                 );
             }
             if actual_from > to_block {
-                info!(actual_from, to_block, "checkpoint already past target — nothing to do");
+                info!(
+                    actual_from,
+                    to_block, "checkpoint already past target — nothing to do"
+                );
                 return Ok(());
             }
 

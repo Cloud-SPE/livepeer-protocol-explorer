@@ -103,7 +103,11 @@ pub async fn refresh_pending(
 ) -> Result<PendingSummary> {
     let reconciled_rows = reconcile_exact_stake_rows(pg, archive, bonding_manager).await?;
 
-    let finality = if include_tentative { "" } else { "AND finality = 'finalized'" };
+    let finality = if include_tentative {
+        ""
+    } else {
+        "AND finality = 'finalized'"
+    };
     let sql = format!(
         r#"SELECT id, block_number, block_timestamp, from_address,
                   raw_event -> 'decoded' ->> 'endRound' AS end_round
@@ -153,36 +157,94 @@ pub async fn refresh_pending(
         let delegator_lower = delegator.to_lowercase();
         let delegator_addr = match Address::from_str(&delegator_lower) {
             Ok(a) => a,
-            Err(_) => { summary.failed_decode += 1; continue; }
+            Err(_) => {
+                summary.failed_decode += 1;
+                continue;
+            }
         };
         let end_round = match U256::from_str(&end_round_str) {
             Ok(n) => n,
-            Err(_) => { summary.failed_decode += 1; continue; }
+            Err(_) => {
+                summary.failed_decode += 1;
+                continue;
+            }
         };
-        let (stake_params, stake_hash) = call_for(bonding_manager, "pendingStake", delegator_addr, end_round, block_number);
-        let (fees_params, fees_hash)   = call_for(bonding_manager, "pendingFees",   delegator_addr, end_round, block_number);
+        let (stake_params, stake_hash) = call_for(
+            bonding_manager,
+            "pendingStake",
+            delegator_addr,
+            end_round,
+            block_number,
+        );
+        let (fees_params, fees_hash) = call_for(
+            bonding_manager,
+            "pendingFees",
+            delegator_addr,
+            end_round,
+            block_number,
+        );
         all_hashes.push(stake_hash.clone());
         all_hashes.push(fees_hash.clone());
         events.push(Event {
-            event_id, block_number, delegator_lower, delegator_addr, end_round, end_round_str,
-            stake_hash, stake_params, fees_hash, fees_params,
+            event_id,
+            block_number,
+            delegator_lower,
+            delegator_addr,
+            end_round,
+            end_round_str,
+            stake_hash,
+            stake_params,
+            fees_hash,
+            fees_params,
         });
     }
 
     // Stage 2: bulk-fetch all cached responses in one round-trip.
     let cache_map = prefetch_cache(pg, &all_hashes).await?;
-    info!(unique_hashes = all_hashes.len(), cache_hits = cache_map.len(), "bulk-prefetched rpc_call_cache");
+    info!(
+        unique_hashes = all_hashes.len(),
+        cache_hits = cache_map.len(),
+        "bulk-prefetched rpc_call_cache"
+    );
 
     // Stage 3: decode in-memory, fall through to single_call_cached on miss.
     let mut updates: Vec<PreparedUpdate> = Vec::with_capacity(events.len());
     for ev in &events {
-        let pending_stake = match resolve_call(&cache_map, pg, archive, "pendingStake", &ev.stake_hash, &ev.stake_params, ev.block_number).await {
+        let pending_stake = match resolve_call(
+            &cache_map,
+            pg,
+            archive,
+            "pendingStake",
+            &ev.stake_hash,
+            &ev.stake_params,
+            ev.block_number,
+        )
+        .await
+        {
             Ok(v) => v,
-            Err(e) => { warn!(event_id = ev.event_id, error = %e, "pendingStake read failed"); summary.failed_decode += 1; continue; }
+            Err(e) => {
+                warn!(event_id = ev.event_id, error = %e, "pendingStake read failed");
+                summary.failed_decode += 1;
+                continue;
+            }
         };
-        let pending_fees = match resolve_call(&cache_map, pg, archive, "pendingFees", &ev.fees_hash, &ev.fees_params, ev.block_number).await {
+        let pending_fees = match resolve_call(
+            &cache_map,
+            pg,
+            archive,
+            "pendingFees",
+            &ev.fees_hash,
+            &ev.fees_params,
+            ev.block_number,
+        )
+        .await
+        {
             Ok(v) => v,
-            Err(e) => { warn!(event_id = ev.event_id, error = %e, "pendingFees read failed"); summary.failed_decode += 1; continue; }
+            Err(e) => {
+                warn!(event_id = ev.event_id, error = %e, "pendingFees read failed");
+                summary.failed_decode += 1;
+                continue;
+            }
         };
         let pstake_lpt = u256_to_decimal(&pending_stake, LPT_DECIMALS);
         let pfees_eth = u256_to_decimal(&pending_fees, ETH_DECIMALS);
@@ -278,7 +340,10 @@ async fn reconcile_exact_stake_rows(
     .bind(ARBITRUM_CHAIN_ID)
     .fetch_all(pg)
     .await?;
-    info!(rows = rows.len(), "exact stake reconciliation starting (bulk)");
+    info!(
+        rows = rows.len(),
+        "exact stake reconciliation starting (bulk)"
+    );
 
     let mut calls: Vec<ExactStakeRpcCall> = Vec::with_capacity(rows.len());
     let mut all_hashes: Vec<String> = Vec::with_capacity(rows.len());
@@ -329,7 +394,11 @@ async fn reconcile_exact_stake_rows(
     }
 
     if !misses.is_empty() {
-        info!(misses = misses.len(), batch_size = EXACT_BATCH_SIZE, "resolving exact stake cache misses");
+        info!(
+            misses = misses.len(),
+            batch_size = EXACT_BATCH_SIZE,
+            "resolving exact stake cache misses"
+        );
         let missed_updates =
             resolve_exact_misses_batched(pg, archive, &misses, EXACT_LAYER_STALE_RETRIES).await?;
         updates.extend(missed_updates);
@@ -368,7 +437,10 @@ async fn reconcile_exact_stake_rows(
         reconciled_total += result.rows_affected();
     }
 
-    info!(reconciled_rows = reconciled_total, "exact stake reconciliation complete (bulk)");
+    info!(
+        reconciled_rows = reconciled_total,
+        "exact stake reconciliation complete (bulk)"
+    );
     Ok(reconciled_total)
 }
 
@@ -383,9 +455,17 @@ fn call_for(
     block_number: i64,
 ) -> (Value, String) {
     let calldata = if method == "pendingStake" {
-        BondingManager::pendingStakeCall { _delegator: delegator, _endRound: end_round }.abi_encode()
+        BondingManager::pendingStakeCall {
+            _delegator: delegator,
+            _endRound: end_round,
+        }
+        .abi_encode()
     } else {
-        BondingManager::pendingFeesCall { _delegator: delegator, _endRound: end_round }.abi_encode()
+        BondingManager::pendingFeesCall {
+            _delegator: delegator,
+            _endRound: end_round,
+        }
+        .abi_encode()
     };
     let data = format!("0x{}", alloy::hex::encode(calldata));
     let params = serde_json::json!([{ "to": bonding_manager, "data": data }, format!("0x{:x}", block_number as u64)]);
@@ -398,7 +478,10 @@ fn call_for_get_delegator(
     delegator: Address,
     block_number: i64,
 ) -> (Value, String) {
-    let calldata = BondingManager::getDelegatorCall { _delegator: delegator }.abi_encode();
+    let calldata = BondingManager::getDelegatorCall {
+        _delegator: delegator,
+    }
+    .abi_encode();
     let data = format!("0x{}", alloy::hex::encode(calldata));
     let params = serde_json::json!([{ "to": bonding_manager, "data": data }, format!("0x{:x}", block_number as u64)]);
     let hash = cache::compute_call_hash("eth_call", &params, Some(block_number));
@@ -414,11 +497,16 @@ async fn prefetch_cache(pg: &PgPool, hashes: &[String]) -> Result<HashMap<String
     unique.sort();
     unique.dedup();
     let unique_owned: Vec<String> = unique.into_iter().cloned().collect();
-    let rows = sqlx::query("SELECT call_hash, response_bytes FROM rpc_call_cache WHERE call_hash = ANY($1)")
-        .bind(&unique_owned)
-        .fetch_all(pg)
-        .await?;
-    Ok(rows.into_iter().map(|r| (r.get::<String, _>(0), r.get::<Vec<u8>, _>(1))).collect())
+    let rows = sqlx::query(
+        "SELECT call_hash, response_bytes FROM rpc_call_cache WHERE call_hash = ANY($1)",
+    )
+    .bind(&unique_owned)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get::<String, _>(0), r.get::<Vec<u8>, _>(1)))
+        .collect())
 }
 
 async fn resolve_call(
@@ -435,14 +523,9 @@ async fn resolve_call(
         return decode_pending(method_kind, bytes);
     }
     // Cache miss: defer to the existing cross-check flow (RPC + cache write).
-    let outcome = cross_check::single_call_cached(
-        pg,
-        archive,
-        "eth_call",
-        params,
-        Some(block_number),
-    )
-    .await?;
+    let outcome =
+        cross_check::single_call_cached(pg, archive, "eth_call", params, Some(block_number))
+            .await?;
     decode_pending(method_kind, &outcome.response_bytes)
 }
 
@@ -480,7 +563,13 @@ async fn resolve_exact_misses_batched(
         for chunk in pending_misses.chunks(EXACT_BATCH_SIZE) {
             let requests: Vec<(String, Value, Option<i64>)> = chunk
                 .iter()
-                .map(|call| ("eth_call".to_string(), call.state_params.clone(), Some(call.block_number)))
+                .map(|call| {
+                    (
+                        "eth_call".to_string(),
+                        call.state_params.clone(),
+                        Some(call.block_number),
+                    )
+                })
                 .collect();
             let results = cross_check::batch_call_cached(pg, archive, &requests).await?;
             for (call, result) in chunk.iter().zip(results.into_iter()) {
@@ -491,7 +580,8 @@ async fn resolve_exact_misses_batched(
                             delegator: call.delegator_lower.clone(),
                             block_number: call.block_number,
                             bonded_principal: u256_to_decimal(&state.bonded_amount, LPT_DECIMALS),
-                            delegate_address: format!("{:#x}", state.delegate_address).to_lowercase(),
+                            delegate_address: format!("{:#x}", state.delegate_address)
+                                .to_lowercase(),
                         });
                     }
                     Err(e) => {
@@ -516,8 +606,7 @@ async fn resolve_exact_misses_batched(
 
         warn!(
             retry_misses = retry_misses.len(),
-            retries_remaining,
-            "retrying exact stake misses after layer stale"
+            retries_remaining, "retrying exact stake misses after layer stale"
         );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         retries_remaining -= 1;

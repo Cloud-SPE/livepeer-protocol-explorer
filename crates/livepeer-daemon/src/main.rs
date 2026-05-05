@@ -6,8 +6,8 @@ mod supervisor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use livepeer_core::{config::Config, db, tracing_init};
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{error, info};
 
 const SERVICE: &str = "livepeer-daemon";
@@ -15,13 +15,28 @@ const SERVICE: &str = "livepeer-daemon";
 #[derive(Parser, Debug)]
 #[command(name = SERVICE, about = "Near-head follow-mode daemon for the Livepeer pipeline.")]
 struct Cli {
-    #[arg(long, env = "STATIC_CONFIG", default_value = "config/arbitrum.yaml", global = true)]
+    #[arg(
+        long,
+        env = "STATIC_CONFIG",
+        default_value = "config/arbitrum.yaml",
+        global = true
+    )]
     static_config: PathBuf,
 
-    #[arg(long, env = "ENV_CONFIG", default_value = "config/env/dev.yaml", global = true)]
+    #[arg(
+        long,
+        env = "ENV_CONFIG",
+        default_value = "config/env/dev.yaml",
+        global = true
+    )]
     env_config: PathBuf,
 
-    #[arg(long, env = "DAEMON_METRICS_BIND", default_value = "0.0.0.0:9107", global = true)]
+    #[arg(
+        long,
+        env = "DAEMON_METRICS_BIND",
+        default_value = "0.0.0.0:9107",
+        global = true
+    )]
     metrics_bind: String,
 
     #[command(subcommand)]
@@ -71,7 +86,8 @@ async fn main() -> Result<()> {
             version,
             include_tentative,
         } => {
-            let version = version.unwrap_or_else(|| cfg.static_.pricing.default_valuation_version.clone());
+            let version =
+                version.unwrap_or_else(|| cfg.static_.pricing.default_valuation_version.clone());
             let rpc = rpc_manager::RpcManager::new(&cfg).await?;
             supervisor::run_follow(
                 &pg,

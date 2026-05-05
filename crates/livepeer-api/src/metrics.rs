@@ -16,14 +16,20 @@ impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
         let api_requests_total = IntCounterVec::new(
-            opts!("api_requests_total", "Total HTTP requests served, labeled by route and status group"),
+            opts!(
+                "api_requests_total",
+                "Total HTTP requests served, labeled by route and status group"
+            ),
             &["route", "status"],
         )
         .expect("metric construction");
         registry
             .register(Box::new(api_requests_total.clone()))
             .expect("metric registration");
-        Self { registry, api_requests_total }
+        Self {
+            registry,
+            api_requests_total,
+        }
     }
 }
 

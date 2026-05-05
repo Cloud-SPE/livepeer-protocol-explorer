@@ -15,7 +15,12 @@ pub const MAX_TICK: i32 = 887_272;
 /// bits during squaring; truncation to uint160 is the Solidity quirk we don't need.
 pub fn get_sqrt_ratio_at_tick(tick: i32) -> Result<U256> {
     if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-        return Err(anyhow!("tick {} out of range [{}, {}]", tick, MIN_TICK, MAX_TICK));
+        return Err(anyhow!(
+            "tick {} out of range [{}, {}]",
+            tick,
+            MIN_TICK,
+            MAX_TICK
+        ));
     }
     let abs_tick: u32 = tick.unsigned_abs();
 
@@ -34,21 +39,21 @@ pub fn get_sqrt_ratio_at_tick(tick: i32) -> Result<U256> {
             }
         };
     }
-    step!(0x2,     "fff97272373d413259a46990580e213a");
-    step!(0x4,     "fff2e50f5f656932ef12357cf3c7fdcc");
-    step!(0x8,     "ffe5caca7e10e4e61c3624eaa0941cd0");
-    step!(0x10,    "ffcb9843d60f6159c9db58835c926644");
-    step!(0x20,    "ff973b41fa98c081472e6896dfb254c0");
-    step!(0x40,    "ff2ea16466c96a3843ec78b326b52861");
-    step!(0x80,    "fe5dee046a99a2a811c461f1969c3053");
-    step!(0x100,   "fcbe86c7900a88aedcffc83b479aa3a4");
-    step!(0x200,   "f987a7253ac413176f2b074cf7815e54");
-    step!(0x400,   "f3392b0822b70005940c7a398e4b70f3");
-    step!(0x800,   "e7159475a2c29b7443b29c7fa6e889d9");
-    step!(0x1000,  "d097f3bdfd2022b8845ad8f792aa5825");
-    step!(0x2000,  "a9f746462d870fdf8a65dc1f90e061e5");
-    step!(0x4000,  "70d869a156d2a1b890bb3df62baf32f7");
-    step!(0x8000,  "31be135f97d08fd981231505542fcfa6");
+    step!(0x2, "fff97272373d413259a46990580e213a");
+    step!(0x4, "fff2e50f5f656932ef12357cf3c7fdcc");
+    step!(0x8, "ffe5caca7e10e4e61c3624eaa0941cd0");
+    step!(0x10, "ffcb9843d60f6159c9db58835c926644");
+    step!(0x20, "ff973b41fa98c081472e6896dfb254c0");
+    step!(0x40, "ff2ea16466c96a3843ec78b326b52861");
+    step!(0x80, "fe5dee046a99a2a811c461f1969c3053");
+    step!(0x100, "fcbe86c7900a88aedcffc83b479aa3a4");
+    step!(0x200, "f987a7253ac413176f2b074cf7815e54");
+    step!(0x400, "f3392b0822b70005940c7a398e4b70f3");
+    step!(0x800, "e7159475a2c29b7443b29c7fa6e889d9");
+    step!(0x1000, "d097f3bdfd2022b8845ad8f792aa5825");
+    step!(0x2000, "a9f746462d870fdf8a65dc1f90e061e5");
+    step!(0x4000, "70d869a156d2a1b890bb3df62baf32f7");
+    step!(0x8000, "31be135f97d08fd981231505542fcfa6");
     step!(0x10000, "9aa508b5b7a84e1c677de54f3e99bc9");
     step!(0x20000, "5d6af8dedb81196699c329225ee604");
     step!(0x40000, "2216e584f5fa1ea926041bedfe98");
@@ -78,7 +83,9 @@ fn mul_shr_128(a: U256, b: U256) -> U256 {
     // Simpler: every Uniswap step has both factors < 2^128, so a × b < 2^256 fits in
     // U256 without overflow. We rely on that invariant. (The init `ratio` is < 2^128
     // and every constant is < 2^128, so after each step the result is again < 2^128.)
-    let prod = a.checked_mul(b).expect("TickMath multiply overflow — invariant violated");
+    let prod = a
+        .checked_mul(b)
+        .expect("TickMath multiply overflow — invariant violated");
     prod >> 128
 }
 
@@ -134,6 +141,10 @@ mod tests {
         let r = get_sqrt_ratio_at_tick(-69894).unwrap();
         let s = r.to_string();
         // Length of the decimal string for ~2.398e27 is 28 digits.
-        assert!(s.len() >= 27 && s.len() <= 29, "unexpected magnitude: {}", s);
+        assert!(
+            s.len() >= 27 && s.len() <= 29,
+            "unexpected magnitude: {}",
+            s
+        );
     }
 }

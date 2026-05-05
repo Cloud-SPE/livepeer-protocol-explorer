@@ -5,7 +5,10 @@
 //! a `bucket` parameter.
 
 use crate::{error::ApiError, state::AppState};
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -69,7 +72,11 @@ pub async fn events(
 ) -> Result<Json<AggregationsResponse>, ApiError> {
     let bucket = match q.bucket.as_str() {
         "day" | "week" | "month" => q.bucket.as_str(),
-        other => return Err(ApiError::bad_request(format!("invalid bucket {other:?}; use day | week | month"))),
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "invalid bucket {other:?}; use day | week | month"
+            )))
+        }
     };
     let metric = match q.metric.as_str() {
         "count" | "sum_amount_native" | "sum_amount_usd" | "avg_amount_usd" => q.metric.as_str(),
@@ -78,8 +85,10 @@ pub async fn events(
         ))),
     };
     let tz = q.tz.clone().unwrap_or_else(|| "UTC".to_string());
-    let needs_valuations =
-        matches!(metric, "sum_amount_native" | "sum_amount_usd" | "avg_amount_usd");
+    let needs_valuations = matches!(
+        metric,
+        "sum_amount_native" | "sum_amount_usd" | "avg_amount_usd"
+    );
 
     let (from_block_opt, from_ts_opt) = parse_from_to(q.from.as_deref())?;
     let (to_block_opt, to_ts_opt) = parse_from_to(q.to.as_deref())?;
@@ -101,13 +110,28 @@ pub async fn events(
             }
         };
     }
-    filter!(q.contract.clone().map(Bind::Str), "r.contract_name = ${idx}");
+    filter!(
+        q.contract.clone().map(Bind::Str),
+        "r.contract_name = ${idx}"
+    );
     filter!(q.event_name.clone().map(Bind::Str), "r.event_name = ${idx}");
-    filter!(q.asset.clone().map(|s| Bind::Str(s.to_uppercase())), "r.asset = ${idx}");
-    filter!(q.from_address.clone().map(|s| Bind::Str(s.to_lowercase())), "r.from_address = ${idx}");
-    filter!(q.to_address.clone().map(|s| Bind::Str(s.to_lowercase())), "r.to_address = ${idx}");
+    filter!(
+        q.asset.clone().map(|s| Bind::Str(s.to_uppercase())),
+        "r.asset = ${idx}"
+    );
+    filter!(
+        q.from_address.clone().map(|s| Bind::Str(s.to_lowercase())),
+        "r.from_address = ${idx}"
+    );
+    filter!(
+        q.to_address.clone().map(|s| Bind::Str(s.to_lowercase())),
+        "r.to_address = ${idx}"
+    );
     if let Some(addr) = q.address.as_ref() {
-        where_clauses.push(format!("(r.from_address = ${idx} OR r.to_address = ${idx})", idx = idx));
+        where_clauses.push(format!(
+            "(r.from_address = ${idx} OR r.to_address = ${idx})",
+            idx = idx
+        ));
         binds.push(Bind::Str(addr.to_lowercase()));
         idx += 1;
     }
@@ -187,7 +211,11 @@ pub async fn events(
         .map(|r| BucketRow {
             bucket_start: r.get(0),
             count: r.get(1),
-            value: if metric == "count" { None } else { Some(r.get(2)) },
+            value: if metric == "count" {
+                None
+            } else {
+                Some(r.get(2))
+            },
         })
         .collect();
 
@@ -196,7 +224,10 @@ pub async fn events(
         tz,
         metric: metric.to_string(),
         valuation_version: if needs_valuations {
-            Some(q.valuation_version.unwrap_or_else(|| state.default_version.clone()))
+            Some(
+                q.valuation_version
+                    .unwrap_or_else(|| state.default_version.clone()),
+            )
         } else {
             None
         },
@@ -217,8 +248,11 @@ fn parse_from_to(s: Option<&str>) -> Result<(Option<i64>, Option<DateTime<Utc>>)
     if let Ok(n) = s.parse::<i64>() {
         return Ok((Some(n), None));
     }
-    let d = NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|_| ApiError::bad_request(format!("invalid from/to: {s:?}; use YYYY-MM-DD or a block number")))?;
+    let d = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+        ApiError::bad_request(format!(
+            "invalid from/to: {s:?}; use YYYY-MM-DD or a block number"
+        ))
+    })?;
     let ts = d
         .and_hms_opt(0, 0, 0)
         .ok_or_else(|| ApiError::bad_request("invalid date"))?

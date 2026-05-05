@@ -104,7 +104,9 @@ async fn l1_block_timestamp(l1: &Provider, tag: BlockTag) -> Result<i64> {
 }
 
 async fn l1_block_timestamp_str(l1: &Provider, tag: &str) -> Result<i64> {
-    let v = l1.call("eth_getBlockByNumber", &serde_json::json!([tag, false])).await?;
+    let v = l1
+        .call("eth_getBlockByNumber", &serde_json::json!([tag, false]))
+        .await?;
     let ts_hex = v
         .get("timestamp")
         .and_then(|v| v.as_str())
@@ -136,11 +138,9 @@ async fn persist_replay_inputs(pg: &PgPool, latest_ts: i64, finalized_ts: i64) -
 }
 
 async fn replay_input(pg: &PgPool, name: &str) -> Result<i64> {
-    sqlx::query_scalar(
-        "SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1",
-    )
-    .bind(name)
-    .fetch_optional(pg)
-    .await?
-    .with_context(|| format!("missing replay finality input checkpoint {name}"))
+    sqlx::query_scalar("SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1")
+        .bind(name)
+        .fetch_optional(pg)
+        .await?
+        .with_context(|| format!("missing replay finality input checkpoint {name}"))
 }

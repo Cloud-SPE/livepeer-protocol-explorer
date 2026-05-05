@@ -86,7 +86,9 @@ pub struct ValuationInline {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "Paginated event list response with an opaque cursor and finality watermark.")]
+#[schema(
+    description = "Paginated event list response with an opaque cursor and finality watermark."
+)]
 pub struct EventListResponse {
     pub data: Vec<EventRow>,
     pub next_cursor: Option<String>,

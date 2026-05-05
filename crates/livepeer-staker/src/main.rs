@@ -10,9 +10,19 @@ const SERVICE: &str = "livepeer-staker";
 #[derive(Parser, Debug)]
 #[command(name = SERVICE, about = "Computes and persists delegator stake balances at event-touching blocks (Scope 2).")]
 struct Cli {
-    #[arg(long, env = "STATIC_CONFIG", default_value = "config/arbitrum.yaml", global = true)]
+    #[arg(
+        long,
+        env = "STATIC_CONFIG",
+        default_value = "config/arbitrum.yaml",
+        global = true
+    )]
     static_config: PathBuf,
-    #[arg(long, env = "ENV_CONFIG", default_value = "config/env/dev.yaml", global = true)]
+    #[arg(
+        long,
+        env = "ENV_CONFIG",
+        default_value = "config/env/dev.yaml",
+        global = true
+    )]
     env_config: PathBuf,
     /// Allow tentative events. SPEC §9.1 requires finalized in production; without
     /// a finality watcher running, all rows are tentative — this is the dev override.
@@ -64,7 +74,8 @@ async fn main() -> Result<()> {
         Command::RefreshPending => {
             let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
             let archive = Provider::new("chainstack", archive_url)?;
-            let summary = runner::run_refresh_pending(&pg, &archive, &cfg, cli.include_tentative).await?;
+            let summary =
+                runner::run_refresh_pending(&pg, &archive, &cfg, cli.include_tentative).await?;
             info!(
                 reconciled_rows = summary.reconciled_rows,
                 events_considered = summary.events_considered,

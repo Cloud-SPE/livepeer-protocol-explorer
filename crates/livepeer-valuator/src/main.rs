@@ -10,10 +10,20 @@ const SERVICE: &str = "livepeer-valuator";
 #[derive(Parser, Debug)]
 #[command(name = SERVICE, about = "Prices finalized events into event_valuations under a named valuation_version.")]
 struct Cli {
-    #[arg(long, env = "STATIC_CONFIG", default_value = "config/arbitrum.yaml", global = true)]
+    #[arg(
+        long,
+        env = "STATIC_CONFIG",
+        default_value = "config/arbitrum.yaml",
+        global = true
+    )]
     static_config: PathBuf,
 
-    #[arg(long, env = "ENV_CONFIG", default_value = "config/env/dev.yaml", global = true)]
+    #[arg(
+        long,
+        env = "ENV_CONFIG",
+        default_value = "config/env/dev.yaml",
+        global = true
+    )]
     env_config: PathBuf,
 
     /// Override the configured default valuation version.
@@ -78,7 +88,14 @@ async fn main() -> Result<()> {
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
             )?;
-            let s = runner::run_eth(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            let s = runner::run_eth(
+                &pg,
+                &archive,
+                &cfg,
+                &valuation_version,
+                cli.include_tentative,
+            )
+            .await?;
             info!(
                 events_considered = s.events_considered,
                 priced = s.priced,
@@ -93,7 +110,14 @@ async fn main() -> Result<()> {
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
             )?;
-            let s = runner::run_lpt(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            let s = runner::run_lpt(
+                &pg,
+                &archive,
+                &cfg,
+                &valuation_version,
+                cli.include_tentative,
+            )
+            .await?;
             info!(
                 events_considered = s.events_considered,
                 priced_twap = s.priced_twap,
@@ -110,7 +134,14 @@ async fn main() -> Result<()> {
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
             )?;
-            let s = runner::run_multi_asset(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            let s = runner::run_multi_asset(
+                &pg,
+                &archive,
+                &cfg,
+                &valuation_version,
+                cli.include_tentative,
+            )
+            .await?;
             info!(
                 events_considered = s.events_considered,
                 lpt_rows_priced = s.lpt_rows_priced,
@@ -126,7 +157,14 @@ async fn main() -> Result<()> {
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
             )?;
-            let all = runner::run_all(&pg, &archive, &cfg, &valuation_version, cli.include_tentative).await?;
+            let all = runner::run_all(
+                &pg,
+                &archive,
+                &cfg,
+                &valuation_version,
+                cli.include_tentative,
+            )
+            .await?;
             info!(
                 events_considered = all.seed.events_considered,
                 priced_this_run = all.seed.priced_this_run,

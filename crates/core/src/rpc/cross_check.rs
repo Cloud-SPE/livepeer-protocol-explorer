@@ -149,9 +149,7 @@ pub async fn cross_check_block_hash(
             provider: format!("{} or {}", a.name(), b.name()),
             method: "eth_getBlockByNumber".to_string(),
             code: -32000,
-            message: format!(
-                "missing .hash on block {block}: a='{hash_a}' b='{hash_b}'"
-            ),
+            message: format!("missing .hash on block {block}: a='{hash_a}' b='{hash_b}'"),
         });
     }
 
@@ -344,5 +342,8 @@ pub async fn batch_call_cached(
     }
 
     // Unwrap — every position has been filled either from cache or batch.
-    Ok(outcomes.into_iter().map(|o| o.expect("all positions filled")).collect())
+    Ok(outcomes
+        .into_iter()
+        .map(|o| o.expect("all positions filled"))
+        .collect())
 }

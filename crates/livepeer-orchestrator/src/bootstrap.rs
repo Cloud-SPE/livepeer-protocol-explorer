@@ -1,4 +1,4 @@
-use crate::{run_migrations, resolve_to_block, Runtime};
+use crate::{resolve_to_block, run_migrations, Runtime};
 use anyhow::{Context, Result};
 use livepeer_indexer::{backfill::ContractKind, runner as indexer_runner};
 use livepeer_seed_migrator::runner as seed_runner;

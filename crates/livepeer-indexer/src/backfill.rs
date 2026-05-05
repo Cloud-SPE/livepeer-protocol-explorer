@@ -30,8 +30,8 @@ use crate::events::LivepeerToken::{self, Burn, Mint, Transfer};
 use crate::events::RoundsManager::{self, NewRound};
 // TicketBroker emits "Withdrawal" (full deposit + reserve drain) — not "Withdraw".
 use crate::events::TicketBroker::{
-    self, DepositFunded, ReserveClaimed, ReserveFunded, UnlockCancelled, Withdrawal,
-    WinningTicketRedeemed, WinningTicketTransfer,
+    self, DepositFunded, ReserveClaimed, ReserveFunded, UnlockCancelled, WinningTicketRedeemed,
+    WinningTicketTransfer, Withdrawal,
 };
 use alloy::primitives::{Address, FixedBytes, LogData, B256, U256};
 use alloy::sol_types::SolEvent;
@@ -128,12 +128,11 @@ pub async fn resume_from(
     requested_from: u64,
 ) -> Result<u64> {
     let name = checkpoint_name(contract, suffix);
-    let checkpoint: Option<i64> = sqlx::query_scalar(
-        "SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1",
-    )
-    .bind(&name)
-    .fetch_optional(pg)
-    .await?;
+    let checkpoint: Option<i64> =
+        sqlx::query_scalar("SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1")
+            .bind(&name)
+            .fetch_optional(pg)
+            .await?;
     Ok(match checkpoint {
         Some(cp) if (cp as u64) >= requested_from => (cp as u64).saturating_add(1),
         _ => requested_from,
@@ -316,7 +315,11 @@ async fn backfill_chunk(
                 }
             }
             DispatchOutcome::UnknownTopic0 { topic0 } => {
-                let err = format!("topic0 0x{:x} not in known set for {}", topic0, contract.name());
+                let err = format!(
+                    "topic0 0x{:x} not in known set for {}",
+                    topic0,
+                    contract.name()
+                );
                 warn!(
                     contract = contract.name(),
                     tx_hash = %raw.transaction_hash,

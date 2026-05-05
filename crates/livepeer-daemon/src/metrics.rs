@@ -1,5 +1,7 @@
 use anyhow::Error;
-use prometheus::{opts, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry};
+use prometheus::{
+    opts, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry,
+};
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -23,7 +25,10 @@ impl Metrics {
         let registry = Registry::new();
 
         let iterations_total = IntCounterVec::new(
-            opts!("livepeer_iterations_total", "Successful daemon iterations by task"),
+            opts!(
+                "livepeer_iterations_total",
+                "Successful daemon iterations by task"
+            ),
             &["task"],
         )
         .expect("metric construction");

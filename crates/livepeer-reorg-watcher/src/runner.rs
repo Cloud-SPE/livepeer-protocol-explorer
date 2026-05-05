@@ -105,13 +105,22 @@ async fn handle_divergence(
     let level = severity_level(depth);
     match level {
         Severity::Info => {
-            info!(block_number, old_hash, new_hash, affected, "reorg detected (depth <= 2)")
+            info!(
+                block_number,
+                old_hash, new_hash, affected, "reorg detected (depth <= 2)"
+            )
         }
         Severity::Warn => {
-            warn!(block_number, old_hash, new_hash, affected, "reorg detected (depth 3-50)")
+            warn!(
+                block_number,
+                old_hash, new_hash, affected, "reorg detected (depth 3-50)"
+            )
         }
         Severity::Critical => {
-            error!(block_number, old_hash, new_hash, affected, "REORG detected (depth > 50) - CRITICAL")
+            error!(
+                block_number,
+                old_hash, new_hash, affected, "REORG detected (depth > 50) - CRITICAL"
+            )
         }
     }
     Ok(())

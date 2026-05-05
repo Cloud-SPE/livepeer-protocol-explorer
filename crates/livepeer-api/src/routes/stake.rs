@@ -6,7 +6,10 @@
 //! re-fan-out pendingStake reads (that's a v2 concern).
 
 use crate::{error::ApiError, state::AppState};
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -91,7 +94,9 @@ pub struct StakeRangeResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "Point-in-time stake row for one delegator within a transcoder's delegator set.")]
+#[schema(
+    description = "Point-in-time stake row for one delegator within a transcoder's delegator set."
+)]
 pub struct DelegatorStakeRow {
     pub delegator_address: String,
     pub delegate_address: String,
@@ -220,9 +225,18 @@ pub async fn delegators_at_block(
                 block_timestamp: r.get("block_timestamp"),
                 block_hash: r.get("block_hash"),
                 bonded_principal: bonded.to_string(),
-                pending_stake: r.try_get::<BigDecimal, _>("pending_stake").ok().map(|v| v.to_string()),
-                pending_fees: r.try_get::<BigDecimal, _>("pending_fees").ok().map(|v| v.to_string()),
-                pending_round: r.try_get::<i64, _>("pending_round").ok().map(|v| v.to_string()),
+                pending_stake: r
+                    .try_get::<BigDecimal, _>("pending_stake")
+                    .ok()
+                    .map(|v| v.to_string()),
+                pending_fees: r
+                    .try_get::<BigDecimal, _>("pending_fees")
+                    .ok()
+                    .map(|v| v.to_string()),
+                pending_round: r
+                    .try_get::<i64, _>("pending_round")
+                    .ok()
+                    .map(|v| v.to_string()),
                 source: r.get("source"),
                 staleness_blocks: (block - snap_block).to_string(),
             }
@@ -247,9 +261,18 @@ fn to_stake_row(r: &sqlx::postgres::PgRow, staleness_blocks: i64) -> StakeRow {
         block_timestamp: r.get("block_timestamp"),
         block_hash: r.get("block_hash"),
         bonded_principal: r.get::<BigDecimal, _>("bonded_principal").to_string(),
-        pending_stake: r.try_get::<BigDecimal, _>("pending_stake").ok().map(|v| v.to_string()),
-        pending_fees: r.try_get::<BigDecimal, _>("pending_fees").ok().map(|v| v.to_string()),
-        pending_round: r.try_get::<i64, _>("pending_round").ok().map(|v| v.to_string()),
+        pending_stake: r
+            .try_get::<BigDecimal, _>("pending_stake")
+            .ok()
+            .map(|v| v.to_string()),
+        pending_fees: r
+            .try_get::<BigDecimal, _>("pending_fees")
+            .ok()
+            .map(|v| v.to_string()),
+        pending_round: r
+            .try_get::<i64, _>("pending_round")
+            .ok()
+            .map(|v| v.to_string()),
         source: r.get("source"),
         staleness_blocks: staleness_blocks.to_string(),
     }

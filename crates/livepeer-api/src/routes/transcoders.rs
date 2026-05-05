@@ -29,7 +29,9 @@ pub struct HistoryQuery {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "Decoded TranscoderUpdate row describing reward-cut and fee-share policy at a block.")]
+#[schema(
+    description = "Decoded TranscoderUpdate row describing reward-cut and fee-share policy at a block."
+)]
 pub struct TranscoderParamsRow {
     pub event_id: String,
     pub transcoder_address: String,
@@ -70,7 +72,9 @@ pub struct TranscoderLifecycleHistoryResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "Point-in-time transcoder profile composed from parameter and lifecycle history.")]
+#[schema(
+    description = "Point-in-time transcoder profile composed from parameter and lifecycle history."
+)]
 pub struct TranscoderProfileResponse {
     pub transcoder_address: String,
     pub block_number: String,
@@ -254,7 +258,10 @@ pub async fn profile_at_block(
     Path((transcoder, block)): Path<(String, i64)>,
 ) -> Result<Json<TranscoderProfileResponse>, ApiError> {
     let transcoder = normalize_addr(&transcoder)?;
-    let params = load_updates(&state, &transcoder, None, Some(block), 1).await?.into_iter().next();
+    let params = load_updates(&state, &transcoder, None, Some(block), 1)
+        .await?
+        .into_iter()
+        .next();
     let lifecycle = load_lifecycle_updates(&state, &transcoder, None, Some(block), 1)
         .await?
         .into_iter()
@@ -426,7 +433,11 @@ fn decode_lifecycle(event_name: &str, raw_event: &Value) -> Result<DecodedLifecy
         let (round_key, is_active) = match event_name {
             "TranscoderActivated" => ("activationRound", true),
             "TranscoderDeactivated" => ("deactivationRound", false),
-            _ => return Err(ApiError::internal(format!("unsupported lifecycle event {event_name}"))),
+            _ => {
+                return Err(ApiError::internal(format!(
+                    "unsupported lifecycle event {event_name}"
+                )))
+            }
         };
         let round = decoded
             .get(round_key)
@@ -446,7 +457,9 @@ fn decode_lifecycle(event_name: &str, raw_event: &Value) -> Result<DecodedLifecy
     match event_name {
         "TranscoderActivated" => {
             let decoded = BondingManager::TranscoderActivated::decode_log_data(&log_data, true)
-                .map_err(|e| ApiError::internal(format!("ABI-decoding TranscoderActivated: {e}")))?;
+                .map_err(|e| {
+                    ApiError::internal(format!("ABI-decoding TranscoderActivated: {e}"))
+                })?;
             Ok(DecodedLifecycle {
                 transcoder: format!("{:#x}", decoded.transcoder).to_lowercase(),
                 round: decoded.activationRound.to_string(),
@@ -455,14 +468,18 @@ fn decode_lifecycle(event_name: &str, raw_event: &Value) -> Result<DecodedLifecy
         }
         "TranscoderDeactivated" => {
             let decoded = BondingManager::TranscoderDeactivated::decode_log_data(&log_data, true)
-                .map_err(|e| ApiError::internal(format!("ABI-decoding TranscoderDeactivated: {e}")))?;
+                .map_err(|e| {
+                ApiError::internal(format!("ABI-decoding TranscoderDeactivated: {e}"))
+            })?;
             Ok(DecodedLifecycle {
                 transcoder: format!("{:#x}", decoded.transcoder).to_lowercase(),
                 round: decoded.deactivationRound.to_string(),
                 is_active: false,
             })
         }
-        _ => Err(ApiError::internal(format!("unsupported lifecycle event {event_name}"))),
+        _ => Err(ApiError::internal(format!(
+            "unsupported lifecycle event {event_name}"
+        ))),
     }
 }
 
@@ -499,7 +516,9 @@ fn topic_for_address(addr: &str) -> Result<String, ApiError> {
 fn scaled_percent(raw: &str) -> Result<String, ApiError> {
     let n = BigDecimal::from_str(raw)
         .map_err(|e| ApiError::internal(format!("parsing percentage value: {e}")))?;
-    Ok((n / BigDecimal::from(PERCENT_DENOMINATOR)).normalized().to_string())
+    Ok((n / BigDecimal::from(PERCENT_DENOMINATOR))
+        .normalized()
+        .to_string())
 }
 
 #[derive(Debug, Deserialize)]

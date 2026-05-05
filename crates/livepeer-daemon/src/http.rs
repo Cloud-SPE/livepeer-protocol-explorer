@@ -5,7 +5,9 @@ use prometheus::{Encoder, TextEncoder};
 use std::{net::SocketAddr, sync::Arc};
 
 pub async fn serve(bind: &str, metrics: Arc<Metrics>) -> Result<()> {
-    let addr: SocketAddr = bind.parse().context("parsing daemon metrics bind address")?;
+    let addr: SocketAddr = bind
+        .parse()
+        .context("parsing daemon metrics bind address")?;
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics_handler))
@@ -28,7 +30,11 @@ async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl IntoRespon
     let mut families = metrics.registry.gather();
     families.extend(livepeer_core::rpc::metrics::gather());
     if encoder.encode(&families, &mut buf).is_err() {
-        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "encode failed").into_response();
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "encode failed",
+        )
+            .into_response();
     }
     (
         [(header::CONTENT_TYPE, encoder.format_type().to_string())],

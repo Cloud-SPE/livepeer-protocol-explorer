@@ -39,18 +39,36 @@ pub async fn verify_against_registry(
     pool: &PgPool,
     abi_dir: &Path,
 ) -> Result<Vec<AbiRegistration>> {
-    let rows: Vec<(String, String, String, i64, Option<i64>, String, String, bool)> =
-        sqlx::query_as(
-            r#"SELECT contract_name, proxy_address, target_address, from_block, to_block,
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        String,
+        String,
+        bool,
+    )> = sqlx::query_as(
+        r#"SELECT contract_name, proxy_address, target_address, from_block, to_block,
                       abi_path, abi_hash, strict_decode
                FROM contract_abi_registry
                ORDER BY contract_name, from_block"#,
-        )
-        .fetch_all(pool)
-        .await?;
+    )
+    .fetch_all(pool)
+    .await?;
 
     let mut verified = Vec::with_capacity(rows.len());
-    for (contract_name, proxy_address, target_address, from_block, to_block, abi_path, abi_hash, strict_decode) in rows {
+    for (
+        contract_name,
+        proxy_address,
+        target_address,
+        from_block,
+        to_block,
+        abi_path,
+        abi_hash,
+        strict_decode,
+    ) in rows
+    {
         let resolved: PathBuf = abi_dir.join(&abi_path);
         let actual = hash_file(&resolved)?;
         if actual != abi_hash {

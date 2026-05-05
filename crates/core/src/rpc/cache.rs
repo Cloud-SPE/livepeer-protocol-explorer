@@ -76,10 +76,7 @@ pub async fn store(
     Ok(())
 }
 
-pub async fn get(
-    pool: &PgPool,
-    call_hash: &str,
-) -> Result<Option<(Vec<u8>, String, String)>> {
+pub async fn get(pool: &PgPool, call_hash: &str) -> Result<Option<(Vec<u8>, String, String)>> {
     let row: Option<(Vec<u8>, String, String)> = sqlx::query_as(
         "SELECT response_bytes, response_hash, provider FROM rpc_call_cache WHERE call_hash = $1",
     )

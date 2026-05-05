@@ -31,13 +31,12 @@ pub async fn run_backfill(
     }
     .to_lowercase();
 
-    let abi_hash: String = sqlx::query_scalar(
-        "SELECT abi_hash FROM contract_abi_registry WHERE contract_name = $1",
-    )
-    .bind(contract.name())
-    .fetch_one(pg)
-    .await
-    .with_context(|| format!("loading {} abi_hash from registry", contract.name()))?;
+    let abi_hash: String =
+        sqlx::query_scalar("SELECT abi_hash FROM contract_abi_registry WHERE contract_name = $1")
+            .bind(contract.name())
+            .fetch_one(pg)
+            .await
+            .with_context(|| format!("loading {} abi_hash from registry", contract.name()))?;
 
     let actual_from = if no_resume {
         from_block

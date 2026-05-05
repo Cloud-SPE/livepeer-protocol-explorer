@@ -99,7 +99,10 @@ pub async fn run_seed_pass(
     } else {
         "AND r.finality = 'finalized'"
     };
-    info!(valuation_version, include_tentative, "seed-pass starting (bulk)");
+    info!(
+        valuation_version,
+        include_tentative, "seed-pass starting (bulk)"
+    );
 
     if !has_seed_candidates(pg, valuation_version, include_tentative).await? {
         let summary = SeedRunSummary::default();

@@ -1,6 +1,4 @@
-use prometheus::{
-    opts, proto::MetricFamily, HistogramOpts, HistogramVec, IntCounterVec, Registry,
-};
+use prometheus::{opts, proto::MetricFamily, HistogramOpts, HistogramVec, IntCounterVec, Registry};
 use std::sync::OnceLock;
 
 pub struct RpcMetrics {

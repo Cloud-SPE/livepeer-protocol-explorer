@@ -19,11 +19,21 @@ const SERVICE: &str = "livepeer-seed-migrator";
 #[command(name = SERVICE, about = "One-shot bootstrap tool: ABI registry seed + SQLite price import.")]
 struct Cli {
     /// Path to the static config (e.g. config/arbitrum.yaml)
-    #[arg(long, env = "STATIC_CONFIG", default_value = "config/arbitrum.yaml", global = true)]
+    #[arg(
+        long,
+        env = "STATIC_CONFIG",
+        default_value = "config/arbitrum.yaml",
+        global = true
+    )]
     static_config: PathBuf,
 
     /// Path to the env-specific config (e.g. config/env/dev.yaml)
-    #[arg(long, env = "ENV_CONFIG", default_value = "config/env/dev.yaml", global = true)]
+    #[arg(
+        long,
+        env = "ENV_CONFIG",
+        default_value = "config/env/dev.yaml",
+        global = true
+    )]
     env_config: PathBuf,
 
     #[command(subcommand)]
@@ -77,7 +87,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::SeedAbiRegistry { abi_dir } => seed_abi_registry(&pg, &abi_dir, &cfg).await?,
-        Command::Probe { source_sqlite, abi_dir } => probe(&pg, &source_sqlite, &abi_dir).await?,
+        Command::Probe {
+            source_sqlite,
+            abi_dir,
+        } => probe(&pg, &source_sqlite, &abi_dir).await?,
         Command::Import { source_sqlite } => run_import(&pg, &source_sqlite).await?,
         Command::VerifyRpc => verify_rpc(&pg, &cfg).await?,
         Command::CrossCheck { source_sqlite } => {
@@ -121,13 +134,48 @@ async fn seed_abi_registry(pg: &sqlx::PgPool, abi_dir: &PathBuf, cfg: &Config) -
     // [genesis, NULL]. SPEC §5.4. Per-block-range upgrade history is a v2 concern.
     let entries: &[(&str, &str, &str, bool)] = &[
         // (contract_name, proxy_address, abi_filename, strict_decode)
-        ("Controller",     &cfg.static_.contracts.controller,      "Controller.json",       false),
-        ("BondingManager", &cfg.static_.contracts.bonding_manager, "BondingManager.json",   true),
-        ("TicketBroker",   &cfg.static_.contracts.ticket_broker,   "TicketBroker.json",     true),
-        ("RoundsManager",  &cfg.static_.contracts.rounds_manager,  "RoundsManager.json",    false),
-        ("LivepeerToken",  &cfg.static_.contracts.livepeer_token,  "LivepeerToken.json",    true),
-        ("Minter",         &cfg.static_.contracts.minter,          "Minter.json",           false),
-        ("Governor",       &cfg.static_.contracts.governor,        "LivepeerGovernor.json", false),
+        (
+            "Controller",
+            &cfg.static_.contracts.controller,
+            "Controller.json",
+            false,
+        ),
+        (
+            "BondingManager",
+            &cfg.static_.contracts.bonding_manager,
+            "BondingManager.json",
+            true,
+        ),
+        (
+            "TicketBroker",
+            &cfg.static_.contracts.ticket_broker,
+            "TicketBroker.json",
+            true,
+        ),
+        (
+            "RoundsManager",
+            &cfg.static_.contracts.rounds_manager,
+            "RoundsManager.json",
+            false,
+        ),
+        (
+            "LivepeerToken",
+            &cfg.static_.contracts.livepeer_token,
+            "LivepeerToken.json",
+            true,
+        ),
+        (
+            "Minter",
+            &cfg.static_.contracts.minter,
+            "Minter.json",
+            false,
+        ),
+        (
+            "Governor",
+            &cfg.static_.contracts.governor,
+            "LivepeerGovernor.json",
+            false,
+        ),
     ];
 
     let mut inserted = 0usize;
@@ -156,7 +204,11 @@ async fn seed_abi_registry(pg: &sqlx::PgPool, abi_dir: &PathBuf, cfg: &Config) -
         .fetch_one(pg)
         .await?;
         abi::upsert(pg, &reg).await?;
-        if exists { already += 1 } else { inserted += 1 }
+        if exists {
+            already += 1
+        } else {
+            inserted += 1
+        }
         info!(
             contract = %reg.contract_name,
             proxy = %reg.proxy_address,
@@ -223,7 +275,10 @@ async fn verify_rpc(pg: &sqlx::PgPool, cfg: &Config) -> Result<()> {
             "chain_id mismatch: expected {expected_chain}, archive={chain_a}, secondary={chain_b}"
         );
     }
-    info!(chain_id = expected_chain, "both providers report expected chain");
+    info!(
+        chain_id = expected_chain,
+        "both providers report expected chain"
+    );
 
     // 2. eth_blockNumber on both. Heads can differ by 1–2 blocks (sequencing variance).
     let head_a = archive.eth_block_number().await?;
@@ -250,8 +305,7 @@ async fn verify_rpc(pg: &sqlx::PgPool, cfg: &Config) -> Result<()> {
     //    cross_check_block_hash, raw-bytes compare on full headers fails on
     //    provider-specific optional-null fields (Chainstack emits requestsHash/withdrawals
     //    as null; liveinfraspe omits them). The load-bearing invariant is .hash equality.
-    let canonical_hash =
-        cross_check::cross_check_block_hash(pg, &archive, &secondary, pin).await?;
+    let canonical_hash = cross_check::cross_check_block_hash(pg, &archive, &secondary, pin).await?;
     info!(
         block = pin,
         canonical_hash = %canonical_hash,
@@ -313,7 +367,11 @@ async fn verify_rpc(pg: &sqlx::PgPool, cfg: &Config) -> Result<()> {
     )
     .fetch_one(pg)
     .await?;
-    info!(cache_rows, unresolved_divergences = divergence_rows, "verify-rpc complete");
+    info!(
+        cache_rows,
+        unresolved_divergences = divergence_rows,
+        "verify-rpc complete"
+    );
     Ok(())
 }
 

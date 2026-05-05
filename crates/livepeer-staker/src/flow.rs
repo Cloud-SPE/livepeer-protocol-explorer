@@ -72,7 +72,9 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                     None => continue,
                 };
                 let amt = ev.amount_normalized.clone().unwrap_or_else(|| zero.clone());
-                let new_balance = balances.entry(delegator.clone()).or_insert_with(|| zero.clone());
+                let new_balance = balances
+                    .entry(delegator.clone())
+                    .or_insert_with(|| zero.clone());
                 *new_balance += &amt;
                 delegates.insert(delegator.clone(), delegate.clone());
                 summary.bond_events += 1;
@@ -97,7 +99,9 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                 }
                 if ev.event_name == "Unbond" {
                     let amt = ev.amount_normalized.clone().unwrap_or_else(|| zero.clone());
-                    *balances.entry(delegator.clone()).or_insert_with(|| zero.clone()) -= &amt;
+                    *balances
+                        .entry(delegator.clone())
+                        .or_insert_with(|| zero.clone()) -= &amt;
                 }
                 let delegate = ev
                     .to_address
@@ -119,7 +123,9 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                     continue;
                 }
                 let amt = ev.amount_normalized.clone().unwrap_or_else(|| zero.clone());
-                *balances.entry(delegator.clone()).or_insert_with(|| zero.clone()) += &amt;
+                *balances
+                    .entry(delegator.clone())
+                    .or_insert_with(|| zero.clone()) += &amt;
                 let delegate = ev
                     .to_address
                     .clone()
@@ -148,7 +154,9 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                     .and_then(|s| BigDecimal::from_str(s).ok())
                     .map(|big| big / BigDecimal::from(10u128.pow(18)))
                     .unwrap_or_else(|| zero.clone());
-                *balances.entry(delegator.clone()).or_insert_with(|| zero.clone()) += &rewards_lpt;
+                *balances
+                    .entry(delegator.clone())
+                    .or_insert_with(|| zero.clone()) += &rewards_lpt;
                 let delegate = ev
                     .to_address
                     .clone()
@@ -203,11 +211,16 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
                 if registered.insert(new_d.clone()) {
                     summary.delegators_registered += 1;
                 }
-                let delegate_for_new = delegates.get(&new_d).cloned()
+                let delegate_for_new = delegates
+                    .get(&new_d)
+                    .cloned()
                     .or_else(|| delegates.get(&old_d).cloned())
                     .unwrap_or_default();
                 upsert_registry(pg, &new_d, ev.block_number, ev.event_id, true).await?;
-                let new_balance = balances.entry(new_d.clone()).or_insert_with(|| zero.clone()).clone();
+                let new_balance = balances
+                    .entry(new_d.clone())
+                    .or_insert_with(|| zero.clone())
+                    .clone();
                 upsert_stake_row(pg, &new_d, &delegate_for_new, ev, &new_balance).await?;
                 summary.stake_rows_written += 1;
             }

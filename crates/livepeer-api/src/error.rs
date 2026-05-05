@@ -13,10 +13,20 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, code: "not_found", message: message.into(), context: None }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code: "not_found",
+            message: message.into(),
+            context: None,
+        }
     }
     pub fn bad_request(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, code: "bad_request", message: message.into(), context: None }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "bad_request",
+            message: message.into(),
+            context: None,
+        }
     }
     pub fn internal(err: impl std::fmt::Display) -> Self {
         Self {

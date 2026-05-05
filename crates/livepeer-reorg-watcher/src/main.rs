@@ -71,7 +71,11 @@ async fn main() -> Result<()> {
         "liveinfraspe",
         cfg.secondary_rpc_url().context("SECONDARY_RPC_URL")?,
     )?;
-    info!(service = SERVICE, walk_depth = runner::WALK_DEPTH, "starting");
+    info!(
+        service = SERVICE,
+        walk_depth = runner::WALK_DEPTH,
+        "starting"
+    );
 
     if cli.once {
         runner::run_once(&pg, &secondary).await?;

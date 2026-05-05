@@ -8,10 +8,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tracing::info;
-use std::sync::OnceLock;
 
 /// How often the background task replaces the reqwest client with a fresh
 /// instance. Closes the existing connection pool's TCP sockets and forces
@@ -127,13 +127,16 @@ impl Provider {
 
     pub fn set_task_concurrency_limit(task: &'static str, limit: usize) {
         let limiters = TASK_RPC_LIMITERS.get_or_init(|| std::sync::RwLock::new(HashMap::new()));
-        limiters.write().expect("task rpc limiter lock poisoned").insert(
-            task,
-            TaskRpcLimiter {
-                limit,
-                semaphore: Arc::new(Semaphore::new(limit)),
-            },
-        );
+        limiters
+            .write()
+            .expect("task rpc limiter lock poisoned")
+            .insert(
+                task,
+                TaskRpcLimiter {
+                    limit,
+                    semaphore: Arc::new(Semaphore::new(limit)),
+                },
+            );
     }
 
     pub fn task_concurrency_snapshot(task: &'static str) -> Option<TaskRpcSnapshot> {
@@ -151,7 +154,11 @@ impl Provider {
         })
     }
 
-    pub fn with_timeout(name: impl Into<String>, url: impl Into<String>, timeout: Duration) -> Result<Self> {
+    pub fn with_timeout(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self> {
         let name = name.into();
         let client = build_client(timeout, &name)?;
         let client = Arc::new(RwLock::new(client));
@@ -302,12 +309,7 @@ impl Provider {
                 message: err.message,
             });
         }
-        metrics::record_call(
-            &self.name,
-            method,
-            "ok",
-            started.elapsed().as_secs_f64(),
-        );
+        metrics::record_call(&self.name, method, "ok", started.elapsed().as_secs_f64());
         Ok(parsed.result.unwrap_or(Value::Null))
     }
 
@@ -380,31 +382,39 @@ impl Provider {
                     provider: self.name.clone(),
                     method: "call_batch".to_string(),
                     code: -32001,
-                    message: format!("hard timeout {}s exceeded for batch of {}", hard_timeout.as_secs(), batch.len()),
+                    message: format!(
+                        "hard timeout {}s exceeded for batch of {}",
+                        hard_timeout.as_secs(),
+                        batch.len()
+                    ),
                 });
             }
         };
 
         // Parse the response array. Some servers (incorrectly) return a
         // single object for a single-element batch — handle both shapes.
-        let parsed: Vec<JsonRpcResponse> = match serde_json::from_str::<Vec<JsonRpcResponse>>(&resp_text) {
-            Ok(v) => v,
-            Err(_) => match serde_json::from_str::<JsonRpcResponse>(&resp_text) {
-                Ok(single) => vec![single],
-                Err(_) => {
-                    let duration = started.elapsed().as_secs_f64();
-                    for (method, _) in batch {
-                        metrics::record_call(&self.name, method, "malformed", duration);
+        let parsed: Vec<JsonRpcResponse> =
+            match serde_json::from_str::<Vec<JsonRpcResponse>>(&resp_text) {
+                Ok(v) => v,
+                Err(_) => match serde_json::from_str::<JsonRpcResponse>(&resp_text) {
+                    Ok(single) => vec![single],
+                    Err(_) => {
+                        let duration = started.elapsed().as_secs_f64();
+                        for (method, _) in batch {
+                            metrics::record_call(&self.name, method, "malformed", duration);
+                        }
+                        return Err(CoreError::JsonRpc {
+                            provider: self.name.clone(),
+                            method: "call_batch".to_string(),
+                            code: -32700,
+                            message: format!(
+                                "malformed batch response: {}",
+                                resp_text.chars().take(500).collect::<String>()
+                            ),
+                        });
                     }
-                    return Err(CoreError::JsonRpc {
-                        provider: self.name.clone(),
-                        method: "call_batch".to_string(),
-                        code: -32700,
-                        message: format!("malformed batch response: {}", resp_text.chars().take(500).collect::<String>()),
-                    });
-                }
-            },
-        };
+                },
+            };
 
         // Map responses back to input positions by id. Default each slot to
         // a "missing response" error; overwrite as responses come in.
@@ -421,7 +431,9 @@ impl Provider {
         for resp in parsed {
             let Some(id) = resp.id else { continue };
             let idx = (id as usize).checked_sub(1);
-            let Some(idx) = idx.filter(|&i| i < batch.len()) else { continue };
+            let Some(idx) = idx.filter(|&i| i < batch.len()) else {
+                continue;
+            };
             results[idx] = if let Some(err) = resp.error {
                 Err(CoreError::JsonRpc {
                     provider: self.name.clone(),

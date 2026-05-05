@@ -6,7 +6,10 @@
 //! be split out from the valuator pass and run on demand.
 
 use crate::{error::ApiError, state::AppState};
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -107,7 +110,9 @@ pub async fn latest(
     .fetch_optional(&state.pg)
     .await?;
     let Some(r) = row else {
-        return Err(ApiError::not_found(format!("no cached price for {asset_u}/{quote_u}")));
+        return Err(ApiError::not_found(format!(
+            "no cached price for {asset_u}/{quote_u}"
+        )));
     };
     Ok(Json(to_price_row(&r)))
 }
@@ -158,7 +163,9 @@ pub async fn range(
         return Err(ApiError::bad_request("to_block < from_block"));
     }
     if q.to_block - q.from_block > 1_000_000 {
-        return Err(ApiError::bad_request("range > 1,000,000 blocks; narrow your query"));
+        return Err(ApiError::bad_request(
+            "range > 1,000,000 blocks; narrow your query",
+        ));
     }
     let asset_u = asset.to_uppercase();
     let quote_u = quote.to_uppercase();

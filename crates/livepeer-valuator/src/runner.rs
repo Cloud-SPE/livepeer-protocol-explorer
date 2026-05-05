@@ -50,8 +50,7 @@ pub async fn run_multi_asset(
     valuation_version: &str,
     include_tentative: bool,
 ) -> Result<MultiAssetSummary> {
-    multi_asset::run_multi_asset_pass(pg, archive, cfg, valuation_version, include_tentative)
-        .await
+    multi_asset::run_multi_asset_pass(pg, archive, cfg, valuation_version, include_tentative).await
 }
 
 pub async fn run_all(

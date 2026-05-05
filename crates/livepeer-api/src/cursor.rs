@@ -17,12 +17,21 @@ impl Cursor {
         format!("B{}:{}", self.block_number, self.log_index)
     }
     pub fn decode(s: &str) -> Result<Self, ApiError> {
-        let stripped = s.strip_prefix('B').ok_or_else(|| ApiError::bad_request("invalid cursor"))?;
+        let stripped = s
+            .strip_prefix('B')
+            .ok_or_else(|| ApiError::bad_request("invalid cursor"))?;
         let (block, log_index) = stripped
             .split_once(':')
             .ok_or_else(|| ApiError::bad_request("invalid cursor"))?;
-        let block_number: i64 = block.parse().map_err(|_| ApiError::bad_request("invalid cursor block"))?;
-        let log_index: i32 = log_index.parse().map_err(|_| ApiError::bad_request("invalid cursor log_index"))?;
-        Ok(Self { block_number, log_index })
+        let block_number: i64 = block
+            .parse()
+            .map_err(|_| ApiError::bad_request("invalid cursor block"))?;
+        let log_index: i32 = log_index
+            .parse()
+            .map_err(|_| ApiError::bad_request("invalid cursor log_index"))?;
+        Ok(Self {
+            block_number,
+            log_index,
+        })
     }
 }

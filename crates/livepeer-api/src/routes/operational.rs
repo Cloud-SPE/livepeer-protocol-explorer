@@ -15,7 +15,11 @@ use utoipa::ToSchema;
     )
 )]
 pub async fn health(State(state): State<AppState>) -> &'static str {
-    state.metrics.api_requests_total.with_label_values(&["/health", "2xx"]).inc();
+    state
+        .metrics
+        .api_requests_total
+        .with_label_values(&["/health", "2xx"])
+        .inc();
     "ok"
 }
 
@@ -33,7 +37,11 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let mut buf = Vec::new();
     let families = state.metrics.registry.gather();
     if encoder.encode(&families, &mut buf).is_err() {
-        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "encode failed").into_response();
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "encode failed",
+        )
+            .into_response();
     }
     (
         [(header::CONTENT_TYPE, encoder.format_type().to_string())],
@@ -69,7 +77,9 @@ pub struct Checkpoint {
         (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
     )
 )]
-pub async fn backfill_status(State(state): State<AppState>) -> Result<Json<BackfillStatus>, ApiError> {
+pub async fn backfill_status(
+    State(state): State<AppState>,
+) -> Result<Json<BackfillStatus>, ApiError> {
     use sqlx::Row;
     let checkpoint_rows = sqlx::query(
         "SELECT name, last_processed_block, updated_at FROM indexer_checkpoints ORDER BY name",
@@ -110,8 +120,9 @@ pub async fn backfill_status(State(state): State<AppState>) -> Result<Json<Backf
         sqlx::query_scalar("SELECT COUNT(*) FROM decode_failures WHERE resolved_at IS NULL")
             .fetch_one(&state.pg)
             .await?;
-    let reorg_event_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM reorg_events").fetch_one(&state.pg).await?;
+    let reorg_event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reorg_events")
+        .fetch_one(&state.pg)
+        .await?;
 
     Ok(Json(BackfillStatus {
         checkpoints,

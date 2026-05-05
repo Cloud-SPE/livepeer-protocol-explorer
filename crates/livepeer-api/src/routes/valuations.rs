@@ -32,7 +32,9 @@ pub struct ValuationListResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "Single immutable valuation outcome row for one (event_id, valuation_version, asset) tuple.")]
+#[schema(
+    description = "Single immutable valuation outcome row for one (event_id, valuation_version, asset) tuple."
+)]
 pub struct ValuationRow {
     pub event_id: String,
     pub valuation_version: String,

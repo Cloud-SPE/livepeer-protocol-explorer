@@ -2,7 +2,10 @@
 //! Joins `ProposalCreated` + `ProposalExecuted` + per-proposal `VoteCast` tallies.
 
 use crate::{error::ApiError, state::AppState};
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -20,7 +23,9 @@ pub struct ProposalsQuery {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "Convenience view of a Governor proposal assembled from raw protocol events.")]
+#[schema(
+    description = "Convenience view of a Governor proposal assembled from raw protocol events."
+)]
 pub struct ProposalRow {
     pub proposal_id: String,
     pub proposer: Option<String>,
@@ -109,12 +114,22 @@ pub async fn list(
         let executed = executed_block.is_some();
         if let Some(filter) = q.status.as_deref() {
             match filter {
-                "executed" => if !executed { continue; }
-                "not_executed" | "active" => if executed { continue; }
+                "executed" => {
+                    if !executed {
+                        continue;
+                    }
+                }
+                "not_executed" | "active" => {
+                    if executed {
+                        continue;
+                    }
+                }
                 "all" => {}
-                other => return Err(ApiError::bad_request(format!(
-                    "invalid status {other:?}; use executed | not_executed | active | all"
-                ))),
+                other => {
+                    return Err(ApiError::bad_request(format!(
+                        "invalid status {other:?}; use executed | not_executed | active | all"
+                    )))
+                }
             }
         }
 

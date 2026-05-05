@@ -15,7 +15,7 @@ contracts:
   controller: "0xD8E8328501E9645d16Cf49539efC04f734606ee4"
 
   # Proxies the indexer subscribes to (SPEC §5.3).
-  governor:           "0xD9dEd6f9959176F0A04dcf88a0d2306178A736a6"
+  governor:           "0xcFE4E2879B786C3aa075813F0E364bb5acCb6aa0"
   livepeer_token:     "0x289ba1701C2F088cf0faf8B3705246331cB8A839"
   minter:             "0xc20DE37170B45774e6CD3d2304017fc962f27252"
   bonding_manager:    "0x35Bcf3c30594191d53231E4FF333E8A770453e40"

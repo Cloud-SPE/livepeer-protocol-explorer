@@ -15,7 +15,7 @@ Vendored ABI JSON files for every contract the system decodes against. Sourced f
 | `RoundsManagerTarget.json` | RoundsManager implementation reference | (target) |
 | `LivepeerToken.json` | LPT ERC-20 event decoding | `0x289ba1701C2F088cf0faf8B3705246331cB8A839` |
 | `Minter.json` | Minter event decoding | `0xc20DE37170B45774e6CD3d2304017fc962f27252` |
-| `LivepeerGovernor.json` | Governor + governance events (`ProposalCreated`, `VoteCast`, `ProposalExecuted`) per §6.7 | `0xD9dEd6f9959176F0A04dcf88a0d2306178A736a6` |
+| `LivepeerGovernor.json` | Governor + governance events (`ProposalCreated`, `VoteCast`, `ProposalExecuted`) per §6.7 | `0xcFE4E2879B786C3aa075813F0E364bb5acCb6aa0` |
 | `ServiceRegistry.json` | Service URI updates | (Controller-resolved) |
 | `L2Migrator.json` | L2 migration events (informational) | (Controller-resolved) |
 | `AggregatorV3Interface.json` | Chainlink ETH/USD aggregator (`latestRoundData`) per §7.3.3 | (config) |

@@ -23,6 +23,8 @@ use tracing::{info, warn};
 const ARBITRUM_CHAIN_ID: i64 = 42161;
 const SOURCE_FLOW: &str = "flow_derived";
 const SOURCE_EARNINGS_BOOTSTRAP: &str = "earnings_claimed_bootstrap";
+const FLOW_CHECKPOINT: &str = "staker_flow_backfill";
+const FLOW_BATCH_SIZE: i64 = 5_000;
 
 #[derive(Debug, Default, Serialize)]
 pub struct FlowSummary {
@@ -31,6 +33,7 @@ pub struct FlowSummary {
     pub stake_rows_written: u64,
     pub delegators_registered: u64,
     pub skipped_unregistered: u64,
+    pub checkpoint_block: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -46,19 +49,33 @@ struct StakeEvent {
     raw_event: serde_json::Value,
 }
 
-pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<FlowSummary> {
-    let events = fetch_stake_events(pg, include_tentative).await?;
-    info!(events = events.len(), "flow backfill starting");
+#[derive(Debug)]
+struct StakeSeedState {
+    delegate_address: String,
+    bonded_principal: BigDecimal,
+}
 
-    let mut balances: HashMap<String, BigDecimal> = HashMap::new();
-    let mut delegates: HashMap<String, String> = HashMap::new();
+pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<FlowSummary> {
+    let checkpoint = load_flow_checkpoint(pg).await?;
+    let events = fetch_stake_events(pg, include_tentative, checkpoint, FLOW_BATCH_SIZE).await?;
+    info!(checkpoint, events = events.len(), "flow backfill starting");
+
     let mut registered: HashSet<String> = load_registered_delegators(pg).await?;
+    let seeds = load_latest_stake_state_before_block(pg, checkpoint, &events).await?;
+    let mut balances: HashMap<String, BigDecimal> = HashMap::with_capacity(seeds.len());
+    let mut delegates: HashMap<String, String> = HashMap::with_capacity(seeds.len());
+    for (delegator, state) in seeds {
+        balances.insert(delegator.clone(), state.bonded_principal);
+        delegates.insert(delegator, state.delegate_address);
+    }
     let zero = BigDecimal::from(0u64);
 
     let mut summary = FlowSummary {
         events_seen: events.len() as u64,
+        checkpoint_block: checkpoint,
         ..Default::default()
     };
+    let mut max_block_seen = checkpoint;
 
     for ev in &events {
         match ev.event_name.as_str() {
@@ -226,6 +243,7 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
             }
             _ => {}
         }
+        max_block_seen = Some(ev.block_number);
     }
 
     if summary.skipped_unregistered > 0 {
@@ -235,11 +253,21 @@ pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<F
         );
     }
 
+    if let Some(block_number) = max_block_seen {
+        advance_flow_checkpoint(pg, block_number).await?;
+        summary.checkpoint_block = Some(block_number);
+    }
+
     info!(?summary, "flow backfill complete");
     Ok(summary)
 }
 
-async fn fetch_stake_events(pg: &PgPool, include_tentative: bool) -> Result<Vec<StakeEvent>> {
+async fn fetch_stake_events(
+    pg: &PgPool,
+    include_tentative: bool,
+    resume_from_block: Option<i64>,
+    limit: i64,
+) -> Result<Vec<StakeEvent>> {
     let finality_filter = if include_tentative {
         ""
     } else {
@@ -253,11 +281,15 @@ async fn fetch_stake_events(pg: &PgPool, include_tentative: bool) -> Result<Vec<
               AND is_canonical = TRUE
               AND event_name IN ('Bond', 'Unbond', 'Rebond', 'WithdrawStake',
                                  'EarningsClaimed', 'TransferBond')
+              AND ($2::bigint IS NULL OR block_number >= $2)
               {finality_filter}
-            ORDER BY block_number, log_index"#
+            ORDER BY block_number, log_index
+            LIMIT $3"#
     );
     let rows = sqlx::query(&sql)
         .bind(ARBITRUM_CHAIN_ID)
+        .bind(resume_from_block)
+        .bind(limit)
         .fetch_all(pg)
         .await?;
     Ok(rows
@@ -282,6 +314,95 @@ async fn load_registered_delegators(pg: &PgPool) -> Result<HashSet<String>> {
         .fetch_all(pg)
         .await?;
     Ok(rows.into_iter().map(|r| r.get::<String, _>(0)).collect())
+}
+
+async fn load_latest_stake_state_before_block(
+    pg: &PgPool,
+    resume_from_block: Option<i64>,
+    events: &[StakeEvent],
+) -> Result<HashMap<String, StakeSeedState>> {
+    let Some(resume_from_block) = resume_from_block else {
+        return Ok(HashMap::new());
+    };
+    let delegators = affected_delegators(events);
+    if delegators.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = sqlx::query(
+        r#"SELECT DISTINCT ON (delegator_address)
+               delegator_address, delegate_address, bonded_principal
+             FROM stake_balances_by_block
+            WHERE chain_id = $1
+              AND delegator_address = ANY($2)
+              AND block_number < $3
+            ORDER BY delegator_address, block_number DESC"#,
+    )
+    .bind(ARBITRUM_CHAIN_ID)
+    .bind(&delegators)
+    .bind(resume_from_block)
+    .fetch_all(pg)
+    .await?;
+
+    let mut states = HashMap::with_capacity(rows.len());
+    for row in rows {
+        states.insert(
+            row.get::<String, _>("delegator_address"),
+            StakeSeedState {
+                delegate_address: row.get("delegate_address"),
+                bonded_principal: row.get("bonded_principal"),
+            },
+        );
+    }
+    Ok(states)
+}
+
+fn affected_delegators(events: &[StakeEvent]) -> Vec<String> {
+    let mut set = HashSet::new();
+    for ev in events {
+        match ev.event_name.as_str() {
+            "TransferBond" => {
+                if let Some(from) = ev.from_address.as_ref() {
+                    set.insert(from.to_lowercase());
+                }
+                if let Some(to) = ev.to_address.as_ref() {
+                    set.insert(to.to_lowercase());
+                }
+            }
+            "Bond" | "Unbond" | "WithdrawStake" | "Rebond" | "EarningsClaimed" => {
+                if let Some(from) = ev.from_address.as_ref() {
+                    set.insert(from.to_lowercase());
+                }
+            }
+            _ => {}
+        }
+    }
+    set.into_iter().collect()
+}
+
+async fn load_flow_checkpoint(pg: &PgPool) -> Result<Option<i64>> {
+    let checkpoint = sqlx::query_scalar::<_, i64>(
+        "SELECT last_processed_block FROM indexer_checkpoints WHERE name = $1",
+    )
+    .bind(FLOW_CHECKPOINT)
+    .fetch_optional(pg)
+    .await?;
+    Ok(checkpoint)
+}
+
+async fn advance_flow_checkpoint(pg: &PgPool, block_number: i64) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO indexer_checkpoints (name, chain_id, last_processed_block, updated_at)
+           VALUES ($1, $2, $3, now())
+           ON CONFLICT (name) DO UPDATE
+              SET last_processed_block = GREATEST(indexer_checkpoints.last_processed_block, EXCLUDED.last_processed_block),
+                  updated_at = now()"#,
+    )
+    .bind(FLOW_CHECKPOINT)
+    .bind(ARBITRUM_CHAIN_ID)
+    .bind(block_number)
+    .execute(pg)
+    .await?;
+    Ok(())
 }
 
 async fn upsert_registry(

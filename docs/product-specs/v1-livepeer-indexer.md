@@ -1,12 +1,18 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.7
+## Technical Specification v1.8
 
 **Status:** Living spec for the implemented v1 system
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.7
+**Document version:** 1.8
+
+### Changes since v1.7 (2026-05-05)
+
+- §14 — API surface updated to match the shipped service. v1 no longer promises conditional GET / `ETag` / `If-None-Match`; the actual poll model is plain JSON polling. The spec now documents the shipped endpoint families for transcoders and gateways plus the machine-readable `/openapi.json` and interactive `/docs` surfaces.
+- §15 / §16 — deployment and configuration sections updated to reflect the current runtime shape: `livepeer-daemon follow`, `livepeer-api`, optional `livepeer-alert-bot`, one-shot `livepeer-orchestrator` / `livepeer-seed-migrator`, and API metrics served on `:8080` rather than a dedicated `:9106`.
+- §24 / Appendix — acceptance criteria and design-decision log updated so they no longer require `ETag`, and they reflect the shipped standalone API service rather than the earlier “existing API bolt-on” assumption.
 
 ### Changes since v1.6 (2026-05-03)
 
@@ -174,7 +180,16 @@ The system runs on Rust + Postgres + two RPC providers. No third-party indexing 
 
 ### 3.1 Service topology
 
-Five long-running service binaries plus one one-shot tool:
+The codebase still contains the original worker binaries, but the current v1
+runtime shape is:
+
+- `livepeer-daemon follow` for steady-state near-head processing
+- `livepeer-api` for HTTP reads
+- `livepeer-seed-migrator` as a one-shot tool
+- `livepeer-orchestrator` for bounded `bootstrap`, `replay`, and `migrate-only`
+
+The worker binaries remain valid internal execution units and bounded CLI entry
+points:
 
 | Service | Role |
 |---|---|
@@ -183,8 +198,10 @@ Five long-running service binaries plus one one-shot tool:
 | `livepeer-finality-watcher` | Observes L1 batch posting and L1 finalization, advances `finality` field. |
 | `livepeer-valuator` | Prices finalized events, writes valuations under named versions. |
 | `livepeer-staker` | Computes and persists stake balances at event-touching blocks. |
-| `livepeer-api` | Exposes data via HTTP (Axum), integrated with existing API service. |
+| `livepeer-daemon` | Runs the bounded worker loops continuously near head (`indexer`, `finality`, `reorg`, `valuator`, `staker`). |
+| `livepeer-api` | Exposes data via HTTP (Axum). |
 | `livepeer-seed-migrator` | One-shot tool. Imports trusted historical prices from SQLite. |
+| `livepeer-orchestrator` | One-shot tool. Runs bounded `bootstrap`, strict `replay`, and `migrate-only`. |
 
 All long-running services run as exactly one instance in v1. Horizontal scaling deferred to v2.
 
@@ -193,25 +210,13 @@ All long-running services run as exactly one instance in v1. Horizontal scaling 
 ```
 Trusted SQLite seed              Arbitrum archive RPC (Chainstack)
         ↓                                    ↓
-  seed-migrator                    ┌─────────┴──────────┐
-        ↓                          ↓                    ↓
-  seeded_event_prices         indexer            reorg-watcher
-                                   ↓                    ↓
-                              raw_protocol_events ←─────┘
-                                   ↓
-                              finality-watcher
-                                   ↓
-                              (tentative → l1_posted → finalized)
-                                   ↓
-                    ┌──────────────┴──────────────┐
-                    ↓                              ↓
-                valuator                       staker
-                    ↓                              ↓
-              event_valuations             stake_balances_by_block
-                    ↓                              ↓
-                    └──────────────┬──────────────┘
-                                   ↓
-                              livepeer-api ──→ existing API service
+  seed-migrator / orchestrator        livepeer-daemon follow
+        ↓                                    ↓
+  seeded_event_prices            raw_protocol_events / finality / reorg
+                                                  ↓
+                                       valuations + stake snapshots
+                                                  ↓
+                                             livepeer-api
 ```
 
 ### 3.3 Service interaction model
@@ -1449,8 +1454,8 @@ rpc:
     rate_limit_rps: 500
     burst: 1000
     max_concurrent: 50
-  local:
-    url: ${LOCAL_NITRO_URL}
+  secondary:
+    url: ${SECONDARY_RPC_URL}
     rate_limit_rps: 2000
     burst: 4000
     max_concurrent: 100
@@ -1510,15 +1515,21 @@ Budget tracking is informational; the system does not auto-throttle on budget si
 
 ### 14.1 Integration model
 
-The API is integrated with the **existing API service** (per Q3.11 design discussion). The integration approach is **bolt-on** for v1: new endpoints run on a dedicated port, with the existing API untouched. Reverse-proxy unification or in-process extension are v2 considerations.
+v1 ships a dedicated `livepeer-api` service. It is a standalone Axum HTTP server
+backed by the replayable Postgres state produced by the indexer / valuator /
+staker pipeline. Operators may place it behind a reverse proxy, but the spec no
+longer assumes an “existing API bolt-on” deployment shape.
 
 ### 14.2 Polling-only model
 
 v1 exposes **poll-based** endpoints only. No webhooks, no Kafka, no push. To make polling efficient:
 
-- Every list endpoint includes `last_finalized_block` and `last_updated_at` in response metadata.
-- Endpoints support `If-None-Match` / `ETag` for conditional GETs. Unchanged data returns `304 Not Modified` cheaply.
-- `Cache-Control` headers indicate cacheable durations where appropriate.
+- Responses are JSON over ordinary HTTP GET.
+- Clients poll the relevant endpoint families directly.
+- OpenAPI documentation is exposed by the API service itself:
+  - `GET /openapi.json`
+  - `GET /docs`
+  - `GET /docs/`
 
 ### 14.3 Endpoints
 
@@ -1584,16 +1595,76 @@ GET /stake/{delegator}/range?from_block=&to_block=
 
 Returns the stake snapshot at or before the requested block, with `staleness_blocks` field indicating how stale the answer is. v1 implements Scope 2 (event-triggered + EarningsClaimed reconciliation), so staleness is bounded by the delegator's event activity.
 
-#### 14.3.5 Operational
+#### 14.3.5 Gateways / TicketBroker
+
+```http
+GET /gateways/{gateway}/balance/latest
+GET /gateways/{gateway}/balance/block/{block}
+GET /gateways/{gateway}/balance/history?from_block=&to_block=&limit=
+GET /gateways/{gateway}/claimants/block/{block}
+GET /gateways/{gateway}/claimants/history?from_block=&to_block=&limit=
+GET /gateways/{gateway}/flows?from_block=&to_block=&limit=
+GET /gateways/{gateway}/payouts?from_block=&to_block=&limit=&semantics=net|gross
+GET /gateways/{gateway}/recipients?from_block=&to_block=&limit=&semantics=net|gross
+GET /gateways/{gateway}/summary?days=&semantics=net|gross
+GET /gateways/{gateway}/analytics/summary?days=&semantics=net|gross
+```
+
+These endpoints expose the TicketBroker sender model under the “gateway” name:
+
+- exact sender balance state (`getSenderInfo()` / `isUnlockInProgress()`)
+- materialized sender balance history (`gateway_balances_by_block`)
+- claimant reserve history (`gateway_claimants_by_block`)
+- materialized funding/payout flow ledger (`gateway_flows`)
+- recipient leaderboards and higher-level payout analytics
+
+`payouts`, `recipients`, and analytics routes expose explicit payout semantics:
+
+- `net`:
+  - includes `ticket_redeemed`
+  - includes `reserve_claimed`
+  - excludes paired `reserve_transfer`
+- `gross`:
+  - includes `ticket_redeemed`
+  - includes `reserve_claimed`
+  - includes paired `reserve_transfer`
+
+Default is `net`.
+
+#### 14.3.6 Transcoders
+
+```http
+GET /transcoders/{transcoder}/params/latest
+GET /transcoders/{transcoder}/params/block/{block}
+GET /transcoders/{transcoder}/params/history?from_block=&to_block=&limit=
+GET /transcoders/{transcoder}/lifecycle/latest
+GET /transcoders/{transcoder}/lifecycle/block/{block}
+GET /transcoders/{transcoder}/lifecycle/history?from_block=&to_block=&limit=
+GET /transcoders/{transcoder}/profile/block/{block}
+GET /transcoders/{transcoder}/delegators/block/{block}
+```
+
+These are historical convenience views over transcoder configuration and stake
+context:
+
+- reward cut / fee share history
+- activation / deactivation lifecycle history
+- point-in-time combined transcoder profile
+- delegator set snapshots at a block
+
+#### 14.3.7 Operational
 
 ```http
 GET /backfills/status
 GET /health
+GET /metrics
 ```
 
-Status endpoint returns indexer + valuator + stake-worker progress, plus reorg-watcher and finality-watcher status. Health endpoint is a simple liveness check.
+Status endpoint returns indexer + derived-state progress. Health endpoint is a
+simple liveness check. `/metrics` exposes Prometheus-format API metrics on the
+same HTTP listener as the API itself.
 
-#### 14.3.6 Aggregations
+#### 14.3.8 Aggregations
 
 ```http
 GET /aggregations/events
@@ -1625,7 +1696,7 @@ Backed by `GROUP BY date_trunc(bucket, block_timestamp)` over `raw_protocol_even
 
 `metric=count` requires no valuation join — fast for ticket-count timeseries.
 
-#### 14.3.7 Governance
+#### 14.3.9 Governance
 
 ```http
 GET /governance/proposals
@@ -1657,7 +1728,9 @@ Standard error envelope:
 
 ### 14.5 Auth
 
-Inherited from the existing API service. The bolt-on endpoints sit behind whatever auth the existing service uses.
+No application-layer auth is built into `livepeer-api` itself in v1. Operators
+may place it behind reverse-proxy auth, private networking, or other
+environment-specific access controls.
 
 ### 14.6 Rate limiting
 
@@ -1669,53 +1742,68 @@ Not implemented in v1. Existing API service may already have rate limiting; if n
 
 ### 15.1 Pattern
 
-**Docker Compose, single host.** All five services + Postgres on one machine. Prometheus + Grafana run on a separate, pre-provisioned external host (per operational decision Q9.A).
+**Docker Compose, single host.** The current steady-state production shape is:
 
-### 15.2 docker-compose.yml shape
+- `postgres`
+- `livepeer-daemon follow`
+- `livepeer-api`
+- optional `livepeer-alert-bot`
+
+One-shot tools run out-of-band:
+
+- `livepeer-orchestrator` (`bootstrap`, `replay`, `migrate-only`)
+- `livepeer-seed-migrator`
+
+Prometheus + Grafana may run externally.
+
+### 15.2 docker-compose.prod.yml shape
 
 ```yaml
 services:
   postgres:
-    image: postgres:15
+    image: postgres:17
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    env_file: .env.postgres
+      - livepeer-valuation-pgdata:/var/lib/postgresql/data
     restart: unless-stopped
   
-  livepeer-indexer:
+  livepeer-daemon:
     image: livepeer-valuation-system:latest
-    command: livepeer-indexer
-    env_file: .env
+    command: livepeer-daemon --env-config config/env/prod.yaml follow --max-start-lag-blocks 50000
     depends_on:
       - postgres
     restart: unless-stopped
     ports:
-      - "9101:9101"  # /metrics
-  
-  livepeer-reorg-watcher:
-    # similar shape, port 9102
-  
-  livepeer-finality-watcher:
-    # similar shape, port 9103
-  
-  livepeer-valuator:
-    # similar shape, port 9104
-  
-  livepeer-staker:
-    # similar shape, port 9105
+      - "9107:9107"  # /metrics + /health
   
   livepeer-api:
-    # similar shape, port 8080 (HTTP) + 9106 (/metrics)
+    image: livepeer-valuation-system:latest
+    command: livepeer-api --env-config config/env/prod.yaml
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    ports:
+      - "8080:8080"  # HTTP + /metrics
+
+  livepeer-alert-bot:
+    image: livepeer-valuation-system:latest
+    command: livepeer-alert-bot --env-config config/env/prod.yaml
 
 volumes:
-  postgres_data:
+  livepeer-valuation-pgdata:
 ```
 
-The `livepeer-seed-migrator` is invoked as a one-shot via `docker compose run`, not declared as a service.
+`livepeer-orchestrator` and `livepeer-seed-migrator` are invoked as one-shot
+tools via `docker compose run`.
 
 ### 15.3 Metrics endpoints
 
-Each service exposes `/metrics` on a dedicated port, network-accessible (bound to `0.0.0.0`) so the external Prometheus host can scrape. Network-level access control (firewall, security groups) restricts which hosts can reach those ports.
+Metrics topology in the shipped runtime:
+
+- `livepeer-daemon`: `:9107` serves `/metrics` and `/health`
+- `livepeer-api`: `:8080` serves normal API routes plus `/metrics` and `/health`
+
+Network-level access control (firewall, security groups, reverse proxy) should
+restrict who can reach those ports.
 
 ### 15.4 Backups
 
@@ -1737,14 +1825,15 @@ If/when scale or operational needs require Kubernetes: each service is already a
 
 **Layer 2 — Environment-specific config** (committed, environment-tagged):
 
-`config/env/{dev,staging,prod}.yaml` — RPC URL templates, Postgres connection string templates, log levels, alert thresholds.
+`config/env/{dev,staging,prod}.yaml` — RPC URL env-variable names, Postgres
+connection-string env-variable name, log levels, and alerting env-variable
+names.
 
 **Layer 3 — Secrets** (never committed):
 
 `.env` files (dev) or environment variables / external secret manager (prod):
 
 - `CHAINSTACK_RPC_URL` — full URL with API key
-- `LOCAL_NITRO_URL` — auth token included if used
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 
@@ -1923,7 +2012,7 @@ Each item below is explicitly out of scope for v1. Each has a v2 entry point doc
 | **Frontend dashboard (v2 PRIORITY)** | Separate frontend project consuming the API. Not part of this codebase. |
 | Manual price overrides | A `manual_price_overrides` table the valuator checks before on-chain pricing, with strict audit trail. **Determinism is compromised at this boundary.** |
 | Sub-finality (real-time) valuations | On-demand pricing endpoint computing tentative valuations without persisting; explicit warning flags. |
-| Push-based event distribution (webhooks, Kafka) | Subscription model + outbox pattern + retry policy. The `last-updated`/ETag polling story (§14.2) handles 80% of needs without this. |
+| Push-based event distribution (webhooks, Kafka) | Subscription model + outbox pattern + retry policy. Plain polling over the documented HTTP endpoints (§14.2) handles v1 needs. |
 | Horizontal worker scaling | Switch to `FOR UPDATE SKIP LOCKED` claim mechanism. Schema already supports it. |
 | OpenTelemetry tracing | Add tracing spans to RPC calls, DB queries, worker iterations. Connect to a backend (Jaeger, Tempo, etc.). |
 | Real-time orchestrator/broadcaster metadata | Re-derive from on-chain events. Possibly a separate `metadata-worker`. |
@@ -2095,8 +2184,8 @@ Numbered and immutable. Each requirement is testable. References to themes / sec
 
 ### API
 
-82. Existing API service is the integration target for v1; bolt-on pattern. (§14.1)
-83. Poll-only API with `last-updated` fields and `ETag`/`If-None-Match` support. (§14.2)
+82. Standalone `livepeer-api` service is the HTTP surface for v1. (§14.1)
+83. Poll-only API with JSON GET endpoints; no push/webhook model in v1. (§14.2)
 84. Numeric values that exceed JS safe integer range serialized as strings. (§14.4)
 
 ---
@@ -2114,7 +2203,7 @@ The system is ready for v1 production declaration when **all** of the following 
 - [ ] `EarningsClaimed` events produce two rows in `event_valuations` (LPT + ETH) per version.
 - [ ] Terminal valuation failures still produce `event_valuations` rows, with nullable `native_usd_price` / `amount_usd` and `status IN ('failed_missing_pool', 'failed_missing_oracle', 'failed_sequencer_outage')`.
 - [ ] Stake-worker produces `stake_balances_by_block` rows for every stake-touching event, with both `bonded_principal` and `pending_stake`/`pending_fees` populated.
-- [ ] API exposes all endpoints listed in §14.3, with conditional GET (`ETag`) support working.
+- [ ] API exposes all endpoints listed in §14.3.
 - [ ] Seed/canonical event cross-check pass completes with a discrepancy report (`livepeer-test cross-check`). For every `(tx_hash, log_index)` present in both the SQLite `events` table and `raw_protocol_events` after backfill, decoded field values match. Discrepancies must be triaged and either resolved or explicitly accepted before v1 sign-off. (Resolves TD-004.)
 
 ### 24.2 Determinism
@@ -2173,9 +2262,9 @@ This appendix summarizes the substantive decisions made during spec development,
 | 9 | Tiered decode strictness | Strict halt on critical events prevents silent stake-worker drift; permissive on non-critical keeps the firehose flowing. |
 | 10 | Stake-worker in v1 (Scope 2) | Principal-only is misleading; full fan-out is expensive; event-triggered + EarningsClaimed reconciliation is the right middle ground. |
 | 11 | Telegram, no pager | Operational preference; alerting infrastructure is last priority anyway. |
-| 12 | Existing API as integration target | Don't replace what works; bolt-on new endpoints. |
-| 13 | Poll-only with ETag | No external category-5 consumers identified that require push. ETag handles 80% of polling efficiency concerns. |
+| 12 | Standalone API service | Keeps the v1 runtime simple and lets the HTTP surface evolve with the replayable data model without depending on a legacy service boundary. |
+| 13 | Poll-only API | No external category-5 consumers identified that require push. Ordinary JSON polling is sufficient for v1. |
 
 ---
 
-**END OF SPECIFICATION v1.7**
+**END OF SPECIFICATION v1.8**

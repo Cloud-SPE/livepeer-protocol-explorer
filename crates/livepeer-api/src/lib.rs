@@ -6,9 +6,16 @@ pub mod openapi;
 pub mod routes;
 pub mod state;
 
-use axum::{routing::get, Router};
+use axum::{
+    http::{header, Method},
+    routing::get,
+    Router,
+};
 use state::AppState;
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -196,6 +203,14 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::transcoders::profile_at_block),
         )
         .with_state(state)
+        // CORS: permissive for now (read-only data API). Tighten by replacing
+        // `Any` with a specific origin once the FE host is fixed in prod.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET, Method::POST])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]),
+        )
         .layer(TraceLayer::new_for_http())
         .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi::ApiDoc::openapi()))
 }

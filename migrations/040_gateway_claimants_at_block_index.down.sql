@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_gateway_claimants_chain_gateway_claimant;

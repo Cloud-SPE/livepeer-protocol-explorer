@@ -1,28 +1,35 @@
-# Production-oriented compose shape.
-# Runtime services:
-# - postgres
-# - livepeer-daemon
-# - livepeer-api
-# - optional livepeer-alert-bot
+# Production compose. SPEC §15.2 — single-host shape.
 #
-# Bootstrap / replay / seed import are one-shot tools, run via:
-#   docker compose -f docker-compose.prod.yml run --rm livepeer-orchestrator ...
-#   docker compose -f docker-compose.prod.yml run --rm livepeer-seed-migrator ...
+# Conventions:
+# - Registry image: tztcloud/livepeer-valuation-system:latest
+# - Every service has hostname + container_name (debugging + log clarity)
+# - No exposed ports — all traffic is intra-network. Front a reverse proxy
+#   to publish API/metrics if needed.
+# - External volumes (livepeer-valuation-pgdata, livepeer-valuation-seed)
+#   and external network (livepeer-valuation) — created out-of-band so
+#   `docker compose down -v` can't destroy persistent state.
+# - --env-config config/env/prod.yaml on every binary.
 #
-# Prometheus and Alertmanager remain external per SPEC §15.1.
+# Bring up:   docker compose -f docker-compose.prod.yml up -d
+# Tools:      docker compose -f docker-compose.prod.yml --profile tools run --rm livepeer-orchestrator ...
+# Alerting:   docker compose -f docker-compose.prod.yml --profile ops up -d livepeer-alert-bot
+#
+# Prometheus / Alertmanager remain external per SPEC §15.1.
 
 services:
   postgres:
     image: postgres:17
     restart: unless-stopped
+    hostname: livepeer-valuation-postgres
+    container_name: livepeer-valuation-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - livepeer-valuation-pgdata:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -30,15 +37,17 @@ services:
       retries: 5
 
   livepeer-daemon:
-    image: livepeer-valuation-system:latest
+    image: tztcloud/livepeer-valuation-system:latest
     command:
       - livepeer-daemon
       - --env-config
       - config/env/prod.yaml
       - follow
       - --max-start-lag-blocks
-      - "50000"
+      - "170000"
     restart: unless-stopped
+    hostname: livepeer-daemon
+    container_name: livepeer-daemon
     environment:
       DATABASE_URL: ${DATABASE_URL}
       CHAINSTACK_RPC_URL: ${CHAINSTACK_RPC_URL}
@@ -48,16 +57,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "9107:9107"
+    # ports:
+    #   - "9107:9107"
 
   livepeer-api:
-    image: livepeer-valuation-system:latest
+    image: tztcloud/livepeer-valuation-system:latest
     command:
       - livepeer-api
       - --env-config
       - config/env/prod.yaml
     restart: unless-stopped
+    hostname: livepeer-api
+    container_name: livepeer-api
     environment:
       DATABASE_URL: ${DATABASE_URL}
       CHAINSTACK_RPC_URL: ${CHAINSTACK_RPC_URL}
@@ -67,63 +78,205 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "8080:8080"
+    # ports:
+    #   - "8080:8080"
 
-  livepeer-alert-bot:
-    image: livepeer-valuation-system:latest
+  # ── Derived-data workers (NOT inside livepeer-daemon follow). Without
+  # these, the dashboard's 24 h aggregates go stale, ENS names don't refresh,
+  # and report CSVs fall back to slow per-tx RPC for unknown tx fees.
+
+  livepeer-rollups-payouts:
+    image: tztcloud/livepeer-valuation-system:latest
     command:
-      - livepeer-alert-bot
+      - livepeer-rollups
       - --env-config
       - config/env/prod.yaml
+      - orch-payouts-daily
+      - --batch-limit
+      - "50000"
+      - --follow
     restart: unless-stopped
+    hostname: livepeer-rollups-payouts
+    container_name: livepeer-rollups-payouts
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
-      ALERT_BOT_BIND: ${ALERT_BOT_BIND:-0.0.0.0:9111}
       RUST_LOG: ${RUST_LOG:-info}
-    profiles: ["ops"]
-    ports:
-      - "9111:9111"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
-  livepeer-orchestrator:
-    image: livepeer-valuation-system:latest
+  livepeer-rollups-rewards:
+    image: tztcloud/livepeer-valuation-system:latest
     command:
-      - livepeer-orchestrator
+      - livepeer-rollups
       - --env-config
       - config/env/prod.yaml
+      - orch-rewards-daily
+      - --follow
+    restart: unless-stopped
+    hostname: livepeer-rollups-rewards
+    container_name: livepeer-rollups-rewards
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  livepeer-rollups-tickets:
+    image: tztcloud/livepeer-valuation-system:latest
+    command:
+      - livepeer-rollups
+      - --env-config
+      - config/env/prod.yaml
+      - tickets-daily
+      - --follow
+    restart: unless-stopped
+    hostname: livepeer-rollups-tickets
+    container_name: livepeer-rollups-tickets
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # TD-018: backs broad-window /aggregations/events queries from the
+  # event_metrics_daily rollup, off the raw-events scan path.
+  livepeer-rollups-event-metrics:
+    image: tztcloud/livepeer-valuation-system:latest
+    command:
+      - livepeer-rollups
+      - --env-config
+      - config/env/prod.yaml
+      - event-metrics-daily
+      - --batch-limit
+      - "50000"
+      - --follow
+    restart: unless-stopped
+    hostname: livepeer-rollups-event-metrics
+    container_name: livepeer-rollups-event-metrics
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ENS name + avatar resolution for new addresses. L1 (Ethereum mainnet) only.
+  livepeer-enricher:
+    image: tztcloud/livepeer-valuation-system:latest
+    command:
+      - livepeer-enricher
+      - --env-config
+      - config/env/prod.yaml
+      - follow
+    restart: unless-stopped
+    hostname: livepeer-enricher
+    container_name: livepeer-enricher
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      L1_RPC_URL: ${L1_RPC_URL}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # TD-020: materializes tx receipts (gas, fee, status) into tx_receipts so
+  # report endpoints don't fan out per-tx eth_getTransactionReceipt calls.
+  livepeer-staker-tx-receipts:
+    image: tztcloud/livepeer-valuation-system:latest
+    command:
+      - livepeer-staker
+      - --env-config
+      - config/env/prod.yaml
+      - tx-receipts-follow
+      - --batch-limit
+      - "5000"
+      - --concurrency
+      - "8"
+      - --cadence-secs
+      - "30"
+    restart: unless-stopped
+    hostname: livepeer-staker-tx-receipts
+    container_name: livepeer-staker-tx-receipts
     environment:
       DATABASE_URL: ${DATABASE_URL}
       CHAINSTACK_RPC_URL: ${CHAINSTACK_RPC_URL}
       SECONDARY_RPC_URL: ${SECONDARY_RPC_URL}
-      L1_RPC_URL: ${L1_RPC_URL}
       RUST_LOG: ${RUST_LOG:-info}
-    profiles: ["tools"]
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - livepeer-valuation-seed:/seed:ro
 
-  livepeer-seed-migrator:
-    image: livepeer-valuation-system:latest
-    command:
-      - livepeer-seed-migrator
-      - --env-config
-      - config/env/prod.yaml
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      RUST_LOG: ${RUST_LOG:-info}
-    profiles: ["tools"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - livepeer-valuation-seed:/seed:ro
+  # ── Optional: Telegram alerting (enable with --profile ops) ────────
+  # livepeer-alert-bot:
+  #   image: tztcloud/livepeer-valuation-system:latest
+  #   command:
+  #     - livepeer-alert-bot
+  #     - --env-config
+  #     - config/env/prod.yaml
+  #   restart: unless-stopped
+  #   hostname: livepeer-alert-bot
+  #   container_name: livepeer-alert-bot
+  #   environment:
+  #     DATABASE_URL: ${DATABASE_URL}
+  #     TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+  #     TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+  #     ALERT_BOT_BIND: ${ALERT_BOT_BIND:-0.0.0.0:9111}
+  #     RUST_LOG: ${RUST_LOG:-info}
+  #   profiles: ["ops"]
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+
+  # ── One-shot tools (enable with --profile tools run --rm) ──────────
+  # livepeer-orchestrator:
+  #   image: tztcloud/livepeer-valuation-system:latest
+  #   command:
+  #     - livepeer-orchestrator
+  #     - --env-config
+  #     - config/env/prod.yaml
+  #   hostname: livepeer-orchestrator
+  #   container_name: livepeer-orchestrator
+  #   environment:
+  #     DATABASE_URL: ${DATABASE_URL}
+  #     CHAINSTACK_RPC_URL: ${CHAINSTACK_RPC_URL}
+  #     SECONDARY_RPC_URL: ${SECONDARY_RPC_URL}
+  #     L1_RPC_URL: ${L1_RPC_URL}
+  #     RUST_LOG: ${RUST_LOG:-info}
+  #   profiles: ["tools"]
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   volumes:
+  #     - livepeer-valuation-seed:/seed:ro
+
+  # livepeer-seed-migrator:
+  #   image: tztcloud/livepeer-valuation-system:latest
+  #   command:
+  #     - livepeer-seed-migrator
+  #     - --env-config
+  #     - config/env/prod.yaml
+  #   hostname: livepeer-seed-migrator
+  #   container_name: livepeer-seed-migrator
+  #   environment:
+  #     DATABASE_URL: ${DATABASE_URL}
+  #     RUST_LOG: ${RUST_LOG:-info}
+  #   profiles: ["tools"]
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   volumes:
+  #     - livepeer-valuation-seed:/seed:ro
 
 volumes:
   livepeer-valuation-pgdata:
     external: true
   livepeer-valuation-seed:
+    external: true
+
+networks:
+  default:
+    name: livepeer-valuation
     external: true

@@ -1,0 +1,70 @@
+@layer reset {
+  *, *::before, *::after { box-sizing: border-box; }
+  * { margin: 0; }
+
+  html, body { height: 100%; }
+  html { scrollbar-gutter: stable; }
+
+  body {
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  img, picture, video, canvas, svg {
+    display: block;
+    max-width: 100%;
+  }
+
+  input, button, textarea, select {
+    font: inherit;
+    color: inherit;
+  }
+
+  button {
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+
+  p, h1, h2, h3, h4, h5, h6 {
+    overflow-wrap: break-word;
+  }
+
+  h1, h2, h3 { text-wrap: balance; }
+  p, li     { text-wrap: pretty; }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  table { border-collapse: collapse; }
+
+  :where(:focus-visible) {
+    outline: 2px solid var(--accent, currentColor);
+    outline-offset: 2px;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0);
+    white-space: nowrap; border: 0;
+  }
+
+  .skip-link {
+    position: absolute;
+    inset-inline-start: 0;
+    inset-block-start: 0;
+    transform: translateY(-200%);
+    padding: var(--sp-2) var(--sp-4);
+    background: var(--accent);
+    color: var(--bg);
+    z-index: 100;
+    transition: transform .15s ease;
+
+    &:focus-visible { transform: translateY(0); }
+  }
+}

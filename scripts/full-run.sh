@@ -24,7 +24,7 @@ set -a; source .env; set +a
 export DATABASE_URL="postgres://livepeer:changeme@127.0.0.1:5432/livepeer_indexer"
 export STATIC_CONFIG="$ROOT/config/arbitrum.yaml"
 export ENV_CONFIG="$ROOT/config/env/dev.yaml"
-export SOURCE_SQLITE="/home/mazup/git-repos/livepeer-backend-rs/sqlite-4.0.db"
+export SOURCE_SQLITE="$ROOT/sqlite-4.0.db"
 
 GENESIS_BLOCK=6072093
 
@@ -58,6 +58,14 @@ TRUNCATE
     decode_failures,
     stake_balances_by_block,
     delegator_registry,
+    gateway_balances_by_block,
+    gateway_flows,
+    gateway_claimants_by_block,
+    orchestrator_profile,
+    broadcaster_profile,
+    orch_payouts_daily,
+    orch_rewards_daily,
+    tickets_daily,
     reorg_events,
     reorg_mutations,
     indexer_checkpoints,
@@ -65,7 +73,7 @@ TRUNCATE
     token_prices_by_block
 RESTART IDENTITY CASCADE;
 SQL
-echo "  preserved: seeded_event_prices, contract_abi_registry, rpc_call_cache"
+echo "  preserved: seeded_event_prices, contract_abi_registry, rpc_call_cache, classifications, overrides, ens"
 
 # ---------- Phase 3: verify-rpc (sanity) ----------
 phase "3. verify-rpc (RPC connectivity + cache row write)"
@@ -100,33 +108,41 @@ done
 EVT=$(psql_q "SELECT COUNT(*) FROM raw_protocol_events")
 echo "  raw_protocol_events: $EVT rows"
 
-# ---------- Phase 7: reorg watcher (single pass) ----------
-phase "7. reorg-watcher (single pass)"
-target/release/livepeer-reorg-watcher --once 2>&1 | tail -2
-
-# ---------- Phase 8: finality watcher (single pass) ----------
-phase "8. finality-watcher (single pass — promotes events to finalized)"
+# ---------- Phase 7: finality watcher (single pass) ----------
+phase "7. finality-watcher (single pass — promotes events to finalized)"
 target/release/livepeer-finality-watcher --once 2>&1 | tail -2
 
-# ---------- Phase 9: valuator (seed → ETH on-chain → LPT on-chain → multi-asset) ----------
-phase "9. Valuator (backfill-all)"
+# ---------- Phase 8: valuator (seed → ETH on-chain → LPT on-chain → multi-asset) ----------
+phase "8. Valuator (backfill-all)"
 target/release/livepeer-valuator backfill-all 2>&1 \
   | grep -E '"message":"(seed pass summary|on-chain ETH pass summary|on-chain LPT pass summary|multi-asset pass summary)"'
 
-# ---------- Phase 10: staker ----------
-phase "10. Staker — flow + refresh-pending"
+# ---------- Phase 9: staker ----------
+phase "9. Staker — flow + refresh-pending + gateway + profile"
 target/release/livepeer-staker backfill 2>&1 \
   | grep '"message":"staker flow backfill summary"'
 target/release/livepeer-staker refresh-pending 2>&1 \
   | grep '"message":"staker pending refresh summary"'
+target/release/livepeer-staker gateway-backfill 2>&1 || true
+target/release/livepeer-staker profile-backfill 2>&1 || true
 
-# ---------- Phase 11: cross-check ----------
-phase "11. Cross-check (TD-004 / SPEC §24.1)"
+# ---------- Phase 10: rollups ----------
+phase "10. Rollups — payouts + rewards + tickets"
+target/release/livepeer-rollups orch-payouts-daily 2>&1 || true
+target/release/livepeer-rollups orch-rewards-daily 2>&1 || true
+target/release/livepeer-rollups tickets-daily 2>&1 || true
+
+# ---------- Phase 11: enricher ----------
+phase "11. Enricher — ENS backfill"
+target/release/livepeer-enricher backfill 2>&1 || true
+
+# ---------- Phase 12: cross-check ----------
+phase "12. Cross-check (TD-004 / SPEC §24.1)"
 target/release/livepeer-seed-migrator cross-check --source-sqlite "$SOURCE_SQLITE" 2>&1 \
   | grep '"message":"cross-check report"'
 
-# ---------- Phase 12: final summary ----------
-phase "12. Final state summary"
+# ---------- Phase 13: final summary ----------
+phase "13. Final state summary"
 psql "$DATABASE_URL" -c "
 SELECT 'raw_protocol_events'   AS t, COUNT(*) AS rows FROM raw_protocol_events
 UNION ALL SELECT 'event_valuations',          COUNT(*) FROM event_valuations
@@ -134,8 +150,17 @@ UNION ALL SELECT 'valuation_attempts',        COUNT(*) FROM valuation_attempts
 UNION ALL SELECT 'decode_failures',           COUNT(*) FROM decode_failures
 UNION ALL SELECT 'stake_balances_by_block',   COUNT(*) FROM stake_balances_by_block
 UNION ALL SELECT 'delegator_registry',        COUNT(*) FROM delegator_registry
+UNION ALL SELECT 'gateway_balances_by_block', COUNT(*) FROM gateway_balances_by_block
+UNION ALL SELECT 'gateway_flows',             COUNT(*) FROM gateway_flows
+UNION ALL SELECT 'gateway_claimants_by_block',COUNT(*) FROM gateway_claimants_by_block
+UNION ALL SELECT 'orchestrator_profile',      COUNT(*) FROM orchestrator_profile
+UNION ALL SELECT 'broadcaster_profile',       COUNT(*) FROM broadcaster_profile
+UNION ALL SELECT 'orch_payouts_daily',        COUNT(*) FROM orch_payouts_daily
+UNION ALL SELECT 'orch_rewards_daily',        COUNT(*) FROM orch_rewards_daily
+UNION ALL SELECT 'tickets_daily',             COUNT(*) FROM tickets_daily
+UNION ALL SELECT 'orchestrator_ens',          COUNT(*) FROM orchestrator_ens
+UNION ALL SELECT 'broadcaster_ens',           COUNT(*) FROM broadcaster_ens
 UNION ALL SELECT 'token_prices_by_block',     COUNT(*) FROM token_prices_by_block
-UNION ALL SELECT 'reorg_events',              COUNT(*) FROM reorg_events
 UNION ALL SELECT 'rpc_call_cache',            COUNT(*) FROM rpc_call_cache
 UNION ALL SELECT 'rpc_divergence_failures',   COUNT(*) FROM rpc_divergence_failures
 UNION ALL SELECT 'seeded_event_prices',       COUNT(*) FROM seeded_event_prices

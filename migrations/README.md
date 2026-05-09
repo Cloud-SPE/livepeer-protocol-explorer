@@ -35,6 +35,15 @@ Authoritative schema: [SPEC §11](../docs/product-specs/v1-livepeer-indexer.md#1
 | 012 | create_rpc_divergence_failures | §11.13 |
 | 013 | create_reorg_events | §11.14 |
 | 014 | create_reorg_mutations | §11.15 |
+| 028 | create_broadcaster_classifications | TD-017 Phase 0 |
+| 029 | create_name_avatar_overrides | TD-017 Phase 0 |
+| 030 | create_orchestrator_profile | TD-017 Phase 1 |
+| 031 | create_broadcaster_profile | TD-017 Phase 1 |
+| 032 | create_orchestrator_ens | TD-017 Phase 1 |
+| 033 | create_broadcaster_ens | TD-017 Phase 1 |
+| 034 | create_orch_payouts_daily | TD-017 Phase 2 |
+| 035 | create_orch_rewards_daily | TD-017 Phase 3 |
+| 036 | create_tickets_daily | TD-017 Phase 3 |
 
 ## Authoring
 

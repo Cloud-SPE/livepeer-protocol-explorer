@@ -167,6 +167,110 @@ FROM (
   FROM delegator_registry
 ) s;")
 
+orchestrator_profile_count=$(psqlq "SELECT COUNT(*) FROM orchestrator_profile;")
+orchestrator_profile_md5=$(psqlq "
+SELECT COALESCE(md5(string_agg(row_md5, '' ORDER BY chain_id, address)), md5(''))
+FROM (
+  SELECT chain_id, address,
+         md5(concat_ws('§',
+           chain_id::text,
+           address,
+           total_stake::text,
+           latest_fee_cut_percent::text,
+           latest_reward_cut_percent::text,
+           latest_fee_share_percent::text,
+           is_active::text,
+           COALESCE(last_lifecycle_event_at::text, ''),
+           as_of_block::text,
+           COALESCE(as_of_round::text, ''),
+           last_event_id::text,
+           COALESCE(service_uri, '')
+         )) AS row_md5
+  FROM orchestrator_profile
+) s;")
+
+broadcaster_profile_count=$(psqlq "SELECT COUNT(*) FROM broadcaster_profile;")
+broadcaster_profile_md5=$(psqlq "
+SELECT COALESCE(md5(string_agg(row_md5, '' ORDER BY chain_id, address)), md5(''))
+FROM (
+  SELECT chain_id, address,
+         md5(concat_ws('§',
+           chain_id::text,
+           address,
+           latest_deposit::text,
+           latest_reserve::text,
+           unlock_in_progress::text,
+           as_of_block::text,
+           last_event_id::text
+         )) AS row_md5
+  FROM broadcaster_profile
+) s;")
+
+orch_payouts_daily_count=$(psqlq "SELECT COUNT(*) FROM orch_payouts_daily;")
+orch_payouts_daily_md5=$(psqlq "
+SELECT COALESCE(md5(string_agg(row_md5, '' ORDER BY chain_id, day_utc, orchestrator_address, valuation_version, broadcaster_kind)), md5(''))
+FROM (
+  SELECT chain_id, day_utc, orchestrator_address, valuation_version, broadcaster_kind,
+         md5(concat_ws('§',
+           chain_id::text,
+           day_utc::text,
+           orchestrator_address,
+           valuation_version,
+           broadcaster_kind,
+           ticket_count::text,
+           sum_face_value_native::text,
+           sum_face_value_usd::text,
+           sum_commission_native::text,
+           sum_commission_usd::text,
+           sum_delegators_share_native::text,
+           sum_delegators_share_usd::text,
+           distinct_gateways::text,
+           usd_rows_priced::text,
+           source_max_event_id::text
+         )) AS row_md5
+  FROM orch_payouts_daily
+) s;")
+
+orch_rewards_daily_count=$(psqlq "SELECT COUNT(*) FROM orch_rewards_daily;")
+orch_rewards_daily_md5=$(psqlq "
+SELECT COALESCE(md5(string_agg(row_md5, '' ORDER BY chain_id, day_utc, orchestrator_address, valuation_version)), md5(''))
+FROM (
+  SELECT chain_id, day_utc, orchestrator_address, valuation_version,
+         md5(concat_ws('§',
+           chain_id::text,
+           day_utc::text,
+           orchestrator_address,
+           valuation_version,
+           reward_event_count::text,
+           sum_total_tokens::text,
+           sum_total_tokens_usd::text,
+           sum_orch_tokens::text,
+           sum_orch_tokens_usd::text,
+           sum_delegators_tokens::text,
+           sum_delegators_tokens_usd::text,
+           usd_rows_priced::text,
+           source_max_event_id::text
+         )) AS row_md5
+  FROM orch_rewards_daily
+) s;")
+
+tickets_daily_count=$(psqlq "SELECT COUNT(*) FROM tickets_daily;")
+tickets_daily_md5=$(psqlq "
+SELECT COALESCE(md5(string_agg(row_md5, '' ORDER BY chain_id, day_utc, broadcaster_kind)), md5(''))
+FROM (
+  SELECT chain_id, day_utc, broadcaster_kind,
+         md5(concat_ws('§',
+           chain_id::text,
+           day_utc::text,
+           broadcaster_kind,
+           ticket_count::text,
+           distinct_orchestrators::text,
+           distinct_gateways::text,
+           source_max_event_id::text
+         )) AS row_md5
+  FROM tickets_daily
+) s;")
+
 reorg_events_count=$(psqlq "SELECT COUNT(*) FROM reorg_events;")
 reorg_events_md5=$(psqlq "
 SELECT COALESCE(md5(string_agg(row_md5, '' ORDER BY id)), md5(''))
@@ -193,6 +297,11 @@ cat > "$OUT" <<EOF
   "token_prices_by_block": {"count": $token_prices_count, "md5": "$token_prices_md5"},
   "stake_balances_by_block": {"count": $stake_count, "md5": "$stake_md5"},
   "delegator_registry": {"count": $delegator_registry_count, "md5": "$delegator_registry_md5"},
+  "orchestrator_profile": {"count": $orchestrator_profile_count, "md5": "$orchestrator_profile_md5"},
+  "broadcaster_profile": {"count": $broadcaster_profile_count, "md5": "$broadcaster_profile_md5"},
+  "orch_payouts_daily": {"count": $orch_payouts_daily_count, "md5": "$orch_payouts_daily_md5"},
+  "orch_rewards_daily": {"count": $orch_rewards_daily_count, "md5": "$orch_rewards_daily_md5"},
+  "tickets_daily": {"count": $tickets_daily_count, "md5": "$tickets_daily_md5"},
   "reorg_events": {"count": $reorg_events_count, "md5": "$reorg_events_md5"}
 }
 EOF

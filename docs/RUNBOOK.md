@@ -13,6 +13,7 @@ Authoritative reference: [SPEC §19](product-specs/v1-livepeer-indexer.md#19-ope
 
 Deployment walkthrough:
 - [DEPLOYMENT.md](DEPLOYMENT.md)
+- [POSTGRES_MAINTENANCE.md](POSTGRES_MAINTENANCE.md)
 
 ## 1. Daily operations
 
@@ -184,10 +185,40 @@ If only derived tables are suspect:
   - `token_prices_by_block`
   - `stake_balances_by_block`
   - `delegator_registry`
-- rerun valuator + staker stages
+  - `orch_stake_by_round` (TD-026)
+  - `tx_receipts` (TD-020)
+  - `event_metrics_daily` (TD-018)
+- after the truncate, refresh the matviews so they reflect the empty state:
+  - `REFRESH MATERIALIZED VIEW broadcaster_profile;`
+  - `REFRESH MATERIALIZED VIEW orchestrator_profile;`
+- rerun valuator + staker + rollup stages
+- (the replay path does all of this for you — see "Deep replay" above)
 
 If raw events are suspect:
-- rerun full `bootstrap`
+
+`bootstrap` does not reset the database — it assumes a clean DB and is
+idempotent on top of existing state. To rebuild raw events from cache:
+
+- **Preferred**: `livepeer-orchestrator replay --to-block <head>` (without
+  `--keep-raw-events`). This truncates raw + all derived state, then
+  re-runs the indexer using `rpc_call_cache` as the source. Determinism
+  contract preserved.
+- **Nuclear option**: `DROP DATABASE livepeer_indexer; CREATE DATABASE
+  livepeer_indexer;` then run `bootstrap` from scratch. Only viable if
+  you have a `seeded_event_prices` SQLite source still — without it,
+  the seed import phase has nothing to feed off.
+
+**Do not** "rerun bootstrap" on a populated DB expecting recovery: the
+indexer's writes are intentionally idempotent, so dirty rows survive
+the rerun. The `truncate_for_bootstrap` function exists in
+`crates/livepeer-orchestrator/src/reset.rs` but is intentionally not
+wired into `bootstrap::run` — invoking it requires explicit operator
+intent.
+
+**Never** truncate `rpc_call_cache`, `seeded_event_prices`, or
+`raw_protocol_events` outside of an intentional, backup-protected
+deterministic-rebuild operation. See `docs/POSTGRES_MAINTENANCE.md` for
+the do-not-purge list.
 
 ## 6. Failure response
 

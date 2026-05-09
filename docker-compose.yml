@@ -3,7 +3,7 @@
 
 services:
   postgres:
-    image: postgres:15
+    image: postgres:17
     restart: unless-stopped
     env_file: .env
     volumes:
@@ -71,6 +71,60 @@ services:
         condition: service_healthy
     ports:
       - "9105:9105"
+
+  # TD-019: live-mode refresh of orchestrator_profile / broadcaster_profile.
+  # Standalone follow loop around `profile-backfill`, mirroring the rollup
+  # workers' --follow pattern. Cadence default 300s.
+  livepeer-staker-profile-follow:
+    image: livepeer-valuation-system:latest
+    command: livepeer-staker profile-follow
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # TD-020: tx_receipts backfill + follow. Combines historical backfill of
+  # ~1.4M unique tx_hashes with steady-state follow once caught up. The
+  # follow loop skip-sleeps while there are still candidates, then sleeps
+  # cadence_secs (default 300s) once the table is fully materialized.
+  livepeer-staker-tx-receipts-follow:
+    image: livepeer-valuation-system:latest
+    command: livepeer-staker tx-receipts-follow
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  livepeer-enricher:
+    image: livepeer-valuation-system:latest
+    command: livepeer-enricher follow
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  livepeer-rollups:
+    image: livepeer-valuation-system:latest
+    command: livepeer-rollups orch-payouts-daily --follow
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # TD-018 Phase 1: backs broad-window /aggregations/events queries from
+  # the daily event_metrics_daily rollup, off the raw-events scan path.
+  livepeer-rollups-event-metrics:
+    image: livepeer-valuation-system:latest
+    command: livepeer-rollups event-metrics-daily --follow
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   livepeer-api:
     image: livepeer-valuation-system:latest

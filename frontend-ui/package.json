@@ -1,0 +1,42 @@
+{
+  "name": "frontend-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lit + TypeScript SPA frontend for the crypto-price-feed Livepeer indexer API.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:visual": "playwright test",
+    "test:visual:update": "playwright test --update-snapshots",
+    "lint": "eslint .",
+    "fmt": "prettier --write .",
+    "fmt:check": "prettier --check ."
+  },
+  "dependencies": {
+    "dnum": "^2.14.1",
+    "echarts": "^5.5.1",
+    "lit": "^3.3.0",
+    "marked": "^15.0.6",
+    "openai": "^6.25.0",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@open-wc/testing": "^4.0.0",
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.9.0",
+    "@typescript-eslint/eslint-plugin": "^8.16.0",
+    "@typescript-eslint/parser": "^8.16.0",
+    "eslint": "^9.16.0",
+    "happy-dom": "^20.9.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.4.2",
+    "vitest": "^3.2.4"
+  }
+}

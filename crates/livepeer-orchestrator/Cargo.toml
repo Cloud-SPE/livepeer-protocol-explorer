@@ -23,4 +23,5 @@ livepeer-indexer = { path = "../livepeer-indexer" }
 livepeer-finality-watcher = { path = "../livepeer-finality-watcher" }
 livepeer-valuator = { path = "../livepeer-valuator" }
 livepeer-staker = { path = "../livepeer-staker" }
+livepeer-rollups = { path = "../livepeer-rollups" }
 livepeer-seed-migrator = { path = "../livepeer-seed-migrator" }

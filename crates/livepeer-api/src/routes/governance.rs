@@ -1,6 +1,7 @@
 //! Governance convenience endpoint. SPEC §14.3.7.
 //! Joins `ProposalCreated` + `ProposalExecuted` + per-proposal `VoteCast` tallies.
 
+use crate::cursor::Cursor;
 use crate::{error::ApiError, state::AppState};
 use axum::{
     extract::{Path, Query, State},
@@ -53,6 +54,46 @@ pub struct VoteTally {
 #[schema(description = "Collection response for governance proposals.")]
 pub struct ProposalListResponse {
     pub data: Vec<ProposalRow>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
+#[schema(description = "Query parameters for governance vote history.")]
+pub struct VotesQuery {
+    pub proposal_id: Option<String>,
+    pub voter: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "One canonical Governor vote event.")]
+pub struct VoteRow {
+    pub event_id: String,
+    pub event_name: String,
+    pub proposal_id: String,
+    pub voter: String,
+    pub support: String,
+    pub weight: String,
+    pub reason: Option<String>,
+    pub block_number: String,
+    pub block_timestamp: DateTime<Utc>,
+    pub tx_hash: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Coverage metadata for the governor vote stream.")]
+pub struct VotesCoverage {
+    pub domain: String,
+    pub backfill_complete: bool,
+    pub last_processed_block: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(description = "Paginated governance vote history response.")]
+pub struct VoteListResponse {
+    pub data: Vec<VoteRow>,
+    pub next_cursor: Option<String>,
+    pub meta: VotesCoverage,
 }
 
 #[utoipa::path(
@@ -278,6 +319,119 @@ pub async fn get_one(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/governance/votes",
+    tag = "Governance",
+    params(VotesQuery),
+    responses(
+        (status = 200, description = "Canonical VoteCast rows with optional proposal/voter filtering.", body = VoteListResponse),
+        (status = 400, description = "Invalid filter or cursor.", body = crate::error::ErrorEnvelope)
+    )
+)]
+pub async fn votes(
+    State(state): State<AppState>,
+    Query(q): Query<VotesQuery>,
+) -> Result<Json<VoteListResponse>, ApiError> {
+    let limit = q.limit.unwrap_or(100).min(1000) as i64;
+    let cursor = q.cursor.as_deref().map(Cursor::decode).transpose()?;
+    let voter = q.voter.as_deref().map(normalize_addr).transpose()?;
+    let cursor_clause = match cursor {
+        Some(_) => "AND (e.block_number, e.log_index) < ($4, $5)",
+        None => "",
+    };
+    let sql = format!(
+        r#"SELECT e.id AS event_id,
+                  e.event_name,
+                  e.block_number,
+                  e.log_index,
+                  e.block_timestamp,
+                  e.tx_hash,
+                  e.raw_event -> 'decoded' ->> 'proposalId' AS proposal_id,
+                  e.raw_event -> 'decoded' ->> 'voter' AS voter,
+                  e.raw_event -> 'decoded' ->> 'support' AS support,
+                  e.raw_event -> 'decoded' ->> 'weight' AS weight,
+                  e.raw_event -> 'decoded' ->> 'reason' AS reason
+             FROM raw_protocol_events e
+            WHERE e.chain_id = $1
+              AND e.is_canonical = TRUE
+              AND e.event_name IN ('VoteCast', 'VoteCastWithParams')
+              AND ($2::text IS NULL OR e.raw_event -> 'decoded' ->> 'proposalId' = $2)
+              AND ($3::text IS NULL OR e.from_address = $3)
+              {cursor_clause}
+         ORDER BY e.block_number DESC, e.log_index DESC
+            LIMIT $6"#,
+    );
+    let mut query = sqlx::query(&sql)
+        .bind(state.chain_id)
+        .bind(q.proposal_id.as_deref())
+        .bind(voter.as_deref());
+    if let Some(cursor) = cursor {
+        query = query.bind(cursor.block_number).bind(cursor.log_index);
+    } else {
+        query = query.bind(0_i64).bind(0_i32);
+    }
+    query = query.bind(limit + 1);
+    let rows = query.fetch_all(&state.pg).await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let page_rows = rows.into_iter().take(limit as usize).collect::<Vec<_>>();
+    let mut data = Vec::with_capacity(page_rows.len());
+    let mut next_cursor = None;
+    for row in page_rows {
+        if has_more {
+            next_cursor = Some(
+                Cursor {
+                    block_number: row.get("block_number"),
+                    log_index: row.get("log_index"),
+                }
+                .encode(),
+            );
+        }
+        data.push(VoteRow {
+            event_id: row.get::<i64, _>("event_id").to_string(),
+            event_name: row.get("event_name"),
+            proposal_id: row.get("proposal_id"),
+            voter: row.get("voter"),
+            support: row.get("support"),
+            weight: row.get("weight"),
+            reason: row.try_get("reason").ok(),
+            block_number: row.get::<i64, _>("block_number").to_string(),
+            block_timestamp: row.get("block_timestamp"),
+            tx_hash: row.get("tx_hash"),
+        });
+    }
+
+    let last_processed_block: Option<i64> = sqlx::query_scalar(
+        "SELECT last_processed_block FROM indexer_checkpoints WHERE name = 'indexer_Governor'",
+    )
+    .fetch_optional(&state.pg)
+    .await?;
+    let latest_event_block: Option<i64> = sqlx::query_scalar(
+        r#"SELECT MAX(block_number)
+             FROM raw_protocol_events
+            WHERE chain_id = $1
+              AND contract_name = 'Governor'
+              AND is_canonical = TRUE"#,
+    )
+    .bind(state.chain_id)
+    .fetch_one(&state.pg)
+    .await?;
+
+    Ok(Json(VoteListResponse {
+        data,
+        next_cursor: if has_more { next_cursor } else { None },
+        meta: VotesCoverage {
+            domain: "governor".to_string(),
+            backfill_complete: last_processed_block
+                .zip(latest_event_block)
+                .map(|(cp, max)| cp >= max)
+                .unwrap_or(false),
+            last_processed_block: last_processed_block.map(|n| n.to_string()),
+        },
+    }))
+}
+
 fn parse_status_filter(status: Option<&str>) -> Result<&str, ApiError> {
     match status.unwrap_or("all") {
         "executed" | "not_executed" | "active" | "all" => Ok(status.unwrap_or("all")),
@@ -285,4 +439,12 @@ fn parse_status_filter(status: Option<&str>) -> Result<&str, ApiError> {
             "invalid status {other:?}; use executed | not_executed | active | all"
         ))),
     }
+}
+
+fn normalize_addr(raw: &str) -> Result<String, ApiError> {
+    let lowered = raw.to_lowercase();
+    if lowered.len() != 42 || !lowered.starts_with("0x") {
+        return Err(ApiError::bad_request("invalid voter address"));
+    }
+    Ok(lowered)
 }

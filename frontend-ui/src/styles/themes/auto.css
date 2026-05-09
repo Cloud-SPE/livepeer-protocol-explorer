@@ -1,0 +1,33 @@
+@layer tokens {
+  /* Auto theme: follows OS color-scheme via light-dark().
+   * Each token resolves against `color-scheme`; we set it to `light dark`
+   * so the browser picks based on `prefers-color-scheme`.
+   *
+   * If the user explicitly picks "light" or "dark" via the theme switcher,
+   * those theme files (light.css / dark.css) take precedence over this
+   * block — they each set their own `color-scheme` and override the
+   * tokens directly, so light-dark() doesn't need to be involved.
+   */
+  :root[data-theme="auto"] {
+    color-scheme: light dark;
+
+    --bg:        light-dark(oklch(98% 0.005 250), oklch(15% 0 0));
+    --bg-elev:   light-dark(oklch(100% 0 0),     oklch(20% 0 0));
+    --bg-sunken: light-dark(oklch(96% 0.005 250), oklch(13% 0.005 200));
+    --fg:        light-dark(oklch(20% 0.02 250), oklch(96% 0.003 200));
+    --fg-muted:  color-mix(in oklab, var(--fg), transparent 22%);
+    --fg-subtle: color-mix(in oklab, var(--fg), transparent 44%);
+    --border:        light-dark(oklch(90% 0.01 250), color-mix(in oklab, white, transparent 92%));
+    --border-strong: light-dark(oklch(80% 0.015 250), color-mix(in oklab, white, transparent 86%));
+    --accent: light-dark(oklch(60% 0.18 255), oklch(50% 0.16 155));
+    --pos:    light-dark(oklch(55% 0.16 145), oklch(62% 0.16 145));
+    --neg:    light-dark(oklch(55% 0.20 25),  oklch(60% 0.20 25));
+    --warn:   light-dark(oklch(65% 0.16 75),  oklch(70% 0.16 75));
+    --info:   light-dark(oklch(60% 0.14 220), oklch(60% 0.14 220));
+
+    --accent-soft: color-mix(in oklab, var(--accent), var(--bg) 80%);
+    --accent-ring: rgb(from var(--accent) r g b / 0.32);
+    --pos-soft:    color-mix(in oklab, var(--pos),    var(--bg) 80%);
+    --neg-soft:    color-mix(in oklab, var(--neg),    var(--bg) 80%);
+  }
+}

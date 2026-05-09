@@ -14,7 +14,7 @@ rpc:
     url_env: CHAINSTACK_RPC_URL
     rate_limit_rps: 500
     burst: 1000
-    max_concurrent: 50
+    max_concurrent: 70
   secondary:
     # liveinfraspe — hosted HTTP RPC, non-archive. Earlier drafts of the
     # spec assumed a self-hosted Nitro; the actual setup is two hosted RPCs.

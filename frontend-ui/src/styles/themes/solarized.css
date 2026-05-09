@@ -1,0 +1,23 @@
+@layer tokens {
+  :root[data-theme="solarized"] {
+    color-scheme: light;
+    --bg:        oklch(96% 0.025 90);
+    --bg-elev:   oklch(98% 0.02 90);
+    --bg-sunken: oklch(92% 0.03 90);
+    --fg:        oklch(35% 0.04 220);
+    --fg-muted:  oklch(50% 0.04 220);
+    --fg-subtle: oklch(62% 0.04 220);
+    --border:    oklch(85% 0.04 90);
+    --border-strong: oklch(72% 0.045 90);
+    --accent:    oklch(55% 0.15 220);
+    --pos:       oklch(58% 0.15 140);
+    --neg:       oklch(55% 0.18 30);
+    --warn:      oklch(70% 0.15 70);
+    --info:      oklch(60% 0.13 200);
+
+    --accent-soft: color-mix(in oklab, var(--accent), var(--bg) 80%);
+    --accent-ring: rgb(from var(--accent) r g b / .35);
+    --pos-soft:    color-mix(in oklab, var(--pos),    var(--bg) 80%);
+    --neg-soft:    color-mix(in oklab, var(--neg),    var(--bg) 80%);
+  }
+}

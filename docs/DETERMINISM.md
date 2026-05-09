@@ -38,12 +38,35 @@ Replay currently reconstructs:
 - `token_prices_by_block`
 - `stake_balances_by_block`
 - `delegator_registry`
+- `orch_stake_by_round` — per-round orchestrator snapshots (TD-026)
+- `gateway_balances_by_block` — per-event gateway snapshots (TD-014)
+- `orch_payouts_daily`
+- `orch_rewards_daily`
+- `tickets_daily`
+- `tx_receipts` — deterministic projection of cached
+  `eth_getTransactionReceipt` responses (TD-020)
+
+Materialized views (deterministic projections of the above; require an
+explicit `REFRESH MATERIALIZED VIEW` before their content is observable
+post-replay):
+- `orchestrator_profile` — `SELECT DISTINCT ON (address) ... ORDER BY round DESC`
+  over `orch_stake_by_round` (TD-026)
+- `broadcaster_profile` — `SELECT DISTINCT ON (gateway) ... ORDER BY block_number DESC`
+  over `gateway_balances_by_block` (TD-025)
+
+In live mode, `livepeer-daemon` runs a 30-second `REFRESH MATERIALIZED VIEW
+CONCURRENTLY` loop that keeps both matviews fresh. In replay mode (no
+daemon), `scripts/run-determinism-replay.sh` issues a `REFRESH` before
+computing hashes so the matviews materialize their post-replay state.
 
 Key points:
 - indexer `eth_getLogs` calls now go through `rpc_call_cache`
 - valuator and staker RPC reads already route through cached call helpers
 - finality replay uses recorded L1 timestamp inputs from the original live run
   instead of resolving live `latest`
+- external tables remain explicitly out of scope for replay hashing:
+  `orchestrator_ens`, `broadcaster_ens`, `name_avatar_overrides`,
+  `broadcaster_classifications`
 
 ## Fixture contract
 

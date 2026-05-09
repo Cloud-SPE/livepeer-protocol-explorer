@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod cross_check;
 pub mod metrics;
+pub mod multicall;
 pub mod provider;
 
 pub use provider::{with_rpc_task_label, BlockTag, Provider, TaskRpcSnapshot};

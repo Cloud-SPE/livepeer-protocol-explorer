@@ -12,6 +12,7 @@ This document reflects the shipped runtime split:
 Authoritative references:
 - [SPEC §15](product-specs/v1-livepeer-indexer.md#15-deployment--configuration)
 - [RUNBOOK.md](RUNBOOK.md)
+- [POSTGRES_MAINTENANCE.md](POSTGRES_MAINTENANCE.md)
 
 ## 1. Server prerequisites
 

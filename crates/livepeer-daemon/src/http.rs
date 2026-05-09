@@ -29,6 +29,7 @@ async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl IntoRespon
     let mut buf = Vec::new();
     let mut families = metrics.registry.gather();
     families.extend(livepeer_core::rpc::metrics::gather());
+    families.extend(livepeer_staker::metrics::gather());
     if encoder.encode(&families, &mut buf).is_err() {
         return (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,

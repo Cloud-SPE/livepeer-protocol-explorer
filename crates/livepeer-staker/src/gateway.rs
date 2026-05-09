@@ -80,6 +80,7 @@ pub async fn run_gateway_backfill(
     cfg: &Config,
     include_tentative: bool,
 ) -> Result<GatewayBackfillSummary> {
+    let started = std::time::Instant::now();
     let flow_checkpoint = load_gateway_checkpoint(pg, GATEWAY_FLOW_CHECKPOINT).await?;
     let claimant_checkpoint = load_gateway_checkpoint(pg, GATEWAY_CLAIMANT_CHECKPOINT).await?;
     let balance_checkpoint = load_gateway_checkpoint(pg, GATEWAY_BALANCE_CHECKPOINT).await?;
@@ -105,13 +106,16 @@ pub async fn run_gateway_backfill(
         GATEWAY_BALANCE_BATCH_LIMIT,
     )
     .await?;
+    let initial_balance_candidates = balance_candidates.len() as i64;
+    let initial_flow_candidates = flow_candidates.len() as i64;
+    let initial_claimant_candidates = claimant_candidates.len() as i64;
     info!(
         flow_checkpoint,
         claimant_checkpoint,
         balance_checkpoint,
-        balance_candidates = balance_candidates.len(),
-        flow_candidates = flow_candidates.len(),
-        claimant_candidates = claimant_candidates.len(),
+        balance_candidates = initial_balance_candidates,
+        flow_candidates = initial_flow_candidates,
+        claimant_candidates = initial_claimant_candidates,
         "gateway backfill starting"
     );
 
@@ -187,7 +191,27 @@ pub async fn run_gateway_backfill(
 
     summary.gateways_touched = gateways.len() as u64;
     summary.claimants_touched = claimants.len() as u64;
-    info!(?summary, "gateway backfill complete");
+
+    let elapsed = started.elapsed();
+    info!(
+        ?summary,
+        elapsed_ms = elapsed.as_millis() as u64,
+        "gateway backfill complete"
+    );
+
+    crate::metrics::record_gateway_iteration(
+        initial_balance_candidates,
+        summary.balance_rows_written,
+        summary.balance_checkpoint_block,
+        initial_flow_candidates,
+        summary.flow_rows_written,
+        summary.flow_checkpoint_block,
+        initial_claimant_candidates,
+        summary.claimant_rows_written,
+        summary.claimant_checkpoint_block,
+        elapsed.as_secs() as i64,
+        true,
+    );
     Ok(summary)
 }
 

@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_events_winning_ticket_to_addr_time;

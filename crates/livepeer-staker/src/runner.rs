@@ -2,6 +2,8 @@ use crate::{
     flow::{self, FlowSummary},
     gateway::{self, GatewayBackfillSummary},
     pending::{self, PendingSummary},
+    profile::{self, ProfileBackfillSummary},
+    tx_receipts::{self, TxReceiptsBackfillSummary},
 };
 use anyhow::Result;
 use livepeer_core::{config::Config, rpc::Provider};
@@ -28,4 +30,24 @@ pub async fn run_refresh_pending(
 ) -> Result<PendingSummary> {
     let bonding_manager = cfg.static_.contracts.bonding_manager.to_lowercase();
     pending::refresh_pending(pg, archive, &bonding_manager, include_tentative).await
+}
+
+pub async fn run_profile_backfill(
+    pg: &PgPool,
+    archive: &Provider,
+    cfg: &Config,
+    include_tentative: bool,
+) -> Result<ProfileBackfillSummary> {
+    profile::run_profile_backfill(pg, archive, cfg, include_tentative).await
+}
+
+pub async fn run_tx_receipts_backfill(
+    pg: &PgPool,
+    archive: &Provider,
+    include_tentative: bool,
+    batch_limit: i64,
+    concurrency: usize,
+) -> Result<TxReceiptsBackfillSummary> {
+    tx_receipts::run_tx_receipts_backfill(pg, archive, include_tentative, batch_limit, concurrency)
+        .await
 }

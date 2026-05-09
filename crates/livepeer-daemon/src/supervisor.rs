@@ -19,6 +19,7 @@ const REORG_INTERVAL_SECS: u64 = 60;
 const FINALITY_INTERVAL_SECS: u64 = 60;
 const VALUATOR_INTERVAL_SECS: u64 = 60;
 const STAKER_INTERVAL_SECS: u64 = 300;
+const MATVIEW_REFRESH_INTERVAL_SECS: u64 = 30;
 const INDEXER_HEAD_DEPTH_BLOCKS: u64 = 10;
 const INDEXER_PER_TICK_BLOCKS: u64 = 1_000;
 
@@ -105,19 +106,67 @@ pub async fn run_follow(
         shutdown.clone(),
         follow.include_tentative,
     ));
+    let matview_task = tokio::spawn(matview_refresh_loop(
+        pg.clone(),
+        metrics.clone(),
+        shutdown.clone(),
+    ));
 
-    let (a, b, c, d, e) = tokio::join!(
+    let (a, b, c, d, e, f) = tokio::join!(
         indexer_task,
         finality_task,
         reorg_task,
         valuator_task,
-        staker_task
+        staker_task,
+        matview_task
     );
-    for r in [a, b, c, d, e] {
+    for r in [a, b, c, d, e, f] {
         match r {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e),
             Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// TD-025/TD-026: refresh derived materialized views on a tight cadence
+/// so API reads against `broadcaster_profile` and `orchestrator_profile`
+/// track upstream writes to their source tables within
+/// ~`MATVIEW_REFRESH_INTERVAL_SECS`. CONCURRENTLY uses the unique index
+/// on (chain_id, address) and does not block readers.
+async fn matview_refresh_loop(
+    pg: PgPool,
+    metrics: Arc<Metrics>,
+    shutdown: Arc<Notify>,
+) -> Result<()> {
+    /// (matview name, source table) — source name is informational only,
+    /// used for log/metric labels and to keep this list grep-able.
+    const VIEWS: &[&str] = &["broadcaster_profile", "orchestrator_profile"];
+
+    loop {
+        tokio::select! {
+            _ = shutdown.notified() => break,
+            _ = sleep(Duration::from_secs(MATVIEW_REFRESH_INTERVAL_SECS)) => {}
+        }
+        for view in VIEWS {
+            let started = std::time::Instant::now();
+            let sql = format!("REFRESH MATERIALIZED VIEW CONCURRENTLY {}", view);
+            match sqlx::query(&sql).execute(&pg).await {
+                Ok(_) => {
+                    let elapsed = started.elapsed().as_secs_f64();
+                    metrics.record_matview_refresh(view, elapsed, true);
+                }
+                Err(e) => {
+                    tracing::warn!(target: "livepeer_daemon::supervisor",
+                        view = %view, error = %e, "matview refresh failed");
+                    metrics.record_matview_refresh(
+                        view,
+                        started.elapsed().as_secs_f64(),
+                        false,
+                    );
+                }
+            }
         }
     }
     Ok(())

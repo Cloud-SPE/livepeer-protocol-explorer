@@ -1,9 +1,16 @@
 pub mod aggregations;
+pub mod delegators;
 pub mod events;
 pub mod gateways;
 pub mod governance;
+pub mod network;
 pub mod operational;
+pub mod payouts;
 pub mod prices;
+pub mod profiles;
+pub mod reports;
+pub mod rewards;
 pub mod stake;
+pub mod tickets;
 pub mod transcoders;
 pub mod valuations;

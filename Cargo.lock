@@ -1812,9 +1812,9 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
 name = "futures"
-version = "0.3.32"
+version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
+checksum = "65bc07b1a8bc7c85c5f2e110c476c7389b4554ba72af57d8445ea63a576b0876"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -2543,6 +2543,7 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "clap",
+ "futures",
  "livepeer-core",
  "prometheus",
  "serde",
@@ -2561,6 +2562,7 @@ dependencies = [
 name = "livepeer-core"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "anyhow",
  "hex",
  "prometheus",
@@ -2594,6 +2596,23 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "livepeer-enricher"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "axum",
+ "clap",
+ "livepeer-core",
+ "prometheus",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2637,6 +2656,7 @@ dependencies = [
  "livepeer-core",
  "livepeer-finality-watcher",
  "livepeer-indexer",
+ "livepeer-rollups",
  "livepeer-seed-migrator",
  "livepeer-staker",
  "livepeer-valuator",
@@ -2659,6 +2679,21 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "livepeer-rollups"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bigdecimal",
+ "chrono",
+ "clap",
+ "livepeer-core",
+ "serde",
+ "sqlx",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2686,7 +2721,9 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "clap",
+ "futures",
  "livepeer-core",
+ "prometheus",
  "serde",
  "serde_json",
  "sqlx",

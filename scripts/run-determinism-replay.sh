@@ -48,6 +48,16 @@ for FIXTURE_DIR in "${CASE_DIRS[@]}"; do
     --to-block "$TO_BLOCK" \
     --skip-cross-check
 
+  # TD-025/TD-026: orchestrator_profile and broadcaster_profile are now
+  # materialized views over orch_stake_by_round and gateway_balances_by_block.
+  # Replay populates the source tables but the matviews need an explicit
+  # refresh before their post-replay content is observable for hashing.
+  # In live mode the daemon's matview-refresh loop handles this every 30 s.
+  psql "$DATABASE_URL" <<'SQL'
+REFRESH MATERIALIZED VIEW broadcaster_profile;
+REFRESH MATERIALIZED VIEW orchestrator_profile;
+SQL
+
   actual="$(mktemp)"
   bash scripts/compute-determinism-hashes.sh "$actual"
 

@@ -1,0 +1,18 @@
+[package]
+name = "livepeer-rollups"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bigdecimal.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+livepeer-core.workspace = true

@@ -1,9 +1,11 @@
 use crate::{reset, resolve_to_block, run_migrations, Runtime};
 use anyhow::{bail, Context, Result};
 use livepeer_indexer::{backfill::ContractKind, runner as indexer_runner};
+use livepeer_rollups::runner as rollup_runner;
 use livepeer_seed_migrator::runner as seed_runner;
 use livepeer_staker::runner as staker_runner;
 use livepeer_valuator::runner as valuator_runner;
+use sqlx::Row;
 use tracing::info;
 
 #[derive(Debug)]
@@ -50,6 +52,21 @@ pub async fn run(rt: &Runtime, opts: ReplayOpts) -> Result<()> {
             ContractKind::RoundsManager,
             ContractKind::Governor,
         ] {
+            let contract_address = match contract {
+                ContractKind::BondingManager => &rt.cfg.static_.contracts.bonding_manager,
+                ContractKind::TicketBroker => &rt.cfg.static_.contracts.ticket_broker,
+                ContractKind::LivepeerToken => &rt.cfg.static_.contracts.livepeer_token,
+                ContractKind::RoundsManager => &rt.cfg.static_.contracts.rounds_manager,
+                ContractKind::Governor => &rt.cfg.static_.contracts.governor,
+            };
+            if !has_cached_logs_for_contract(&rt.pg, contract_address).await? {
+                info!(
+                    contract = contract.name(),
+                    address = %contract_address,
+                    "replay: skipping contract because fixture cache contains no eth_getLogs rows for address"
+                );
+                continue;
+            }
             let summary = indexer_runner::run_backfill(
                 &rt.pg,
                 &rt.archive,
@@ -92,6 +109,19 @@ pub async fn run(rt: &Runtime, opts: ReplayOpts) -> Result<()> {
         staker_runner::run_refresh_pending(&rt.pg, &rt.archive, &rt.cfg, opts.include_tentative)
             .await?;
     info!(?pending, "replay: staker pending complete");
+    let profile =
+        staker_runner::run_profile_backfill(&rt.pg, &rt.archive, &rt.cfg, opts.include_tentative)
+            .await?;
+    info!(?profile, "replay: staker profile complete");
+    let payout_rollup =
+        rollup_runner::run_orch_payouts_daily(&rt.pg, opts.include_tentative, 10_000).await?;
+    info!(?payout_rollup, "replay: orch payouts rollup complete");
+    let rewards_rollup =
+        rollup_runner::run_orch_rewards_daily(&rt.pg, opts.include_tentative, 10_000).await?;
+    info!(?rewards_rollup, "replay: orch rewards rollup complete");
+    let tickets_rollup =
+        rollup_runner::run_tickets_daily(&rt.pg, opts.include_tentative, 10_000).await?;
+    info!(?tickets_rollup, "replay: tickets daily rollup complete");
 
     if !opts.skip_cross_check {
         if let Some(source_sqlite) = &rt.source_sqlite {
@@ -99,5 +129,28 @@ pub async fn run(rt: &Runtime, opts: ReplayOpts) -> Result<()> {
             info!(?report, "replay: cross-check complete");
         }
     }
+
+    // TD-025/TD-026: orchestrator_profile and broadcaster_profile are
+    // matviews. Replay rebuilt their source tables; refresh now so
+    // post-replay state is observable. In live mode the daemon's
+    // matview-refresh loop handles this every 30 s; replay has no daemon.
+    reset::refresh_derived_matviews(&rt.pg).await?;
+    info!("replay: matviews refreshed");
+
     Ok(())
+}
+
+async fn has_cached_logs_for_contract(pg: &sqlx::PgPool, address: &str) -> Result<bool> {
+    let row = sqlx::query(
+        r#"SELECT EXISTS(
+               SELECT 1
+                 FROM rpc_call_cache
+                WHERE method = 'eth_getLogs'
+                  AND lower(params->0->>'address') = $1
+           ) AS exists"#,
+    )
+    .bind(address.to_lowercase())
+    .fetch_one(pg)
+    .await?;
+    Ok(row.get::<bool, _>("exists"))
 }

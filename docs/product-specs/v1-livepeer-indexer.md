@@ -1,12 +1,18 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.8
+## Technical Specification v1.9
 
 **Status:** Living spec for the implemented v1 system
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.8
+**Document version:** 1.9
+
+### Changes since v1.8 (2026-05-05)
+
+- §14 — v1 reintroduces the legacy parity surfaces previously deferred from scope: CSV report endpoints, orchestrator/gateway metadata endpoints, and the `job_type` (`ai`/`transcoding`) filter via the TD-017 overlay + rollup design.
+- §14.3 — added the endpoint families reinstated by TD-017: payout/reward leaderboards and period summaries, ticket timeseries, CSV exports, entity profile lists, and governance vote history.
+- TD-017 Phase 0 also clarifies transcoder fee semantics: APIs must expose both protocol-perspective `fee_share_percent` and operator-perspective `fee_cut_percent` to avoid silent old/new parity drift.
 
 ### Changes since v1.7 (2026-05-05)
 
@@ -46,7 +52,7 @@
 - §14.3.1 — Events endpoint augmented: cursor-based pagination (opaque cursor, stable under append), sort whitelist, dual-address filter (`from_address` / `to_address` / `address`), `with_valuations=true` join, `asset`, `contract`, `event_name`.
 - §14.3.6 — NEW `/aggregations/events` endpoint covering daily/weekly/monthly USD totals + ticket-count timeseries. Replaces 4 legacy summary routes.
 - §14.3.7 — NEW `/governance/proposals` convenience endpoint joining `ProposalCreated` + `ProposalExecuted` + `VoteCast` aggregates.
-- §14 (consciously dropped from v1) — CSV report endpoints (JSON-only per §14.4); orchestrator/gateway metadata endpoints (deferred to v2 per §20); `job_type` (`ai`/`transcoding`) filter (no on-chain encoding; would require a manual overlay we are not maintaining).
+- §14 — CSV report endpoints, orchestrator/gateway metadata endpoints, and the `job_type` (`ai`/`transcoding`) filter are back in scope as of v1.9 via TD-017.
 
 ### Changes from v1.0 → v1.1 (2026-04-27)
 
@@ -1652,6 +1658,15 @@ context:
 - point-in-time combined transcoder profile
 - delegator set snapshots at a block
 
+Whenever fee policy is exposed, the API must return both:
+
+- `fee_share_percent` — the protocol-perspective share routed to delegators
+- `fee_cut_percent` — the operator-perspective share kept by the transcoder
+
+These fields sum to 100 by construction. This is required for legacy API
+parity because the old service stored fee semantics from the operator
+perspective.
+
 #### 14.3.7 Operational
 
 ```http
@@ -1709,6 +1724,36 @@ GET /governance/proposals/{proposal_id}/votes
 Convenience layer over `/events`. Each proposal row joins `ProposalCreated` with the `ProposalExecuted` row (if any) and includes a per-support-side vote-weight tally aggregated from `VoteCast`. Saves callers a 3-event-type query.
 
 Underlying data is still queryable via raw `/events?contract=Governor&event_name=...` for forensic use.
+
+#### 14.3.10 Legacy-parity surfaces (TD-017)
+
+The legacy API families reintroduced in v1.9 are:
+
+```http
+GET /orchestrators
+GET /orchestrators/{address}
+GET /gateways
+GET /gateways/{address}/profile
+GET /payouts/leaderboard
+GET /payouts/summary/daily/{date}
+GET /payouts/summary/weekly/{date}
+GET /payouts/summary/monthly/{date}
+GET /rewards/leaderboard
+GET /rewards/summary/daily/{date}
+GET /rewards/summary/weekly/{date}
+GET /rewards/summary/monthly/{date}
+GET /tickets/timeseries/daily
+GET /reports/payouts.csv
+GET /reports/rewards.csv
+GET /reports/gateway-payouts.csv
+GET /governance/votes
+```
+
+These routes restore the previously deferred CSV report, metadata/profile, and
+`job_type` filter use cases. Their implementation may combine deterministic
+on-chain state, deterministic rollups, and explicit non-deterministic overlays
+(ENS / operator-curated labels), but the deterministic tables remain subject to
+the replay contract from §12.4.
 
 ### 14.4 Response format
 

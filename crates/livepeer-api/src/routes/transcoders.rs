@@ -39,10 +39,16 @@ pub struct TranscoderParamsRow {
     pub block_timestamp: DateTime<Utc>,
     pub tx_hash: String,
     pub log_index: u32,
+    /// Raw on-chain `rewardCut` scaled by 1_000_000. This is already the operator keep.
     pub reward_cut_raw: String,
+    /// Operator-perspective reward cut percentage (raw / 10_000).
     pub reward_cut_percent: String,
+    /// Raw on-chain `feeShare` scaled by 1_000_000. This is the delegators' share.
     pub fee_share_raw: String,
+    /// Protocol-perspective fee share percentage (delegators' share).
     pub fee_share_percent: String,
+    /// Operator-perspective fee cut percentage (`100 - fee_share_percent`).
+    pub fee_cut_percent: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -316,6 +322,7 @@ async fn load_updates(
             reward_cut_percent: scaled_percent(&decoded.reward_cut_raw)?,
             fee_share_raw: decoded.fee_share_raw.clone(),
             fee_share_percent: scaled_percent(&decoded.fee_share_raw)?,
+            fee_cut_percent: inverse_scaled_percent(&decoded.fee_share_raw)?,
         });
         if out.len() >= limit as usize {
             break;
@@ -519,6 +526,16 @@ fn scaled_percent(raw: &str) -> Result<String, ApiError> {
     Ok((n / BigDecimal::from(PERCENT_DENOMINATOR))
         .normalized()
         .to_string())
+}
+
+fn inverse_scaled_percent(raw: &str) -> Result<String, ApiError> {
+    let share = BigDecimal::from_str(raw)
+        .map_err(|e| ApiError::internal(format!("parsing percentage value: {e}")))?;
+    Ok(
+        ((BigDecimal::from(1_000_000_i64) - share) / BigDecimal::from(PERCENT_DENOMINATOR))
+            .normalized()
+            .to_string(),
+    )
 }
 
 #[derive(Debug, Deserialize)]

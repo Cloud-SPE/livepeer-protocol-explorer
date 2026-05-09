@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # scripts/clean-rerun.sh
 #
-# Wipe indexer-derived tables and relaunch the parallel-5 indexer for a
-# clean determinism-replay run. Keeps rpc_call_cache, seeded_event_prices,
-# contract_abi_registry, and _sqlx_migrations.
+# Wipe runtime-derived tables and relaunch the parallel-5 indexer for a
+# clean real-data run. Keeps rpc_call_cache, seeded_event_prices,
+# contract_abi_registry, classifications / overrides, ENS tables, and _sqlx_migrations.
 #
-# Refuses to run if any indexer/valuator/staker process is alive.
+# Refuses to run if any runtime worker process is alive.
 # Refuses to run without --confirm.
 #
 # Usage:
@@ -34,6 +34,14 @@ Will TRUNCATE:
     stake_balances_by_block
     delegator_registry
     token_prices_by_block
+    gateway_balances_by_block
+    gateway_flows
+    gateway_claimants_by_block
+    orchestrator_profile
+    broadcaster_profile
+    orch_payouts_daily
+    orch_rewards_daily
+    tickets_daily
     reorg_events
     reorg_mutations
     rpc_divergence_failures
@@ -43,6 +51,10 @@ Will KEEP:
     rpc_call_cache         (deterministic backbone — replay accelerator)
     seeded_event_prices    (static SQLite overlay)
     contract_abi_registry  (boot validation)
+    broadcaster_classifications
+    name_avatar_overrides
+    orchestrator_ens
+    broadcaster_ens
     _sqlx_migrations
 
 Logs will move to logs.<UTC-stamp>/
@@ -51,7 +63,7 @@ EOF
 fi
 
 # Safety gate: refuse if any service is alive.
-ALIVE=$(pgrep -af 'livepeer-(indexer|valuator|staker|reorg|finality|seed-migrator)' \
+ALIVE=$(pgrep -af 'livepeer-(indexer|valuator|staker|reorg|finality|seed-migrator|rollups|enricher|orchestrator)' \
         | grep -vE 'service-registry|payment-daemon|openai-byoc' || true)
 if [[ -n "$ALIVE" ]]; then
   echo "REFUSING: indexer/valuator/staker processes still alive:"
@@ -83,6 +95,14 @@ TRUNCATE TABLE
   valuation_attempts,
   stake_balances_by_block,
   delegator_registry,
+  gateway_balances_by_block,
+  gateway_flows,
+  gateway_claimants_by_block,
+  orchestrator_profile,
+  broadcaster_profile,
+  orch_payouts_daily,
+  orch_rewards_daily,
+  tickets_daily,
   token_prices_by_block,
   reorg_events,
   reorg_mutations,
@@ -96,8 +116,15 @@ echo "Post-truncate row counts (sanity check):"
 psql "$DATABASE_URL" -c "
 SELECT 'raw_protocol_events'   AS t, COUNT(*) FROM raw_protocol_events
 UNION ALL SELECT 'event_valuations',          COUNT(*) FROM event_valuations
+UNION ALL SELECT 'gateway_balances_by_block', COUNT(*) FROM gateway_balances_by_block
+UNION ALL SELECT 'orchestrator_profile',      COUNT(*) FROM orchestrator_profile
+UNION ALL SELECT 'orch_payouts_daily',        COUNT(*) FROM orch_payouts_daily
 UNION ALL SELECT 'rpc_call_cache (kept)',     COUNT(*) FROM rpc_call_cache
 UNION ALL SELECT 'seeded_event_prices (kept)',COUNT(*) FROM seeded_event_prices
+UNION ALL SELECT 'broadcaster_classifications (kept)', COUNT(*) FROM broadcaster_classifications
+UNION ALL SELECT 'name_avatar_overrides (kept)', COUNT(*) FROM name_avatar_overrides
+UNION ALL SELECT 'orchestrator_ens (kept)', COUNT(*) FROM orchestrator_ens
+UNION ALL SELECT 'broadcaster_ens (kept)', COUNT(*) FROM broadcaster_ens
 UNION ALL SELECT 'contract_abi_registry (kept)', COUNT(*) FROM contract_abi_registry
 ORDER BY t;"
 echo

@@ -1,0 +1,23 @@
+@layer tokens {
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg:        oklch(98% 0.005 250);
+    --bg-elev:   oklch(100% 0 0);
+    --bg-sunken: oklch(96% 0.005 250);
+    --fg:        oklch(20% 0.02 250);
+    --fg-muted:  oklch(50% 0.02 250);
+    --fg-subtle: oklch(65% 0.02 250);
+    --border:    oklch(90% 0.01 250);
+    --border-strong: oklch(80% 0.015 250);
+    --accent:    oklch(60% 0.18 255);
+    --pos:       oklch(55% 0.16 145);
+    --neg:       oklch(55% 0.20 25);
+    --warn:      oklch(65% 0.16 75);
+    --info:      oklch(60% 0.14 220);
+
+    --accent-soft: color-mix(in oklab, var(--accent), var(--bg) 80%);
+    --accent-ring: rgb(from var(--accent) r g b / .35);
+    --pos-soft:    color-mix(in oklab, var(--pos),    var(--bg) 80%);
+    --neg-soft:    color-mix(in oklab, var(--neg),    var(--bg) 80%);
+  }
+}

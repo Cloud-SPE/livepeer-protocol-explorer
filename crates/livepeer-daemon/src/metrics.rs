@@ -18,6 +18,13 @@ pub struct Metrics {
     pub task_lag_blocks: IntGaugeVec,
     pub task_rpc_limit: IntGaugeVec,
     pub task_rpc_in_flight: IntGaugeVec,
+    /// `livepeer_matview_refresh_total{view,result}` — count of matview
+    /// refresh attempts by view name and outcome (TD-025).
+    pub matview_refresh_total: IntCounterVec,
+    /// `livepeer_matview_refresh_seconds{view}` — last observed refresh
+    /// duration. Exposed as a gauge (last sample) since each refresh is
+    /// one observation per cadence tick.
+    pub matview_refresh_seconds: prometheus::GaugeVec,
 }
 
 impl Metrics {
@@ -114,6 +121,22 @@ impl Metrics {
             &["task"],
         )
         .expect("metric construction");
+        let matview_refresh_total = IntCounterVec::new(
+            opts!(
+                "livepeer_matview_refresh_total",
+                "Materialized view refresh attempts by view and outcome"
+            ),
+            &["view", "result"],
+        )
+        .expect("metric construction");
+        let matview_refresh_seconds = prometheus::GaugeVec::new(
+            opts!(
+                "livepeer_matview_refresh_seconds",
+                "Wall-clock seconds for the most recent matview refresh"
+            ),
+            &["view"],
+        )
+        .expect("metric construction");
 
         for collector in [
             Box::new(iterations_total.clone()) as Box<dyn prometheus::core::Collector>,
@@ -128,6 +151,8 @@ impl Metrics {
             Box::new(task_lag_blocks.clone()),
             Box::new(task_rpc_limit.clone()),
             Box::new(task_rpc_in_flight.clone()),
+            Box::new(matview_refresh_total.clone()),
+            Box::new(matview_refresh_seconds.clone()),
         ] {
             registry.register(collector).expect("metric registration");
         }
@@ -146,7 +171,19 @@ impl Metrics {
             task_lag_blocks,
             task_rpc_limit,
             task_rpc_in_flight,
+            matview_refresh_total,
+            matview_refresh_seconds,
         }
+    }
+
+    pub fn record_matview_refresh(&self, view: &str, duration_seconds: f64, succeeded: bool) {
+        let result = if succeeded { "success" } else { "error" };
+        self.matview_refresh_total
+            .with_label_values(&[view, result])
+            .inc();
+        self.matview_refresh_seconds
+            .with_label_values(&[view])
+            .set(duration_seconds);
     }
 
     pub fn record_success(&self, task: &'static str, duration_seconds: f64) {

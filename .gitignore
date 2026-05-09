@@ -10,13 +10,13 @@ Cargo.lock.bak
 
 # Env / secrets
 .env
-.env.local
-.env.*.local
+.env.*
 !.env.example
 
 # Local Postgres data (if running outside docker volume)
 /pgdata
 *.dump
+/backups/
 
 # SQLite seeds — large; live outside the repo
 *.sqlite

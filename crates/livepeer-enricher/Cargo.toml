@@ -1,0 +1,20 @@
+[package]
+name = "livepeer-enricher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+alloy.workspace = true
+livepeer-core.workspace = true
+axum.workspace = true
+prometheus.workspace = true

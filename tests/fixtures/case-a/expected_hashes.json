@@ -1,10 +1,15 @@
 {
   "raw_protocol_events": {"count": 1300, "md5": "5f10495b13a232f85354fdce1ee83ab0"},
   "decode_failures": {"count": 0, "md5": "d41d8cd98f00b204e9800998ecf8427e"},
-  "event_valuations": {"count": 871, "md5": "a6791593415a38f13cfa52e9e4c47253"},
-  "valuation_attempts": {"count": 871, "md5": "19854d4c7517160c5c4da7d8991abb88"},
+  "event_valuations": {"count": 896, "md5": "12fe7bf79c1a30f3f88231aa03ac7768"},
+  "valuation_attempts": {"count": 896, "md5": "e799c9e9484de884050e45d07b8767ec"},
   "token_prices_by_block": {"count": 0, "md5": "d41d8cd98f00b204e9800998ecf8427e"},
   "stake_balances_by_block": {"count": 148, "md5": "4263dce0a929c49c4c138799513f10f9"},
   "delegator_registry": {"count": 137, "md5": "4d25b4c27ed8202683e2c6e937941e80"},
+  "orchestrator_profile": {"count": 71, "md5": "d7f8706a0ff0224827f3fe2f3a82bad2"},
+  "broadcaster_profile": {"count": 1, "md5": "d43fb8f63f2bfae383d4e279a2b34d7d"},
+  "orch_payouts_daily": {"count": 13, "md5": "dc60366c9f3a20d53b0e08ff39b2ba29"},
+  "orch_rewards_daily": {"count": 172, "md5": "bb60c60517647ae5cfc70c86483b3d55"},
+  "tickets_daily": {"count": 3, "md5": "75723077150eb2b9f9214e4893e969e2"},
   "reorg_events": {"count": 0, "md5": "d41d8cd98f00b204e9800998ecf8427e"}
 }

@@ -2,10 +2,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
 use livepeer_staker::runner;
-use std::path::PathBuf;
-use tracing::info;
+use std::{path::PathBuf, time::Duration};
+use tracing::{error, info};
 
 const SERVICE: &str = "livepeer-staker";
+const DEFAULT_PROFILE_FOLLOW_CADENCE_SECS: u64 = 300;
+const DEFAULT_TX_RECEIPTS_FOLLOW_CADENCE_SECS: u64 = 300;
 
 #[derive(Parser, Debug)]
 #[command(name = SERVICE, about = "Computes and persists delegator stake balances at event-touching blocks (Scope 2).")]
@@ -47,6 +49,36 @@ enum Command {
     /// calling BondingManager.pendingStake / pendingFees at each EarningsClaimed
     /// event block.
     RefreshPending,
+    /// (TD-017 Phase 1) Materialize deterministic orchestrator and broadcaster
+    /// profile rows from indexed trigger events plus cached point-in-time RPC reads.
+    ProfileBackfill,
+    /// (TD-019) Live-mode profile refresh. Wraps `profile-backfill` in a bounded
+    /// poll loop so `orchestrator_profile` and `broadcaster_profile` stay current
+    /// once history is caught up. Sleeps `cadence_secs` between iterations.
+    ProfileFollow {
+        #[arg(long, default_value_t = DEFAULT_PROFILE_FOLLOW_CADENCE_SECS)]
+        cadence_secs: u64,
+    },
+    /// (TD-020) One-shot bounded backfill of `tx_receipts`. Walks finalized
+    /// canonical events in `raw_protocol_events`, fetches each unique
+    /// tx_hash's `eth_getTransactionReceipt` via `single_call_cached`, and
+    /// writes a typed projection. Idempotent on `(chain_id, tx_hash)`.
+    TxReceiptsBackfill {
+        #[arg(long, default_value_t = livepeer_staker::tx_receipts::DEFAULT_BATCH_LIMIT)]
+        batch_limit: i64,
+        #[arg(long, default_value_t = livepeer_staker::tx_receipts::DEFAULT_CONCURRENCY)]
+        concurrency: usize,
+    },
+    /// (TD-020) Live-mode wrapper around `tx-receipts-backfill`. Skip-sleeps
+    /// while there are still candidates; sleeps `cadence_secs` once caught up.
+    TxReceiptsFollow {
+        #[arg(long, default_value_t = DEFAULT_TX_RECEIPTS_FOLLOW_CADENCE_SECS)]
+        cadence_secs: u64,
+        #[arg(long, default_value_t = livepeer_staker::tx_receipts::DEFAULT_BATCH_LIMIT)]
+        batch_limit: i64,
+        #[arg(long, default_value_t = livepeer_staker::tx_receipts::DEFAULT_CONCURRENCY)]
+        concurrency: usize,
+    },
 }
 
 #[tokio::main]
@@ -103,6 +135,114 @@ async fn main() -> Result<()> {
                 no_stake_row = summary.no_stake_row,
                 "staker pending refresh summary"
             );
+        }
+        Command::ProfileBackfill => {
+            let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
+            let archive = Provider::new("chainstack", archive_url)?;
+            let summary =
+                runner::run_profile_backfill(&pg, &archive, &cfg, cli.include_tentative).await?;
+            info!(
+                orch_events_seen = summary.orch_events_seen,
+                orch_rows_written = summary.orch_rows_written,
+                orchestrators_touched = summary.orchestrators_touched,
+                "staker profile backfill summary"
+            );
+        }
+        Command::ProfileFollow { cadence_secs } => {
+            let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
+            let archive = Provider::new("chainstack", archive_url)?;
+            info!(cadence_secs, "staker profile follow loop starting");
+            loop {
+                // Skip the cadence sleep while there's still work to do
+                // (events_seen > 0 means we processed a non-empty batch and
+                // there are likely more candidates waiting). The sleep is
+                // only needed once we're caught up. On error we sleep so a
+                // failing iteration doesn't tight-loop against the RPC.
+                let mut should_sleep = true;
+                match runner::run_profile_backfill(&pg, &archive, &cfg, cli.include_tentative)
+                    .await
+                {
+                    Ok(summary) => {
+                        info!(
+                            orch_events_seen = summary.orch_events_seen,
+                            orch_rows_written = summary.orch_rows_written,
+                            orchestrators_touched = summary.orchestrators_touched,
+                            "staker profile follow iteration summary"
+                        );
+                        if summary.orch_events_seen > 0 {
+                            should_sleep = false;
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "staker profile follow iteration failed")
+                    }
+                }
+                if should_sleep {
+                    tokio::time::sleep(Duration::from_secs(cadence_secs)).await;
+                }
+            }
+        }
+        Command::TxReceiptsBackfill {
+            batch_limit,
+            concurrency,
+        } => {
+            let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
+            let archive = Provider::new("chainstack", archive_url)?;
+            let summary = runner::run_tx_receipts_backfill(
+                &pg,
+                &archive,
+                cli.include_tentative,
+                batch_limit,
+                concurrency,
+            )
+            .await?;
+            info!(
+                candidates_seen = summary.candidates_seen,
+                rows_written = summary.rows_written,
+                rows_skipped_missing_receipt = summary.rows_skipped_missing_receipt,
+                last_processed_block = ?summary.last_processed_block,
+                elapsed_ms = summary.elapsed_ms,
+                "tx-receipts backfill summary"
+            );
+        }
+        Command::TxReceiptsFollow {
+            cadence_secs,
+            batch_limit,
+            concurrency,
+        } => {
+            let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
+            let archive = Provider::new("chainstack", archive_url)?;
+            info!(cadence_secs, batch_limit, concurrency, "staker tx-receipts follow loop starting");
+            loop {
+                let mut should_sleep = true;
+                match runner::run_tx_receipts_backfill(
+                    &pg,
+                    &archive,
+                    cli.include_tentative,
+                    batch_limit,
+                    concurrency,
+                )
+                .await
+                {
+                    Ok(summary) => {
+                        info!(
+                            candidates_seen = summary.candidates_seen,
+                            rows_written = summary.rows_written,
+                            rows_skipped_missing_receipt = summary.rows_skipped_missing_receipt,
+                            last_processed_block = ?summary.last_processed_block,
+                            elapsed_ms = summary.elapsed_ms,
+                            "tx-receipts follow iteration summary"
+                        );
+                        if summary.candidates_seen > 0 {
+                            should_sleep = false;
+                        }
+                    }
+                    Err(e) => error!(error = %e, "tx-receipts follow iteration failed"),
+                }
+                if should_sleep {
+                    tokio::time::sleep(Duration::from_secs(cadence_secs)).await;
+                }
+            }
         }
     }
     Ok(())

@@ -1,21 +1,9 @@
-mod abi;
-mod cursor;
-mod error;
-mod metrics;
-mod openapi;
-mod routes;
-mod state;
-
 use anyhow::{Context, Result};
-use axum::{routing::get, Router};
 use clap::Parser;
+use livepeer_api::{build_router, metrics, state::AppState};
 use livepeer_core::{config::Config, db, rpc::Provider, tracing_init};
-use state::AppState;
 use std::{net::SocketAddr, path::PathBuf};
-use tower_http::trace::TraceLayer;
 use tracing::info;
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
 
 const SERVICE: &str = "livepeer-api";
 
@@ -56,118 +44,7 @@ async fn main() -> Result<()> {
         metrics: std::sync::Arc::new(metrics::Metrics::new()),
     };
 
-    let router = Router::new()
-        // Operational
-        .route("/health", get(routes::operational::health))
-        .route("/metrics", get(routes::operational::metrics))
-        .route(
-            "/backfills/status",
-            get(routes::operational::backfill_status),
-        )
-        // Events
-        .route("/events", get(routes::events::list))
-        .route("/events/{id}", get(routes::events::get_one))
-        .route("/events/{id}/valuation", get(routes::valuations::for_event))
-        // Valuations
-        .route("/valuations", get(routes::valuations::list))
-        // Aggregations
-        .route("/aggregations/events", get(routes::aggregations::events))
-        // Governance
-        .route("/governance/proposals", get(routes::governance::list))
-        .route(
-            "/governance/proposals/{proposal_id}",
-            get(routes::governance::get_one),
-        )
-        // Prices
-        .route(
-            "/prices/{asset}/{quote}/block/{block}",
-            get(routes::prices::at_block),
-        )
-        .route(
-            "/prices/{asset}/{quote}/latest",
-            get(routes::prices::latest),
-        )
-        .route("/prices/{asset}/{quote}/range", get(routes::prices::range))
-        // Gateways
-        .route(
-            "/gateways/{gateway}/balance/latest",
-            get(routes::gateways::balance_latest),
-        )
-        .route(
-            "/gateways/{gateway}/balance/block/{block}",
-            get(routes::gateways::balance_at_block),
-        )
-        .route(
-            "/gateways/{gateway}/balance/history",
-            get(routes::gateways::balance_history),
-        )
-        .route(
-            "/gateways/{gateway}/claimants/block/{block}",
-            get(routes::gateways::claimants_at_block),
-        )
-        .route(
-            "/gateways/{gateway}/claimants/history",
-            get(routes::gateways::claimants_history),
-        )
-        .route("/gateways/{gateway}/flows", get(routes::gateways::flows))
-        .route(
-            "/gateways/{gateway}/payouts",
-            get(routes::gateways::payouts),
-        )
-        .route(
-            "/gateways/{gateway}/recipients",
-            get(routes::gateways::recipients),
-        )
-        .route(
-            "/gateways/{gateway}/summary",
-            get(routes::gateways::summary),
-        )
-        .route(
-            "/gateways/{gateway}/analytics/summary",
-            get(routes::gateways::analytics_summary),
-        )
-        // Stake
-        .route(
-            "/stake/{delegator}/block/{block}",
-            get(routes::stake::at_block),
-        )
-        .route("/stake/{delegator}/range", get(routes::stake::range))
-        .route(
-            "/transcoders/{transcoder}/delegators/block/{block}",
-            get(routes::stake::delegators_at_block),
-        )
-        // Transcoders
-        .route(
-            "/transcoders/{transcoder}/params/latest",
-            get(routes::transcoders::latest),
-        )
-        .route(
-            "/transcoders/{transcoder}/params/block/{block}",
-            get(routes::transcoders::at_block),
-        )
-        .route(
-            "/transcoders/{transcoder}/params/history",
-            get(routes::transcoders::history),
-        )
-        .route(
-            "/transcoders/{transcoder}/lifecycle/latest",
-            get(routes::transcoders::lifecycle_latest),
-        )
-        .route(
-            "/transcoders/{transcoder}/lifecycle/block/{block}",
-            get(routes::transcoders::lifecycle_at_block),
-        )
-        .route(
-            "/transcoders/{transcoder}/lifecycle/history",
-            get(routes::transcoders::lifecycle_history),
-        )
-        .route(
-            "/transcoders/{transcoder}/profile/block/{block}",
-            get(routes::transcoders::profile_at_block),
-        )
-        .with_state(state)
-        .layer(TraceLayer::new_for_http())
-        .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi::ApiDoc::openapi()));
+    let router = build_router(state);
 
     let addr: SocketAddr = cli.bind.parse().context("parsing bind address")?;
     info!(service = SERVICE, %addr, "listening");

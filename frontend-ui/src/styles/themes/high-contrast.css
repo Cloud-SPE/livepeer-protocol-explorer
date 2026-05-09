@@ -1,0 +1,26 @@
+@layer tokens {
+  :root[data-theme="high-contrast"] {
+    color-scheme: light;
+    --bg:        oklch(100% 0 0);
+    --bg-elev:   oklch(100% 0 0);
+    --bg-sunken: oklch(95% 0 0);
+    --fg:        oklch(0% 0 0);
+    --fg-muted:  oklch(20% 0 0);
+    --fg-subtle: oklch(30% 0 0);
+    --border:    oklch(0% 0 0);
+    --border-strong: oklch(0% 0 0);
+    --accent:    oklch(45% 0.25 260);
+    --pos:       oklch(40% 0.18 145);
+    --neg:       oklch(45% 0.25 25);
+    --warn:      oklch(55% 0.18 70);
+    --info:      oklch(45% 0.18 220);
+
+    --accent-soft: var(--bg);
+    --accent-ring: var(--fg);
+    --pos-soft:    var(--bg);
+    --neg-soft:    var(--bg);
+
+    --bw-1: 2px;
+    --bw-2: 3px;
+  }
+}

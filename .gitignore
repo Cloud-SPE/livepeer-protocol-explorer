@@ -36,6 +36,7 @@ full-run.log
 full-run-*.log
 logs/
 logs.*/
+run-logs/
 
 # Determinism-replay baselines (one dir per snapshot)
 baselines/

@@ -1,9 +1,26 @@
 # TD-027: Insight APIs + UI Screens
 
-**Status:** API layer landed 2026-05-09; UI work pending sign-off
+**Status:** Resolved 2026-05-09
 **Author:** 2026-05-09
 **Severity:** medium
 **Source:** Post-TD-025/TD-026 follow-up — exposing the new historical datasets through both API and frontend
+
+## Resolution (2026-05-09)
+
+All eight phases shipped and verified live in a single deploy.
+
+- **Phase 0 — backend extension:** `latest_round_started_block` and `latest_round_started_at` added to `NetworkStatsResponse` in `crates/livepeer-api/src/routes/network.rs`. Pulls from the same `orch_stake_by_round` rows the existing query already touches; ~10 LOC, no new RPC, no schema changes.
+- **Phase A — types + client + service wrappers:** TS interfaces in `frontend-ui/src/types/api.ts` mirror the Rust `*Response` structs verbatim (same field names, same order, all numeric strings typed as `string`). Six new `localApi.*` methods in `lib/sources/local-api.ts`. New service files: `services/network.service.ts`, `services/delegators.service.ts`, `services/stake-history.service.ts`. Existing `services/orchestrators.service.ts` extended with `fetchCutsHistory` and `fetchNetEconomics`.
+- **Phase B — Network totals card refresh:** `views/dashboard.ts` now consumes `/network/stats` for the hero card with `Round N · Block M · <relative time>` header, 24 h payouts/rewards/gas strip, and matview-age indicator. Other dashboard cards keep their existing fetches per the narrow-scope decision.
+- **Phase C — orchestrator detail extensions:** stake-history chart, cuts-history timeline, net-economics card added beneath the existing orch metadata.
+- **Phase D — delegator detail page:** `views/delegator-detail.ts` + route `/delegators/:address` shipped; renders portfolio sorted by `bonded_principal DESC` with chip-routed orch links.
+- **Phase E — round detail page:** `views/round-detail.ts` + route `/rounds/:round_id` shipped; "started block / time / N active orchs / total LPT" header + top-orchs table + day-rollup totals + round navigator.
+- **Phase F — chip kind prop + placeholder index views + nav:** `<address-chip kind="orchestrator|gateway|delegator|unknown">` (default `unknown` → `/delegators/{addr}`); call sites updated to pass `kind` where the entity type is known. Placeholder `/delegators` and `/rounds` index views added with empty-state copy directing to deep-link by address/id. Side-nav gained two flat entries.
+- **Phase G — tests + docs:** smoke unit tests for the new services; visual regression baselines (TD-029 harness) cover the new routes; OpenAPI documentation generated automatically from the `ToSchema` derives.
+
+**Live verification:** prod deploy 2026-05-09 serves all six endpoints. `curl /network/stats` returns `latest_round=4193, active_orchestrators=101, total_lpt_staked=28,002,078`, with `latest_round_started_block` and matview-refresh timestamps populated. Frontend separately deployed and consumes the new endpoints.
+
+Real `/delegators` and `/rounds` *index* endpoints + UI (vs. the placeholder views shipped here) remain a future TD; deferred per the narrow-scope decision.
 
 ## What landed
 

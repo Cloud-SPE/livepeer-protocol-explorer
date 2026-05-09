@@ -60,14 +60,24 @@ Use:
 - [docker-compose.prod.yml](../docker-compose.prod.yml) for production shape
 - [docker-compose.yml](../docker-compose.yml) for the older per-binary dev/service layout
 
-Production services in `docker-compose.prod.yml`:
+Production services in `docker-compose.prod.yml` (9 always-on):
 - `postgres`
-- `livepeer-daemon`
+- `livepeer-daemon` (runs indexer + finality + reorg + valuator + staker
+  loops + matview refresh internally per TD-012/25/26)
 - `livepeer-api`
-- optional `livepeer-alert-bot`
-- one-shot tools:
-  - `livepeer-orchestrator`
-  - `livepeer-seed-migrator`
+- `livepeer-rollups-payouts` / `-rewards` / `-tickets` / `-event-metrics`
+  (TD-018; daily aggregations the dashboard reads from)
+- `livepeer-enricher` (ENS name + avatar resolution; needs `L1_RPC_URL`)
+- `livepeer-staker-tx-receipts` (TD-020; backs report CSVs)
+
+Profile-gated:
+- `--profile ops` → `livepeer-alert-bot` (Telegram alerting)
+- `--profile tools` → `livepeer-orchestrator`, `livepeer-seed-migrator`
+  (one-shot bootstrap / migrate / seed import)
+
+The 6 worker services above are NOT inside the daemon. Without them the
+dashboard's 24 h aggregates go stale, ENS names don't refresh, and report
+CSVs fall back to slow per-tx RPC for unknown tx fees.
 
 ## 4. First-time bootstrap
 
@@ -95,71 +105,119 @@ Notes:
 
 ## 5. Start steady-state follow mode
 
-Once bootstrap has reduced lag sufficiently:
+Once bootstrap (or restore from a dev dump per §7) has reduced lag below
+the gate:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d livepeer-daemon livepeer-api
+# Bring up the full fleet
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-If Telegram alerting is configured:
+Or, if you want to phase it:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d postgres
+# wait for healthy
+docker compose -f docker-compose.prod.yml up -d livepeer-daemon livepeer-api
+docker compose -f docker-compose.prod.yml up -d \
+  livepeer-rollups-payouts livepeer-rollups-rewards \
+  livepeer-rollups-tickets livepeer-rollups-event-metrics \
+  livepeer-enricher livepeer-staker-tx-receipts
+```
+
+Optional Telegram alerting:
 
 ```bash
 docker compose -f docker-compose.prod.yml --profile ops up -d livepeer-alert-bot
 ```
 
-Health checks:
+Health checks (commands run inside the container — the prod compose does
+not expose ports by default):
 
 ```bash
-curl http://127.0.0.1:9107/health
-curl http://127.0.0.1:8080/health
-curl http://127.0.0.1:9111/health
+docker exec livepeer-api    curl -sS http://127.0.0.1:8080/health
+docker exec livepeer-daemon curl -sS http://127.0.0.1:9107/health
+docker exec livepeer-api    curl -sS http://127.0.0.1:8080/network/stats
 ```
 
 ## 6. Catch-up boundary
 
-`livepeer-daemon follow` enforces a startup lag gate.
-
-Recommended contract:
-- use `bootstrap` for empty DB or large lag
-- use `follow` only once lag is under the configured threshold
-
-The compose file uses:
+`livepeer-daemon follow` enforces a startup lag gate. The current
+prod compose uses:
 
 ```text
---max-start-lag-blocks 50000
+--max-start-lag-blocks 170000
 ```
 
-If the daemon refuses to start, run another bounded bootstrap pass first.
+Arbitrum produces ~250 ms blocks, so 170k blocks ≈ ~12 hours of lag.
+If you start the daemon within that window of the snapshot/bootstrap
+cutoff, you're fine. Past that, either bump the flag or run another
+bounded `livepeer-orchestrator bootstrap` pass first.
 
 ## 7. Backups
 
-Use full Postgres backups.
+Postgres lives in a docker container and runs a server version that
+typically newer than the Ubuntu host's `pg_dump`/`pg_restore`. Always
+invoke the client tools **inside the container** to match the server
+version.
 
-Helper script:
-
-```bash
-bash scripts/backup-postgres.sh
-```
-
-This writes a timestamped custom-format dump under `./backups/`.
-
-Direct command:
+Backup (custom format, parallel-friendly, 4-5 GB compressed for current
+prod size; takes ~3-5 min):
 
 ```bash
-pg_dump "$DATABASE_URL" -Fc -f /backups/livepeer_$(date -u +%Y%m%dT%H%M%SZ).dump
+docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" livepeer-valuation-postgres \
+  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc \
+  > backups/livepeer_$(date -u +%Y%m%dT%H%M%SZ).dump
 ```
 
-Restore:
+The repo helper `scripts/backup-postgres.sh` is host-shell-friendly only
+when `DATABASE_URL` resolves from the host (i.e. when you've added
+`127.0.0.1` host networking or are running outside docker). For the
+standard docker setup, use the command above.
+
+Restore (drop + recreate the target DB, then parallel restore via
+`docker cp` of the dump into the container):
 
 ```bash
-pg_restore -d "$DATABASE_URL" /backups/livepeer_<timestamp>.dump
+DUMP=/path/to/livepeer_<timestamp>.dump
+
+# 1. drop + recreate
+docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" livepeer-valuation-postgres \
+  psql -U "$POSTGRES_USER" -d postgres \
+    -c "DROP DATABASE IF EXISTS $POSTGRES_DB;" \
+    -c "CREATE DATABASE $POSTGRES_DB OWNER $POSTGRES_USER;"
+
+# 2. copy in + parallel restore (--jobs requires a file path, not stdin)
+docker cp "$DUMP" livepeer-valuation-postgres:/tmp/restore.dump
+docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" livepeer-valuation-postgres \
+  pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    --no-owner --no-privileges --jobs 4 --verbose \
+    /tmp/restore.dump
+docker exec livepeer-valuation-postgres rm /tmp/restore.dump
+
+# 3. refresh matviews to align with restored base tables
+docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" livepeer-valuation-postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "REFRESH MATERIALIZED VIEW orchestrator_profile;
+   REFRESH MATERIALIZED VIEW broadcaster_profile;"
 ```
 
-Because deterministic inputs live in Postgres, a full database backup covers:
+Slower stdin alternative (no docker cp; single-threaded):
+
+```bash
+docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" livepeer-valuation-postgres \
+  pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    --no-owner --no-privileges --verbose \
+  < "$DUMP"
+```
+
+Because deterministic inputs live in Postgres, a full database backup
+covers:
 - `rpc_call_cache`
 - `seeded_event_prices`
 - `contract_abi_registry`
 - raw/derived tables
+- the `tx_receipts` table (TD-020) and rollup tables (TD-017/18)
 
 ## 8. Upgrade procedure
 

@@ -302,24 +302,22 @@ validate_gateway() {
 
   # On-chain side
   # getSenderInfo returns ((uint256 deposit, uint256 withdrawRound), (uint256 fundsRemaining, uint256 claimedInCurrentRound))
+  # Use --json so the output is unambiguous (no scientific-notation annotations to misparse).
   local sender_info
   sender_info=$(cast call "$TICKET_BROKER" \
     "getSenderInfo(address)((uint256,uint256),(uint256,uint256))" \
-    "$addr" --rpc-url "$RPC_URL" 2>/dev/null) || {
+    "$addr" --rpc-url "$RPC_URL" --json 2>/dev/null) || {
     printf '  ERROR  %s  rpc getSenderInfo failed\n' "$label"
     return 2
   }
-  # cast returns nested structs as: "(deposit, withdrawRound)" then "(fundsRemaining, claimedInCurrentRound)"
-  # Parse with python for robustness
+  # --json output: [[deposit, withdrawRound], [fundsRemaining, claimedInCurrentRound]]
   local parsed
   parsed=$(python3 -c "
-import re
-s = '''$sender_info'''
-nums = re.findall(r'\d+', s)
-# Expect 4 numbers: deposit, withdrawRound, fundsRemaining, claimedInCurrentRound
-print(' '.join(nums[:4]))
+import json
+[[deposit, withdraw], [reserve, _claimed]] = json.loads('''$sender_info''')
+print(deposit, withdraw, reserve)
 ")
-  read -r deposit_raw withdraw_round_raw reserve_raw _ <<< "$parsed"
+  read -r deposit_raw withdraw_round_raw reserve_raw <<< "$parsed"
 
   local chain_deposit chain_reserve chain_unlock
   chain_deposit=$(wei_to_decimal "$deposit_raw")

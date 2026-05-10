@@ -30,8 +30,8 @@ use crate::events::LivepeerToken::{self, Burn, Mint, Transfer};
 use crate::events::RoundsManager::{self, NewRound};
 // TicketBroker emits "Withdrawal" (full deposit + reserve drain) — not "Withdraw".
 use crate::events::TicketBroker::{
-    self, DepositFunded, ReserveClaimed, ReserveFunded, UnlockCancelled, WinningTicketRedeemed,
-    WinningTicketTransfer, Withdrawal,
+    self, DepositFunded, ReserveClaimed, ReserveFunded, Unlock, UnlockCancelled,
+    WinningTicketRedeemed, WinningTicketTransfer, Withdrawal,
 };
 use alloy::primitives::{Address, FixedBytes, LogData, B256, U256};
 use alloy::sol_types::SolEvent;
@@ -910,8 +910,18 @@ fn decode_one(
                     }),
                     Err(e) => return decode_failed(contract, "Withdrawal", topic0, e),
                 }
-            } else if topic0 == TicketBroker::Unlock::SIGNATURE_HASH {
-                decoded!("Unlock", {});
+            } else if topic0 == Unlock::SIGNATURE_HASH {
+                // TD-031: previously decoded into an empty block, leaving
+                // from_address NULL. The gateway-balance-backfill candidate
+                // finder filters on `from_address IS NOT NULL`, so every
+                // Unlock event was silently skipped and gateways stuck with
+                // pre-unlock matview state.
+                match Unlock::decode_log_data(&log_data, true) {
+                    Ok(d) => decoded!("Unlock", {
+                        row.from_address = Some(addr_lower(&d.sender));
+                    }),
+                    Err(e) => return decode_failed(contract, "Unlock", topic0, e),
+                }
             } else if topic0 == ReserveClaimed::SIGNATURE_HASH {
                 match ReserveClaimed::decode_log_data(&log_data, true) {
                     Ok(d) => decoded!("ReserveClaimed", {

@@ -44,6 +44,11 @@ pub struct NetworkStatsResponse {
     /// Snapshot freshness (when this matview last refreshed).
     pub orchestrator_profile_refreshed_at: Option<DateTime<Utc>>,
     pub broadcaster_profile_refreshed_at: Option<DateTime<Utc>>,
+    /// Number of delegators flagged active in `delegator_registry`.
+    pub active_delegators: u32,
+    /// Total live delegations: distinct `(delegator, delegate)` pairs whose
+    /// latest `stake_balances_by_block` snapshot has `bonded_principal > 0`.
+    pub total_delegations: u32,
 }
 
 #[utoipa::path(
@@ -88,7 +93,14 @@ pub async fn stats(
              FROM tx_receipts
             WHERE chain_id = t.cid AND block_timestamp >= t.cutoff_24h) AS gas_burned_eth_24h,
           (SELECT MAX(updated_at) FROM orchestrator_profile WHERE chain_id = t.cid) AS orch_refreshed,
-          (SELECT MAX(updated_at) FROM broadcaster_profile WHERE chain_id = t.cid) AS gw_refreshed
+          (SELECT MAX(updated_at) FROM broadcaster_profile WHERE chain_id = t.cid) AS gw_refreshed,
+          (SELECT COUNT(*) FROM delegator_registry WHERE chain_id = t.cid AND is_active) AS active_delegators,
+          (SELECT COUNT(*)
+             FROM (SELECT DISTINCT ON (delegator_address, delegate_address) bonded_principal
+                     FROM stake_balances_by_block
+                    WHERE chain_id = t.cid
+                    ORDER BY delegator_address, delegate_address, block_number DESC) latest
+            WHERE latest.bonded_principal > 0) AS total_delegations
         FROM t
         "#,
     )
@@ -122,6 +134,8 @@ pub async fn stats(
         gas_burned_eth_24h: gas_eth.normalized().to_string(),
         orchestrator_profile_refreshed_at: row.try_get("orch_refreshed").ok(),
         broadcaster_profile_refreshed_at: row.try_get("gw_refreshed").ok(),
+        active_delegators: row.get::<i64, _>("active_delegators") as u32,
+        total_delegations: row.get::<i64, _>("total_delegations") as u32,
     }))
 }
 

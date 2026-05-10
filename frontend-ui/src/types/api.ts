@@ -427,6 +427,76 @@ export interface NetworkStatsResponse {
   gas_burned_eth_24h: string;
   orchestrator_profile_refreshed_at?: string;
   broadcaster_profile_refreshed_at?: string;
+  active_delegators: number;
+  total_delegations: number;
+}
+
+// ── Delegator extensions (TD-027 follow-up) ─────────────────────────
+
+export interface OrchDelegatorRow {
+  delegator_address: string;
+  bonded_principal: string;
+  pending_stake?: string;
+  pending_fees?: string;
+  pending_round?: string;
+  as_of_block: string;
+  as_of_timestamp: string;
+}
+
+export interface OrchDelegatorsMeta {
+  chain_id: string;
+  orchestrator_address: string;
+  next_cursor?: string;
+}
+
+export interface OrchDelegatorsResponse {
+  data: OrchDelegatorRow[];
+  meta: OrchDelegatorsMeta;
+}
+
+export interface DelegatorIndexRow {
+  delegator_address: string;
+  total_bonded: string;
+  delegation_count: number;
+  is_active: boolean;
+  first_bond_block?: string;
+  last_seen_block?: string;
+}
+
+export interface DelegatorIndexMeta {
+  chain_id: string;
+  next_cursor?: string;
+}
+
+export interface DelegatorIndexResponse {
+  data: DelegatorIndexRow[];
+  meta: DelegatorIndexMeta;
+}
+
+export interface DelegatorEventRow {
+  event_id: string;
+  event_name: string;
+  block_number: string;
+  block_timestamp: string;
+  tx_hash: string;
+  log_index: number;
+  from_address?: string;
+  to_address?: string;
+  side: string; // 'from' | 'to' | 'both' | 'unknown'
+  asset?: string;
+  amount_normalized?: string;
+  decoded?: unknown;
+}
+
+export interface DelegatorEventsMeta {
+  chain_id: string;
+  delegator_address: string;
+  next_cursor?: string;
+}
+
+export interface DelegatorEventsResponse {
+  data: DelegatorEventRow[];
+  meta: DelegatorEventsMeta;
 }
 
 export interface RoundOrchSummary {

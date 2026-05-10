@@ -159,7 +159,16 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::profiles::orchestrators_net_economics),
         )
         // Delegators (TD-027)
+        .route("/delegators", get(routes::delegators::list))
         .route("/delegators/{address}", get(routes::delegators::get))
+        .route(
+            "/delegators/{address}/events",
+            get(routes::delegators::events_for),
+        )
+        .route(
+            "/orchestrators/{address}/delegators",
+            get(routes::delegators::for_orchestrator),
+        )
         // Network-level (TD-027)
         .route("/network/stats", get(routes::network::stats))
         .route("/rounds/{round_id}", get(routes::network::round_get))

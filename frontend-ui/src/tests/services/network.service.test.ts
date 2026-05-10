@@ -25,6 +25,8 @@ describe('networkService', () => {
       payouts_usd_24h: '0',
       rewards_usd_24h: '0',
       gas_burned_eth_24h: '0',
+      active_delegators: 0,
+      total_delegations: 0,
     });
     const result = await networkService.fetchNetworkStats();
     expect(result.chain_id).toBe('42161');

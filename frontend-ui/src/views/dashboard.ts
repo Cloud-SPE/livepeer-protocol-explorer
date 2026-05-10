@@ -186,6 +186,13 @@ export class ViewDashboard extends LitElement {
                 <div class="value">${network?.gateways_known ?? '—'}</div>
                 <div class="sub">known broadcasters</div>
               </div>
+              <a class="card-link" href="#/delegators">
+                <div class="stat">
+                  <div class="label">Active delegators</div>
+                  <div class="value">${network?.active_delegators?.toLocaleString() ?? '—'}</div>
+                  <div class="sub">${network?.total_delegations?.toLocaleString() ?? '—'} delegations</div>
+                </div>
+              </a>
               <div class="stat">
                 <div class="label">Last refresh</div>
                 <div class="value">${refreshAge ? formatRelative(refreshAge) : '—'}</div>

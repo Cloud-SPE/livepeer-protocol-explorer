@@ -2,6 +2,8 @@ import { createApi, type ApiClient } from '../api-base.js';
 import { configService } from '../../services/config.service.js';
 import type {
   CutsHistoryResponse,
+  DelegatorEventsResponse,
+  DelegatorIndexResponse,
   DelegatorResponse,
   GatewayAnalyticsSummaryResponse,
   GatewayBalanceHistoryResponse,
@@ -14,6 +16,7 @@ import type {
   ListEnvelope,
   NetEconomicsResponse,
   NetworkStatsResponse,
+  OrchDelegatorsResponse,
   OrchestratorProfileRow,
   PayoutLeaderboardResponse,
   PayoutSort,
@@ -82,6 +85,33 @@ export const localApi = {
 
   getDelegator(address: string) {
     return client().get<DelegatorResponse>(`/delegators/${address}`);
+  },
+
+  listDelegators(params: { cursor?: string; limit?: number } = {}) {
+    return client().get<DelegatorIndexResponse>('/delegators', {
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+  },
+
+  getDelegatorEvents(
+    address: string,
+    params: { cursor?: string; limit?: number } = {},
+  ) {
+    return client().get<DelegatorEventsResponse>(
+      `/delegators/${address}/events`,
+      { cursor: params.cursor, limit: params.limit },
+    );
+  },
+
+  getOrchestratorDelegators(
+    orchestrator: string,
+    params: { cursor?: string; limit?: number } = {},
+  ) {
+    return client().get<OrchDelegatorsResponse>(
+      `/orchestrators/${orchestrator}/delegators`,
+      { cursor: params.cursor, limit: params.limit },
+    );
   },
 
   getNetworkStats() {

@@ -3,6 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { ObservableController } from '../lib/observable-controller.js';
 import { orchestratorsService } from '../services/orchestrators.service.js';
 import { stakeHistoryService } from '../services/stake-history.service.js';
+import { delegatorsService } from '../services/delegators.service.js';
 import { configService } from '../services/config.service.js';
 import {
   formatNative,
@@ -15,7 +16,12 @@ import {
 import type { ColumnDef } from '../components/ui/data-table.js';
 import type { TimeSeries } from '../components/ui/time-chart.js';
 import type { BarDatum } from '../components/ui/bar-chart.js';
-import type { CutsHistoryResponse, NetEconomicsResponse, StakeHistoryResponse } from '../types/api.js';
+import type {
+  CutsHistoryResponse,
+  NetEconomicsResponse,
+  OrchDelegatorRow,
+  StakeHistoryResponse,
+} from '../types/api.js';
 import '../components/ui/data-table.js';
 import '../components/ui/refresh-button.js';
 import '../components/ui/address-chip.js';
@@ -59,6 +65,14 @@ const CUTS_COLS: ColumnDef[] = [
   { key: 'fee_share_percent', label: 'Fee share', cell: 'percent', align: 'end' },
 ];
 
+const ORCH_DELEGATOR_COLS: ColumnDef[] = [
+  { key: 'delegator_address', label: 'Delegator', cell: 'address' },
+  { key: 'bonded_principal', label: 'Bonded', cell: 'lpt', align: 'end' },
+  { key: 'pending_stake', label: 'Pending stake', cell: 'lpt', align: 'end' },
+  { key: 'pending_fees', label: 'Pending fees', cell: 'eth', align: 'end' },
+  { key: 'as_of_block', label: 'As of block', cell: 'mono', align: 'end' },
+];
+
 @customElement('view-orchestrator-detail')
 export class ViewOrchestratorDetail extends LitElement {
 
@@ -73,6 +87,10 @@ export class ViewOrchestratorDetail extends LitElement {
   @state() private historyError: string | null = null;
   @state() private historyRounds = 100;
   @state() private economicsDays = 30;
+  @state() private delegators: OrchDelegatorRow[] = [];
+  @state() private delegatorsCursor: string | undefined = undefined;
+  @state() private delegatorsLoading = false;
+  @state() private delegatorsError: string | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -81,6 +99,7 @@ export class ViewOrchestratorDetail extends LitElement {
     }
     if (this.address) {
       void this._loadHistoryPanels();
+      void this._loadDelegators(true);
     }
   }
 
@@ -88,6 +107,26 @@ export class ViewOrchestratorDetail extends LitElement {
     if (changed.has('address') && this.address && orchestratorsService.detail.address !== this.address) {
       void orchestratorsService.loadDetail(this.address);
       void this._loadHistoryPanels();
+      void this._loadDelegators(true);
+    }
+  }
+
+  private async _loadDelegators(reset: boolean): Promise<void> {
+    if (this.delegatorsLoading) return;
+    this.delegatorsLoading = true;
+    this.delegatorsError = null;
+    try {
+      const cursor = reset ? undefined : this.delegatorsCursor;
+      const r = await delegatorsService.fetchOrchestratorDelegators(this.address, {
+        ...(cursor ? { cursor } : {}),
+        limit: 25,
+      });
+      this.delegators = reset ? r.data : [...this.delegators, ...r.data];
+      this.delegatorsCursor = r.meta.next_cursor;
+    } catch (err) {
+      this.delegatorsError = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.delegatorsLoading = false;
     }
   }
 
@@ -387,6 +426,30 @@ export class ViewOrchestratorDetail extends LitElement {
                 </div>
               `
             : html`<empty-state heading="No data yet" body="No economics summary is available for this orchestrator yet."></empty-state>`}
+        </section>
+
+        <section aria-labelledby="delegators-h">
+          <header><h3 id="delegators-h">Delegators (${this.delegators.length}${this.delegatorsCursor ? '+' : ''})</h3></header>
+          ${this.delegatorsError ? html`<p class="error" role="alert">${this.delegatorsError}</p>` : ''}
+          ${this.delegators.length === 0 && !this.delegatorsLoading
+            ? html`<empty-state heading="No delegators" body="No active delegators bonded to this orchestrator."></empty-state>`
+            : html`
+                <data-table
+                  caption="Delegators by bonded principal"
+                  .columns=${ORCH_DELEGATOR_COLS}
+                  .rows=${this.delegators as unknown as Record<string, unknown>[]}
+                  href-template="#/delegators/{delegator_address}"
+                  empty-text="No delegators in window"
+                ></data-table>
+                ${this.delegatorsCursor
+                  ? html`<button
+                      class="btn"
+                      type="button"
+                      ?disabled=${this.delegatorsLoading}
+                      @click=${() => this._loadDelegators(false)}
+                    >${this.delegatorsLoading ? 'Loading…' : 'Load more'}</button>`
+                  : ''}
+              `}
         </section>
 
         <section aria-labelledby="tickets-h">

@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::Arc;
 use tracing::info;
 
 const ARBITRUM_CHAIN_ID: i64 = 42161;
@@ -155,26 +156,40 @@ pub async fn run_profile_backfill(
         if candidate.event_name == "NewRound" {
             current_round = extract_round(&candidate.raw_event).or(current_round);
 
+            // Walk the on-chain active pool ONCE per NewRound (~100 sequential
+            // calls via the linked list). HashSet membership lookup then
+            // gives `is_active` per orch in O(1) without any per-orch RPC.
+            // This replaces the old event-history-based logic which missed
+            // protocol-side auto-deactivations (orchs that fall out of the
+            // pool from insufficient stake never emit TranscoderDeactivated).
+            let block = candidate.block_number;
+            let bonding_manager_ref = bonding_manager.as_str();
+            let controller_ref = controller.as_str();
+            let active_pool = Arc::new(
+                fetch_active_pool(pg, archive, bonding_manager_ref, block).await?,
+            );
+
             // Bounded concurrent fanout: read all known-orch snapshots in
             // parallel (up to NEW_ROUND_FANOUT_CONCURRENCY in flight at
             // once), then upsert serially. RPC reads were the documented
             // bottleneck — DB writes are cheap once the data is in hand.
-            let block = candidate.block_number;
-            let bonding_manager_ref = bonding_manager.as_str();
-            let controller_ref = controller.as_str();
             let snapshots: Vec<(String, OrchestratorSnapshot)> =
                 stream::iter(known_orchs.iter().cloned())
-                    .map(|orch| async move {
-                        let snapshot = read_orchestrator_snapshot(
-                            pg,
-                            archive,
-                            bonding_manager_ref,
-                            controller_ref,
-                            &orch,
-                            block,
-                        )
-                        .await?;
-                        Ok::<_, anyhow::Error>((orch, snapshot))
+                    .map(|orch| {
+                        let active_pool = active_pool.clone();
+                        async move {
+                            let snapshot = read_orchestrator_snapshot(
+                                pg,
+                                archive,
+                                bonding_manager_ref,
+                                controller_ref,
+                                &orch,
+                                block,
+                                active_pool.as_ref(),
+                            )
+                            .await?;
+                            Ok::<_, anyhow::Error>((orch, snapshot))
+                        }
                     })
                     .buffer_unordered(NEW_ROUND_FANOUT_CONCURRENCY)
                     .try_collect()
@@ -371,6 +386,7 @@ async fn read_orchestrator_snapshot(
     controller: &str,
     orchestrator: &str,
     block_number: i64,
+    active_pool: &HashSet<String>,
 ) -> Result<OrchestratorSnapshot> {
     let orch_addr = Address::from_str(orchestrator).context("parsing orchestrator address")?;
     let stake_data = format!(
@@ -393,7 +409,16 @@ async fn read_orchestrator_snapshot(
     let stake = BondingManager::transcoderTotalStakeCall::abi_decode_returns(&stake_raw, true)?;
 
     let cuts = load_latest_transcoder_cuts(pg, orchestrator, block_number).await?;
-    let lifecycle = load_latest_lifecycle_state(pg, orchestrator, block_number).await?;
+    // is_active = membership in the on-chain active pool at this block.
+    // Falls back to event-history-based last_lifecycle_event_at for the
+    // timestamp only (the bool was unreliable because the protocol can
+    // auto-deactivate without emitting TranscoderDeactivated).
+    let last_lifecycle_event_at =
+        load_last_lifecycle_event_at(pg, orchestrator, block_number).await?;
+    let lifecycle = LifecycleState {
+        is_active: active_pool.contains(&orchestrator.to_lowercase()),
+        last_lifecycle_event_at,
+    };
     let service_registry =
         resolve_service_registry_address(pg, archive, controller, block_number).await?;
     let service_uri = match service_registry.as_deref() {
@@ -406,6 +431,77 @@ async fn read_orchestrator_snapshot(
         lifecycle,
         service_uri,
     })
+}
+
+/// Walk the on-chain active orchestrator pool linked list once and return
+/// the membership set. Each address is lowercased for case-insensitive
+/// comparison against the snake-case stored orch addresses.
+///
+/// The pool changes only at NewRound boundaries, so this is exactly one
+/// walk per profile-backfill iteration (which itself runs per NewRound).
+/// Walks via `getFirstTranscoderInPool` then `getNextTranscoderInPool`
+/// repeatedly until the linked list returns the zero address. Each call
+/// goes through `single_call_cached` so the walk is deterministic and
+/// replay-friendly.
+async fn fetch_active_pool(
+    pg: &PgPool,
+    archive: &Provider,
+    bonding_manager: &str,
+    block_number: i64,
+) -> Result<HashSet<String>> {
+    let mut pool = HashSet::new();
+    let first_data = format!(
+        "0x{}",
+        alloy::hex::encode(BondingManager::getFirstTranscoderInPoolCall {}.abi_encode())
+    );
+    let first_params = json!([
+        { "to": bonding_manager, "data": first_data },
+        BlockTag::Number(block_number as u64).to_param()
+    ]);
+    let first_outcome = cross_check::single_call_cached(
+        pg,
+        archive,
+        "eth_call",
+        &first_params,
+        Some(block_number),
+    )
+    .await?;
+    let first_raw = decode_hex_result(&first_outcome.response_bytes)?;
+    let mut current = BondingManager::getFirstTranscoderInPoolCall::abi_decode_returns(
+        &first_raw, true,
+    )?
+    ._0;
+
+    while current != Address::ZERO {
+        pool.insert(format!("{current:#x}").to_lowercase());
+        let next_data = format!(
+            "0x{}",
+            alloy::hex::encode(
+                BondingManager::getNextTranscoderInPoolCall {
+                    _transcoder: current,
+                }
+                .abi_encode()
+            )
+        );
+        let next_params = json!([
+            { "to": bonding_manager, "data": next_data },
+            BlockTag::Number(block_number as u64).to_param()
+        ]);
+        let next_outcome = cross_check::single_call_cached(
+            pg,
+            archive,
+            "eth_call",
+            &next_params,
+            Some(block_number),
+        )
+        .await?;
+        let next_raw = decode_hex_result(&next_outcome.response_bytes)?;
+        current = BondingManager::getNextTranscoderInPoolCall::abi_decode_returns(
+            &next_raw, true,
+        )?
+        ._0;
+    }
+    Ok(pool)
 }
 
 async fn load_latest_transcoder_cuts(
@@ -458,13 +554,20 @@ async fn load_latest_transcoder_cuts(
     })
 }
 
-async fn load_latest_lifecycle_state(
+/// Returns the most recent TranscoderActivated/Deactivated timestamp for
+/// the orch, used purely for `last_lifecycle_event_at` display.
+///
+/// `is_active` is NOT derived from this — see `fetch_active_pool` instead.
+/// The protocol can auto-deactivate orchs (when stake falls below the
+/// lowest-active threshold) without emitting TranscoderDeactivated, so
+/// event-history would mislabel them as active forever.
+async fn load_last_lifecycle_event_at(
     pg: &PgPool,
     orchestrator: &str,
     block_number: i64,
-) -> Result<LifecycleState> {
+) -> Result<Option<DateTime<Utc>>> {
     let row = sqlx::query(
-        r#"SELECT event_name, block_timestamp
+        r#"SELECT block_timestamp
              FROM raw_protocol_events
             WHERE chain_id = $1
               AND is_canonical = TRUE
@@ -479,15 +582,7 @@ async fn load_latest_lifecycle_state(
     .bind(block_number)
     .fetch_optional(pg)
     .await?;
-    let is_active = row
-        .as_ref()
-        .map(|r| r.get::<String, _>("event_name") == "TranscoderActivated")
-        .unwrap_or(false);
-    let last_lifecycle_event_at = row.as_ref().map(|r| r.get("block_timestamp"));
-    Ok(LifecycleState {
-        is_active,
-        last_lifecycle_event_at,
-    })
+    Ok(row.map(|r| r.get("block_timestamp")))
 }
 
 /// TD-026: bulk INSERT one (orch, round) row per snapshot from the

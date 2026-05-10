@@ -4,7 +4,7 @@ import type { AppConfig, PartialAppConfig } from '../types/config.js';
 const DEFAULT_CONFIG: AppConfig = {
   // Empty string = relative URLs, which go through the Vite dev proxy in
   // development. Production deployments override this in `public/config.json`.
-  baseApiUrl: '',
+  baseApiUrl: 'https://livepeer-api.xode.app',
   gatewayUrl: 'https://dream-gateway.livepeer.cloud',
   gatewayBearer: '',
   byocGatewayUrl: 'https://openai-gateway.livepeer.cloud/v1',

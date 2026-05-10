@@ -1,5 +1,5 @@
 {
-  "baseApiUrl": "",
+  "baseApiUrl": "https://livepeer-api.xode.app",
   "gatewayUrl": "https://dream-gateway.livepeer.cloud",
   "gatewayBearer": "",
   "byocGatewayUrl": "https://openai-gateway.livepeer.cloud/v1",

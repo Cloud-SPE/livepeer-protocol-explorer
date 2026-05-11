@@ -132,7 +132,15 @@ export class ViewGovernanceProposalDetail extends LitElement {
               <dt>Created</dt>
               <dd>${formatTimestamp(p.created_at)} · ${formatRelative(p.created_at)}</dd>
               <dt>Vote window</dt>
-              <dd>${p.vote_start ?? '—'} → ${p.vote_end ?? '—'}</dd>
+              <dd>
+                ${p.vote_start
+                  ? html`<a href="#/rounds/${p.vote_start}">Round ${p.vote_start}</a>`
+                  : '—'}
+                →
+                ${p.vote_end
+                  ? html`<a href="#/rounds/${p.vote_end}">Round ${p.vote_end}</a>`
+                  : '—'}
+              </dd>
               ${p.executed_at
                 ? html`<dt>Executed</dt>
                     <dd>${formatTimestamp(p.executed_at)} · ${formatRelative(p.executed_at)}</dd>`

@@ -508,6 +508,14 @@ export interface RoundOrchSummary {
   is_active: boolean;
 }
 
+export interface PrevRoundContext {
+  round: string;
+  active_orchestrators: number;
+  total_lpt_staked: string;
+  payouts_usd_on_day: string;
+  rewards_usd_on_day: string;
+}
+
 export interface RoundSummaryResponse {
   round: string;
   round_started_block: string;
@@ -518,6 +526,66 @@ export interface RoundSummaryResponse {
   payouts_usd_on_day: string;
   rewards_usd_on_day: string;
   new_round_events: number;
+  payouts_usd_30round_avg?: string;
+  rewards_usd_30round_avg?: string;
+  prev_round?: PrevRoundContext;
+}
+
+export interface RoundIndexRow {
+  round: string;
+  started_block: string;
+  started_at: string;
+  active_orchestrators: number;
+  total_lpt_staked: string;
+  payouts_usd_on_day: string;
+  rewards_usd_on_day: string;
+}
+
+export interface RoundsIndexMeta {
+  chain_id: string;
+  next_cursor?: string;
+}
+
+export interface RoundsIndexResponse {
+  data: RoundIndexRow[];
+  meta: RoundsIndexMeta;
+}
+
+export interface RoundEventRow {
+  event_id: string;
+  event_name: string;
+  contract_name: string;
+  block_number: string;
+  block_timestamp: string;
+  tx_hash: string;
+  log_index: number;
+  from_address?: string;
+  to_address?: string;
+  asset?: string;
+  amount_normalized?: string;
+  decoded?: unknown;
+}
+
+export interface RoundEventsMeta {
+  chain_id: string;
+  round: string;
+  from_block: string;
+  to_block?: string;
+  next_cursor?: string;
+}
+
+export interface RoundEventsResponse {
+  data: RoundEventRow[];
+  meta: RoundEventsMeta;
+}
+
+export interface RoundEventCountsResponse {
+  chain_id: string;
+  round: string;
+  from_block: string;
+  to_block?: string;
+  counts: Record<string, number>;
+  total: number;
 }
 
 export type SummaryPeriod = 'daily' | 'weekly' | 'monthly';

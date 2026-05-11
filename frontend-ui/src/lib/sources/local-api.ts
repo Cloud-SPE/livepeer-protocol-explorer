@@ -24,6 +24,9 @@ import type {
   ProposalListResponse,
   ProposalRow,
   ProposalStatus,
+  RoundEventCountsResponse,
+  RoundEventsResponse,
+  RoundsIndexResponse,
   RoundSummaryResponse,
   RewardLeaderboardResponse,
   RewardSort,
@@ -120,6 +123,30 @@ export const localApi = {
 
   getRound(roundId: number | string) {
     return client().get<RoundSummaryResponse>(`/rounds/${roundId}`);
+  },
+
+  listRounds(params: { cursor?: string; limit?: number } = {}) {
+    return client().get<RoundsIndexResponse>('/rounds', {
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+  },
+
+  getRoundEvents(
+    roundId: number | string,
+    params: { cursor?: string; limit?: number; kinds?: string } = {},
+  ) {
+    return client().get<RoundEventsResponse>(`/rounds/${roundId}/events`, {
+      cursor: params.cursor,
+      limit: params.limit,
+      kinds: params.kinds,
+    });
+  },
+
+  getRoundEventCounts(roundId: number | string) {
+    return client().get<RoundEventCountsResponse>(
+      `/rounds/${roundId}/event-counts`,
+    );
   },
 
   // ───────── transcoders (orch params + lifecycle) ─────────

@@ -159,6 +159,15 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::profiles::orchestrators_net_economics),
         )
         // Delegators (TD-027)
+        .route("/rounds", get(routes::network::rounds_index))
+        .route(
+            "/rounds/{round_id}/events",
+            get(routes::network::round_events),
+        )
+        .route(
+            "/rounds/{round_id}/event-counts",
+            get(routes::network::round_event_counts),
+        )
         .route("/delegators", get(routes::delegators::list))
         .route("/delegators/{address}", get(routes::delegators::get))
         .route(

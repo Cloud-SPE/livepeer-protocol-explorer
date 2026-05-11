@@ -7,7 +7,7 @@ import { governanceService, proposalTitle } from '../services/governance.service
 import { payoutsService } from '../services/payouts.service.js';
 import { networkCapabilitiesService } from '../services/network-capabilities.service.js';
 import { networkService } from '../services/network.service.js';
-import type { NetworkStatsResponse } from '../types/api.js';
+import type { NetworkStatsResponse, RoundIndexRow } from '../types/api.js';
 import {
   formatNative,
   formatRelative,
@@ -32,6 +32,7 @@ export class ViewDashboard extends LitElement {
   @state() private networkStats: NetworkStatsResponse | null = null;
   @state() private networkLoading = false;
   @state() private networkError: string | null = null;
+  @state() private recentRounds: RoundIndexRow[] = [];
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -56,6 +57,9 @@ export class ViewDashboard extends LitElement {
     if (!this.networkStats && !this.networkLoading) {
       void this._loadNetworkStats();
     }
+    if (this.recentRounds.length === 0) {
+      void this._loadRecentRounds();
+    }
   }
 
   private _refreshAll(): void {
@@ -65,6 +69,7 @@ export class ViewDashboard extends LitElement {
     void payoutsService.loadSummary('daily', todayIso(), 'both');
     void networkCapabilitiesService.load();
     void this._loadNetworkStats();
+    void this._loadRecentRounds();
   }
 
   private async _loadNetworkStats(): Promise<void> {
@@ -76,6 +81,15 @@ export class ViewDashboard extends LitElement {
       this.networkError = err instanceof Error ? err.message : String(err);
     } finally {
       this.networkLoading = false;
+    }
+  }
+
+  private async _loadRecentRounds(): Promise<void> {
+    try {
+      const r = await networkService.listRounds({ limit: 5 });
+      this.recentRounds = r.data;
+    } catch {
+      this.recentRounds = [];
     }
   }
 
@@ -240,6 +254,27 @@ export class ViewDashboard extends LitElement {
                     </ol>
                   `}
               <div class="footer-links"><a href="#/orchestrators">View all →</a></div>
+            </article>
+          </a>
+
+          <a class="card-link" href="#/rounds">
+            <article class="card">
+              <h3>Recent rounds</h3>
+              ${this.recentRounds.length === 0
+                ? html`<p class="muted">Loading…</p>`
+                : html`
+                    <ol>
+                      ${this.recentRounds.map(
+                        (r) => html`
+                          <li>
+                            <span class="name">Round ${r.round}</span>
+                            <span class="meta mono">${formatUsd(r.payouts_usd_on_day)}<span class="muted"> · ${r.active_orchestrators} orchs</span></span>
+                          </li>
+                        `,
+                      )}
+                    </ol>
+                  `}
+              <div class="footer-links"><a href="#/rounds">Browse all rounds →</a></div>
             </article>
           </a>
 

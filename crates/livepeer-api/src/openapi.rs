@@ -69,7 +69,10 @@ use utoipa::OpenApi;
         crate::routes::delegators::events_for,
         crate::routes::delegators::for_orchestrator,
         crate::routes::network::stats,
-        crate::routes::network::round_get
+        crate::routes::network::round_get,
+        crate::routes::network::rounds_index,
+        crate::routes::network::round_events,
+        crate::routes::network::round_event_counts
     ),
     components(
         schemas(
@@ -178,7 +181,17 @@ use utoipa::OpenApi;
             crate::routes::delegators::DelegatorEventsQuery,
             crate::routes::network::NetworkStatsResponse,
             crate::routes::network::RoundOrchSummary,
-            crate::routes::network::RoundSummaryResponse
+            crate::routes::network::RoundSummaryResponse,
+            crate::routes::network::PrevRoundContext,
+            crate::routes::network::RoundIndexRow,
+            crate::routes::network::RoundsIndexMeta,
+            crate::routes::network::RoundsIndexResponse,
+            crate::routes::network::RoundsIndexQuery,
+            crate::routes::network::RoundEventRow,
+            crate::routes::network::RoundEventsMeta,
+            crate::routes::network::RoundEventsResponse,
+            crate::routes::network::RoundEventsQuery,
+            crate::routes::network::RoundEventCountsResponse
         )
     ),
     tags(

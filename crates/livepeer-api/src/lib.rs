@@ -7,7 +7,9 @@ pub mod routes;
 pub mod state;
 
 use axum::body::{Body, Bytes};
+use axum::extract::Request;
 use axum::http::{header, HeaderValue, Method, Response, StatusCode};
+use axum::middleware::{self, Next};
 use axum::{routing::get, Router};
 use state::AppState;
 use std::convert::Infallible;
@@ -241,6 +243,57 @@ pub fn build_router(state: AppState) -> Router {
         // even though the body is correct. API routes registered above
         // always win over this fallback (axum Router precedence).
         .fallback_service(static_frontend_service())
+        // Cache-Control headers per response (decides via path + content
+        // type so API responses are left untouched).
+        .layer(middleware::from_fn(static_cache_headers))
+}
+
+/// Add `Cache-Control` headers to responses produced by the static-frontend
+/// surface. Decision matrix (in order):
+///
+/// | Path / Content-Type                 | `Cache-Control`                          |
+/// |-------------------------------------|------------------------------------------|
+/// | `/assets/*`                         | `public, max-age=31536000, immutable`    |
+/// | `/config.json`                      | `no-store`                               |
+/// | response is `text/html*`            | `no-cache, must-revalidate`              |
+/// | response is `image/*` or `font/*`   | `public, max-age=86400`                  |
+/// | anything else (API JSON, plain)     | unchanged — caller controls              |
+///
+/// Hashed `/assets/*` filenames are content-addressed by Vite, so they're
+/// safe to cache forever. The SPA entrypoint (`index.html`, served either
+/// directly at `/` or as the fallback for SPA deep-links) revalidates on
+/// every load so a fresh deploy lands within one page reload. `/config.json`
+/// is intentionally never cached so env-driven changes take effect on the
+/// next page load. API responses are untouched — leave their cache policy
+/// to the originating handler.
+async fn static_cache_headers(req: Request, next: Next) -> Response<Body> {
+    let path = req.uri().path().to_string();
+    let mut resp = next.run(req).await;
+
+    let cache_value: Option<&'static str> = if path.starts_with("/assets/") {
+        Some("public, max-age=31536000, immutable")
+    } else if path == "/config.json" {
+        Some("no-store")
+    } else {
+        let content_type = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if content_type.starts_with("text/html") {
+            Some("no-cache, must-revalidate")
+        } else if content_type.starts_with("image/") || content_type.starts_with("font/") {
+            Some("public, max-age=86400")
+        } else {
+            None
+        }
+    };
+
+    if let Some(val) = cache_value {
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static(val));
+    }
+    resp
 }
 
 /// Build a CORS layer from the `CORS_ALLOWED_ORIGINS` env var.

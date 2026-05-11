@@ -11,9 +11,13 @@ use axum::{
     routing::get,
     Router,
 };
+use axum::body::{Body, Bytes};
+use axum::http::{HeaderValue, Response, StatusCode};
 use state::AppState;
+use std::convert::Infallible;
 use tower_http::{
     cors::{Any, CorsLayer},
+    services::ServeDir,
     trace::TraceLayer,
 };
 use utoipa::OpenApi;
@@ -231,4 +235,76 @@ pub fn build_router(state: AppState) -> Router {
         )
         .layer(TraceLayer::new_for_http())
         .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi::ApiDoc::openapi()))
+        // Static frontend bundle. FE_STATIC_DIR overrides; defaults to the
+        // Dockerfile install path. ServeDir handles known assets (proper
+        // content-type, range requests, last-modified). For unknown paths
+        // we fall back to a small in-memory index.html service that returns
+        // 200 OK — required for SPA deep-linking, since
+        // `ServeDir::not_found_service` would otherwise propagate the 404
+        // even though the body is correct. API routes registered above
+        // always win over this fallback (axum Router precedence).
+        .fallback_service(static_frontend_service())
+}
+
+/// Build the static-frontend fallback. Reads `index.html` once at boot so
+/// we can serve SPA deep-links as `200 OK` rather than the `404` that
+/// `ServeDir::not_found_service` would otherwise force via `SetStatus`.
+fn static_frontend_service() -> ServeDir<SpaIndex> {
+    let dir = std::env::var("FE_STATIC_DIR")
+        .unwrap_or_else(|_| "/opt/livepeer/frontend-ui/dist".to_string());
+    let index_path = std::path::PathBuf::from(&dir).join("index.html");
+    let index_bytes = std::fs::read(&index_path)
+        .map(Bytes::from)
+        .unwrap_or_else(|_| Bytes::from_static(b""));
+    // `.fallback()` (not `.not_found_service()`) preserves the inner
+    // service's status, so SpaIndex's 200 actually reaches the client.
+    ServeDir::new(dir).fallback(SpaIndex { index_bytes })
+}
+
+/// Always returns the cached `index.html` bytes with `200 OK`. Used as the
+/// `not_found_service` for the static dir so SPA deep-links don't 404.
+#[derive(Clone)]
+pub struct SpaIndex {
+    index_bytes: Bytes,
+}
+
+impl<R> tower::Service<axum::http::Request<R>> for SpaIndex
+where
+    R: Send + 'static,
+{
+    type Response = Response<Body>;
+    type Error = Infallible;
+    type Future = std::future::Ready<Result<Self::Response, Infallible>>;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Infallible>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _req: axum::http::Request<R>) -> Self::Future {
+        let resp = if self.index_bytes.is_empty() {
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/plain; charset=utf-8"),
+                )
+                .body(Body::from(
+                    "frontend bundle not found; set FE_STATIC_DIR or place index.html",
+                ))
+                .expect("static index response")
+        } else {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/html; charset=utf-8"),
+                )
+                .body(Body::from(self.index_bytes.clone()))
+                .expect("static index response")
+        };
+        std::future::ready(Ok(resp))
+    }
 }

@@ -13,3 +13,10 @@ tests/fixtures/seed.sqlite
 .vscode/
 README.md
 AGENTS.md
+
+# Frontend — host artifacts that shouldn't enter the build context
+frontend-ui/node_modules/
+frontend-ui/dist/
+frontend-ui/test-results/
+frontend-ui/playwright-report/
+frontend-ui/.last-run.json

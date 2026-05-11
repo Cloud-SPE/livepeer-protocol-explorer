@@ -2554,6 +2554,7 @@ dependencies = [
  "prometheus",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "tower",

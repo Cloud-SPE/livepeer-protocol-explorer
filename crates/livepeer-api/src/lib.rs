@@ -11,6 +11,7 @@ use axum::extract::Request;
 use axum::http::{header, HeaderValue, Method, Response, StatusCode};
 use axum::middleware::{self, Next};
 use axum::{routing::get, Router};
+use sha2::{Digest, Sha256};
 use state::AppState;
 use std::convert::Infallible;
 use tower_http::{
@@ -329,6 +330,7 @@ fn build_cors_layer() -> CorsLayer {
 /// Build the static-frontend fallback. Reads `index.html` once at boot so
 /// we can serve SPA deep-links as `200 OK` rather than the `404` that
 /// `ServeDir::not_found_service` would otherwise force via `SetStatus`.
+/// Also computes a content-based ETag at boot so revalidation is cheap.
 fn static_frontend_service() -> ServeDir<SpaIndex> {
     let dir = std::env::var("FE_STATIC_DIR")
         .unwrap_or_else(|_| "/opt/livepeer/frontend-ui/dist".to_string());
@@ -336,16 +338,32 @@ fn static_frontend_service() -> ServeDir<SpaIndex> {
     let index_bytes = std::fs::read(&index_path)
         .map(Bytes::from)
         .unwrap_or_else(|_| Bytes::from_static(b""));
+    let etag = etag_from_bytes(&index_bytes);
     // `.fallback()` (not `.not_found_service()`) preserves the inner
     // service's status, so SpaIndex's 200 actually reaches the client.
-    ServeDir::new(dir).fallback(SpaIndex { index_bytes })
+    ServeDir::new(dir).fallback(SpaIndex { index_bytes, etag })
 }
 
-/// Always returns the cached `index.html` bytes with `200 OK`. Used as the
-/// `not_found_service` for the static dir so SPA deep-links don't 404.
+/// Compute an `ETag` value from the bytes of a response body. Uses the
+/// first 16 hex chars of SHA-256 (~64 bits of collision resistance —
+/// plenty for cache-validation correctness on a single-deploy bundle).
+/// The `"…"` quotes around the value are required by RFC 7232 §2.3.
+fn etag_from_bytes(bytes: &[u8]) -> HeaderValue {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let digest = h.finalize();
+    let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    HeaderValue::from_str(&format!("\"{hex}\""))
+        .expect("hex-formatted ETag is always a valid HeaderValue")
+}
+
+/// Always returns the cached `index.html` bytes with `200 OK` (or `304 Not
+/// Modified` when the client's `If-None-Match` matches our ETag). Used as
+/// the fallback for the static dir so SPA deep-links don't 404.
 #[derive(Clone)]
 pub struct SpaIndex {
     index_bytes: Bytes,
+    etag: HeaderValue,
 }
 
 impl<R> tower::Service<axum::http::Request<R>> for SpaIndex
@@ -363,9 +381,10 @@ where
         std::task::Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, _req: axum::http::Request<R>) -> Self::Future {
-        let resp = if self.index_bytes.is_empty() {
-            Response::builder()
+    fn call(&mut self, req: axum::http::Request<R>) -> Self::Future {
+        // Bundle missing → diagnostic 404 (no caching makes sense here).
+        if self.index_bytes.is_empty() {
+            let resp = Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header(
                     header::CONTENT_TYPE,
@@ -374,17 +393,39 @@ where
                 .body(Body::from(
                     "frontend bundle not found; set FE_STATIC_DIR or place index.html",
                 ))
-                .expect("static index response")
-        } else {
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("text/html; charset=utf-8"),
-                )
-                .body(Body::from(self.index_bytes.clone()))
-                .expect("static index response")
-        };
+                .expect("static index response");
+            return std::future::ready(Ok(resp));
+        }
+
+        // Cache-Control set here too (not just in `static_cache_headers`)
+        // so 304 responses — which have no Content-Type for the middleware
+        // to switch on — still tell clients how to treat their cached entry.
+        let cache_control = HeaderValue::from_static("no-cache, must-revalidate");
+
+        // Conditional request: if the client's ETag matches ours, return
+        // 304 Not Modified with no body. Saves the round-trip body for
+        // SPA deep-links that revalidate on every load (no-cache directive).
+        let if_none_match = req.headers().get(header::IF_NONE_MATCH);
+        if if_none_match.is_some_and(|v| v == self.etag) {
+            let resp = Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(header::ETAG, self.etag.clone())
+                .header(header::CACHE_CONTROL, cache_control)
+                .body(Body::empty())
+                .expect("304 response");
+            return std::future::ready(Ok(resp));
+        }
+
+        let resp = Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            )
+            .header(header::ETAG, self.etag.clone())
+            .header(header::CACHE_CONTROL, cache_control)
+            .body(Body::from(self.index_bytes.clone()))
+            .expect("static index response");
         std::future::ready(Ok(resp))
     }
 }

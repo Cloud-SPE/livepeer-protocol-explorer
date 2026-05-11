@@ -30,3 +30,4 @@ prometheus.workspace = true
 alloy.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
+sha2.workspace = true

@@ -1,15 +1,17 @@
 import { defineConfig } from 'vite';
 
 // Dev-only proxy so the SPA can run on http://localhost:5173 and reach the
-// Rust livepeer-api at http://127.0.0.1:8080 without CORS. In production the
-// `baseApiUrl` from `public/config.json` does the routing and CORS is the
-// backend's problem.
+// Rust livepeer-api at http://127.0.0.1:8080 same-origin-style. In production
+// the FE bundle and the API are served by the same axum process, so no
+// proxy is needed there. `/config.json` is included so dev consumes the
+// same env-driven runtime config as prod.
 const BACKEND = 'http://127.0.0.1:8080';
 const BACKEND_PREFIXES = [
   '/health',
   '/metrics',
   '/docs',
   '/openapi.json',
+  '/config.json',
   '/backfills',
   '/events',
   '/valuations',

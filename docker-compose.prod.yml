@@ -75,6 +75,26 @@ services:
       SECONDARY_RPC_URL: ${SECONDARY_RPC_URL}
       L1_RPC_URL: ${L1_RPC_URL}
       RUST_LOG: ${RUST_LOG:-info}
+      # CORS: comma-separated list of allowed origins, or `*` for any.
+      # Default `*` keeps the API open to third-party UIs (per ask).
+      # Tighten by listing specific hostnames e.g.
+      #   "https://stats.example.com,https://portal.example.com"
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
+      # Frontend runtime config (served as /config.json by the api process).
+      # All optional — leave unset to use the build-time defaults baked
+      # into livepeer-api itself. See routes/operational.rs::frontend_config.
+      FE_BASE_API_URL: ${FE_BASE_API_URL:-}
+      FE_GATEWAY_URL: ${FE_GATEWAY_URL:-}
+      FE_GATEWAY_BEARER: ${FE_GATEWAY_BEARER:-}
+      FE_BYOC_GATEWAY_URL: ${FE_BYOC_GATEWAY_URL:-}
+      FE_PERF_STATS_URL: ${FE_PERF_STATS_URL:-}
+      FE_AI_PERF_STATS_URL: ${FE_AI_PERF_STATS_URL:-}
+      FE_LEADERBOARD_STATS_URL: ${FE_LEADERBOARD_STATS_URL:-}
+      FE_AI_LEADERBOARD_STATS_URL: ${FE_AI_LEADERBOARD_STATS_URL:-}
+      FE_REGIONS_URL: ${FE_REGIONS_URL:-}
+      FE_PIPELINE_URL: ${FE_PIPELINE_URL:-}
+      FE_EXPLORER_TX_BASE: ${FE_EXPLORER_TX_BASE:-}
+      FE_EXPLORER_ADDRESS_BASE: ${FE_EXPLORER_ADDRESS_BASE:-}
     depends_on:
       postgres:
         condition: service_healthy

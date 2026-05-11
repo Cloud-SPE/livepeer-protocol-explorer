@@ -1,10 +1,17 @@
 import { BehaviorSubject, type Observable } from 'rxjs';
 import type { AppConfig, PartialAppConfig } from '../types/config.js';
 
+// Build-time defaults, used until `/config.json` resolves at boot.
+//
+// In production the FE bundle and the API are served by the same axum
+// process, so an empty `baseApiUrl` (relative URLs) is correct.
+//
+// All values are overridable per-deploy by the API's env-driven
+// `/config.json` handler — see `crates/livepeer-api/src/routes/operational.rs`
+// `frontend_config` for the env contract. Edit env vars on the host, restart
+// the api container, no FE rebuild needed.
 const DEFAULT_CONFIG: AppConfig = {
-  // Empty string = relative URLs, which go through the Vite dev proxy in
-  // development. Production deployments override this in `public/config.json`.
-  baseApiUrl: 'https://livepeer-api.xode.app',
+  baseApiUrl: '',
   gatewayUrl: 'https://dream-gateway.livepeer.cloud',
   gatewayBearer: '',
   byocGatewayUrl: 'https://openai-gateway.livepeer.cloud/v1',
@@ -18,25 +25,7 @@ const DEFAULT_CONFIG: AppConfig = {
   explorerAddressBase: 'https://arbiscan.io/address/',
 };
 
-function fromEnv(): PartialAppConfig {
-  const e = import.meta.env;
-  return {
-    ...(e.VITE_BASE_API_URL ? { baseApiUrl: e.VITE_BASE_API_URL } : {}),
-    ...(e.VITE_GATEWAY_URL ? { gatewayUrl: e.VITE_GATEWAY_URL } : {}),
-    ...(e.VITE_GATEWAY_BEARER_TOKEN ? { gatewayBearer: e.VITE_GATEWAY_BEARER_TOKEN } : {}),
-    ...(e.VITE_BYOC_GATEWAY_URL ? { byocGatewayUrl: e.VITE_BYOC_GATEWAY_URL } : {}),
-    ...(e.VITE_PERF_STATS_URL ? { perfStatsUrl: e.VITE_PERF_STATS_URL } : {}),
-    ...(e.VITE_AI_PERF_STATS_URL ? { aiPerfStatsUrl: e.VITE_AI_PERF_STATS_URL } : {}),
-    ...(e.VITE_LEADERBOARD_STATS_URL ? { leaderboardStatsUrl: e.VITE_LEADERBOARD_STATS_URL } : {}),
-    ...(e.VITE_AI_LEADERBOARD_STATS_URL ? { aiLeaderboardStatsUrl: e.VITE_AI_LEADERBOARD_STATS_URL } : {}),
-    ...(e.VITE_REGIONS_URL ? { regionsUrl: e.VITE_REGIONS_URL } : {}),
-    ...(e.VITE_PIPELINE_URL ? { pipelineUrl: e.VITE_PIPELINE_URL } : {}),
-    ...(e.VITE_EXPLORER_TX_BASE ? { explorerTxBase: e.VITE_EXPLORER_TX_BASE } : {}),
-    ...(e.VITE_EXPLORER_ADDRESS_BASE ? { explorerAddressBase: e.VITE_EXPLORER_ADDRESS_BASE } : {}),
-  };
-}
-
-const _config$ = new BehaviorSubject<AppConfig>({ ...DEFAULT_CONFIG, ...fromEnv() });
+const _config$ = new BehaviorSubject<AppConfig>({ ...DEFAULT_CONFIG });
 
 export const configService = {
   config$: _config$.asObservable() as Observable<AppConfig>,
@@ -44,7 +33,7 @@ export const configService = {
     return _config$.getValue();
   },
   apply(runtime: PartialAppConfig | null): AppConfig {
-    const merged: AppConfig = { ...DEFAULT_CONFIG, ...fromEnv(), ...(runtime ?? {}) };
+    const merged: AppConfig = { ...DEFAULT_CONFIG, ...(runtime ?? {}) };
     _config$.next(merged);
     return merged;
   },
@@ -60,7 +49,7 @@ export async function loadRuntimeConfig(): Promise<AppConfig> {
     const json = (await res.json()) as PartialAppConfig;
     return configService.apply(json);
   } catch (err) {
-    console.warn('config.json missing or invalid, using build-time defaults', err);
+    console.warn('config.json unreachable, using build-time defaults', err);
     return configService.apply(null);
   }
 }

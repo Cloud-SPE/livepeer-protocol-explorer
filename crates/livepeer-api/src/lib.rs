@@ -6,17 +6,13 @@ pub mod openapi;
 pub mod routes;
 pub mod state;
 
-use axum::{
-    http::{header, Method},
-    routing::get,
-    Router,
-};
 use axum::body::{Body, Bytes};
-use axum::http::{HeaderValue, Response, StatusCode};
+use axum::http::{header, HeaderValue, Method, Response, StatusCode};
+use axum::{routing::get, Router};
 use state::AppState;
 use std::convert::Infallible;
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{AllowOrigin, Any, CorsLayer},
     services::ServeDir,
     trace::TraceLayer,
 };
@@ -32,6 +28,10 @@ pub fn build_router(state: AppState) -> Router {
             "/backfills/status",
             get(routes::operational::backfill_status),
         )
+        // Frontend runtime config — env-driven, served from the same origin
+        // as the FE bundle. Registered before the static fallback so this
+        // route wins over /opt/livepeer/frontend-ui/dist/config.json.
+        .route("/config.json", get(routes::operational::frontend_config))
         // Events
         .route("/events", get(routes::events::list))
         .route("/events/{id}", get(routes::events::get_one))
@@ -225,14 +225,11 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::transcoders::profile_at_block),
         )
         .with_state(state)
-        // CORS: permissive for now (read-only data API). Tighten by replacing
-        // `Any` with a specific origin once the FE host is fixed in prod.
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST])
-                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]),
-        )
+        // CORS: env-driven so other UIs / third-party callers can hit the
+        // API cross-origin. The bundled FE is same-origin (served by this
+        // process) and doesn't need CORS for itself.
+        // See `build_cors_layer` for the env contract.
+        .layer(build_cors_layer())
         .layer(TraceLayer::new_for_http())
         .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi::ApiDoc::openapi()))
         // Static frontend bundle. FE_STATIC_DIR overrides; defaults to the
@@ -244,6 +241,36 @@ pub fn build_router(state: AppState) -> Router {
         // even though the body is correct. API routes registered above
         // always win over this fallback (axum Router precedence).
         .fallback_service(static_frontend_service())
+}
+
+/// Build a CORS layer from the `CORS_ALLOWED_ORIGINS` env var.
+///
+/// Values:
+/// - unset, empty, or `"*"` → permissive (any origin). Browsers treat this
+///   as anonymous-only — credentials/cookies are not allowed.
+/// - comma-separated list of origins (e.g.
+///   `"https://stats.example.com,https://portal.example.com"`) → only
+///   those exact origins are allowed.
+///
+/// Methods (`GET`, `POST`) and headers (`Content-Type`, `Authorization`)
+/// are always permitted; the env var only controls origin allow-listing.
+fn build_cors_layer() -> CorsLayer {
+    let raw = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_else(|_| "*".to_string());
+    let trimmed = raw.trim();
+    let layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+    if trimmed.is_empty() || trimmed == "*" {
+        layer.allow_origin(Any)
+    } else {
+        let origins: Vec<HeaderValue> = trimmed
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| HeaderValue::from_str(s).ok())
+            .collect();
+        layer.allow_origin(AllowOrigin::list(origins))
+    }
 }
 
 /// Build the static-frontend fallback. Reads `index.html` once at boot so

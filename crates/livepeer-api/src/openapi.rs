@@ -53,6 +53,7 @@ use utoipa::OpenApi;
         crate::routes::stake::at_block,
         crate::routes::stake::range,
         crate::routes::stake::delegators_at_block,
+        crate::routes::operational::frontend_config,
         crate::routes::transcoders::latest,
         crate::routes::transcoders::at_block,
         crate::routes::transcoders::history,

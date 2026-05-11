@@ -1,10 +1,104 @@
-//! Operational endpoints — health + backfill status. SPEC §14.3.5.
+//! Operational endpoints — health + backfill status + frontend config.
+//! SPEC §14.3.5.
 
 use crate::{error::ApiError, state::AppState};
 use axum::{extract::State, http::header, response::IntoResponse, Json};
 use prometheus::{Encoder, TextEncoder};
 use serde::Serialize;
 use utoipa::ToSchema;
+
+/// Runtime config consumed by the frontend bundle. The shape mirrors
+/// `frontend-ui/src/types/config.ts::AppConfig` exactly. All fields are
+/// env-overridable per the table in `frontend_config()`. Keys are
+/// camelCase to match what the FE expects without re-shaping.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendConfig {
+    /// Empty string = relative URLs (same-origin). Almost always what you
+    /// want when the FE is served by this API process.
+    pub base_api_url: String,
+    pub gateway_url: String,
+    pub gateway_bearer: String,
+    pub byoc_gateway_url: String,
+    pub perf_stats_url: String,
+    pub ai_perf_stats_url: String,
+    pub leaderboard_stats_url: String,
+    pub ai_leaderboard_stats_url: String,
+    pub regions_url: String,
+    pub pipeline_url: String,
+    pub explorer_tx_base: String,
+    pub explorer_address_base: String,
+}
+
+fn env_or(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+/// Per-deploy frontend config. Each field reads from a `FE_*` env var
+/// and falls back to a sensible default.
+///
+/// | Env var                       | Default                                                                                  |
+/// |-------------------------------|------------------------------------------------------------------------------------------|
+/// | `FE_BASE_API_URL`             | `""`  (relative URLs, same-origin)                                                       |
+/// | `FE_GATEWAY_URL`              | `https://dream-gateway.livepeer.cloud`                                                   |
+/// | `FE_GATEWAY_BEARER`           | `""`                                                                                     |
+/// | `FE_BYOC_GATEWAY_URL`         | `https://openai-gateway.livepeer.cloud/v1`                                               |
+/// | `FE_PERF_STATS_URL`           | `https://leaderboard-serverless.vercel.app/api/raw_stats`                                |
+/// | `FE_AI_PERF_STATS_URL`        | `https://lpc-leaderboard-serverless.vercel.app/api/raw_stats`                            |
+/// | `FE_LEADERBOARD_STATS_URL`    | `https://leaderboard-serverless.vercel.app/api/aggregated_stats`                         |
+/// | `FE_AI_LEADERBOARD_STATS_URL` | `https://lpc-leaderboard-serverless.vercel.app/api/aggregated_stats`                     |
+/// | `FE_REGIONS_URL`              | `https://lpc-leaderboard-serverless.vercel.app/api/regions`                              |
+/// | `FE_PIPELINE_URL`             | `https://lpc-leaderboard-serverless.vercel.app/api/pipelines`                            |
+/// | `FE_EXPLORER_TX_BASE`         | `https://arbiscan.io/tx/`                                                                |
+/// | `FE_EXPLORER_ADDRESS_BASE`    | `https://arbiscan.io/address/`                                                           |
+#[utoipa::path(
+    get,
+    path = "/config.json",
+    tag = "Operational",
+    responses(
+        (status = 200, description = "Frontend runtime config, env-driven per-deploy.", body = FrontendConfig)
+    )
+)]
+pub async fn frontend_config() -> Json<FrontendConfig> {
+    Json(FrontendConfig {
+        base_api_url: env_or("FE_BASE_API_URL", ""),
+        gateway_url: env_or("FE_GATEWAY_URL", "https://dream-gateway.livepeer.cloud"),
+        gateway_bearer: env_or("FE_GATEWAY_BEARER", ""),
+        byoc_gateway_url: env_or(
+            "FE_BYOC_GATEWAY_URL",
+            "https://openai-gateway.livepeer.cloud/v1",
+        ),
+        perf_stats_url: env_or(
+            "FE_PERF_STATS_URL",
+            "https://leaderboard-serverless.vercel.app/api/raw_stats",
+        ),
+        ai_perf_stats_url: env_or(
+            "FE_AI_PERF_STATS_URL",
+            "https://lpc-leaderboard-serverless.vercel.app/api/raw_stats",
+        ),
+        leaderboard_stats_url: env_or(
+            "FE_LEADERBOARD_STATS_URL",
+            "https://leaderboard-serverless.vercel.app/api/aggregated_stats",
+        ),
+        ai_leaderboard_stats_url: env_or(
+            "FE_AI_LEADERBOARD_STATS_URL",
+            "https://lpc-leaderboard-serverless.vercel.app/api/aggregated_stats",
+        ),
+        regions_url: env_or(
+            "FE_REGIONS_URL",
+            "https://lpc-leaderboard-serverless.vercel.app/api/regions",
+        ),
+        pipeline_url: env_or(
+            "FE_PIPELINE_URL",
+            "https://lpc-leaderboard-serverless.vercel.app/api/pipelines",
+        ),
+        explorer_tx_base: env_or("FE_EXPLORER_TX_BASE", "https://arbiscan.io/tx/"),
+        explorer_address_base: env_or(
+            "FE_EXPLORER_ADDRESS_BASE",
+            "https://arbiscan.io/address/",
+        ),
+    })
+}
 
 #[utoipa::path(
     get,

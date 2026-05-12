@@ -1,9 +1,11 @@
 name: Determinism
 
+# On-demand only. The SPEC §12.4 replay invariant is load-bearing but the
+# job is heavy (~10-15 min) and the fixtures need deliberate maintenance,
+# so we run it manually via "Run workflow" in the Actions UI (or
+# `gh workflow run Determinism`) rather than on every push/PR.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   replay:

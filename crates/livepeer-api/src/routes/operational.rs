@@ -93,10 +93,7 @@ pub async fn frontend_config() -> Json<FrontendConfig> {
             "https://lpc-leaderboard-serverless.vercel.app/api/pipelines",
         ),
         explorer_tx_base: env_or("FE_EXPLORER_TX_BASE", "https://arbiscan.io/tx/"),
-        explorer_address_base: env_or(
-            "FE_EXPLORER_ADDRESS_BASE",
-            "https://arbiscan.io/address/",
-        ),
+        explorer_address_base: env_or("FE_EXPLORER_ADDRESS_BASE", "https://arbiscan.io/address/"),
     })
 }
 

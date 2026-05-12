@@ -40,12 +40,6 @@ pub struct ReportSamples {
 const SAMPLE_LIMIT: usize = 10;
 
 #[derive(Debug, Clone)]
-struct LogKey {
-    tx_hash: String,
-    log_index: i32,
-}
-
-#[derive(Debug, Clone)]
 struct LogValue {
     block_number: i64,
     block_hash: String,
@@ -188,7 +182,7 @@ pub async fn run_cross_check(pg: &PgPool, sqlite: &SqlitePool) -> Result<CrossCh
         }
     }
     // Walk seed side for events the indexer didn't capture.
-    for (key, _) in &seed_map {
+    for key in seed_map.keys() {
         if !indexer_map.contains_key(key) {
             report.missing_in_indexer += 1;
             push_sample(

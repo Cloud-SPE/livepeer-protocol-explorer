@@ -65,9 +65,7 @@ pub struct NetworkStatsResponse {
         (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
     )
 )]
-pub async fn stats(
-    State(state): State<AppState>,
-) -> Result<Json<NetworkStatsResponse>, ApiError> {
+pub async fn stats(State(state): State<AppState>) -> Result<Json<NetworkStatsResponse>, ApiError> {
     let row = sqlx::query(
         r#"
         WITH t AS (SELECT $1::bigint AS cid, NOW() - INTERVAL '24 hours' AS cutoff_24h)
@@ -166,7 +164,9 @@ pub struct PrevRoundContext {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "Single-round summary built from per-round snapshots + daily rollups bucketed by round date.")]
+#[schema(
+    description = "Single-round summary built from per-round snapshots + daily rollups bucketed by round date."
+)]
 pub struct RoundSummaryResponse {
     pub round: String,
     pub round_started_block: String,
@@ -230,12 +230,17 @@ pub async fn round_get(
     .await?;
 
     if rows.is_empty() {
-        return Err(ApiError::not_found("round not found in orch_stake_by_round"));
+        return Err(ApiError::not_found(
+            "round not found in orch_stake_by_round",
+        ));
     }
 
     let block_number: i64 = rows[0].get("block_number");
     let block_timestamp: DateTime<Utc> = rows[0].get("block_timestamp");
-    let active_count = rows.iter().filter(|r| r.get::<bool, _>("is_active")).count() as u32;
+    let active_count = rows
+        .iter()
+        .filter(|r| r.get::<bool, _>("is_active"))
+        .count() as u32;
     let total_stake: BigDecimal = rows
         .iter()
         .map(|r| r.get::<BigDecimal, _>("total_stake"))
@@ -470,7 +475,10 @@ pub async fn rounds_index(
     State(state): State<AppState>,
     Query(q): Query<RoundsIndexQuery>,
 ) -> Result<Json<RoundsIndexResponse>, ApiError> {
-    let limit = q.limit.unwrap_or(DEFAULT_ROUNDS_LIMIT).min(MAX_ROUNDS_LIMIT) as i64;
+    let limit = q
+        .limit
+        .unwrap_or(DEFAULT_ROUNDS_LIMIT)
+        .min(MAX_ROUNDS_LIMIT) as i64;
     let cursor_round = q.cursor.as_deref().map(decode_round_cursor).transpose()?;
 
     let rows = sqlx::query(
@@ -565,7 +573,9 @@ pub struct RoundEventsMeta {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "Paginated events that fired between this round's NewRound block and the next.")]
+#[schema(
+    description = "Paginated events that fired between this round's NewRound block and the next."
+)]
 pub struct RoundEventsResponse {
     pub data: Vec<RoundEventRow>,
     pub meta: RoundEventsMeta,
@@ -644,8 +654,8 @@ async fn resolve_round_range(
 
     let from_block: Option<i64> = row.try_get("from_block").ok().flatten();
     let next_block: Option<i64> = row.try_get("next_round_block").ok().flatten();
-    let from_block = from_block
-        .ok_or_else(|| ApiError::not_found("round not found in orch_stake_by_round"))?;
+    let from_block =
+        from_block.ok_or_else(|| ApiError::not_found("round not found in orch_stake_by_round"))?;
     let to_block = next_block.map(|b| b - 1);
     Ok((from_block, to_block))
 }

@@ -12,16 +12,30 @@ pub struct BackfillRunSummary {
     pub inner: DriveSummary,
 }
 
-pub async fn run_backfill(
-    pg: &PgPool,
-    archive: &Provider,
-    cfg: &Config,
-    contract: ContractKind,
-    from_block: u64,
-    to_block: u64,
-    no_resume: bool,
-    checkpoint_suffix: &str,
-) -> Result<BackfillRunSummary> {
+/// All inputs to a single `run_backfill` invocation. Grouped so the entry-point
+/// has a small signature even though backfill needs DB + archive + config + range.
+pub struct RunBackfillArgs<'a> {
+    pub pg: &'a PgPool,
+    pub archive: &'a Provider,
+    pub cfg: &'a Config,
+    pub contract: ContractKind,
+    pub from_block: u64,
+    pub to_block: u64,
+    pub no_resume: bool,
+    pub checkpoint_suffix: &'a str,
+}
+
+pub async fn run_backfill(args: RunBackfillArgs<'_>) -> Result<BackfillRunSummary> {
+    let RunBackfillArgs {
+        pg,
+        archive,
+        cfg,
+        contract,
+        from_block,
+        to_block,
+        no_resume,
+        checkpoint_suffix,
+    } = args;
     let proxy = match contract {
         ContractKind::BondingManager => &cfg.static_.contracts.bonding_manager,
         ContractKind::TicketBroker => &cfg.static_.contracts.ticket_broker,
@@ -47,17 +61,15 @@ pub async fn run_backfill(
     let inner = if actual_from > to_block {
         DriveSummary::default()
     } else {
-        backfill::drive_backfill(
+        let job = backfill::BackfillJob {
             pg,
             archive,
             contract,
-            checkpoint_suffix,
-            &proxy,
-            &abi_hash,
-            actual_from,
-            to_block,
-        )
-        .await?
+            suffix: checkpoint_suffix,
+            proxy_address: &proxy,
+            abi_hash: &abi_hash,
+        };
+        backfill::drive_backfill(&job, actual_from, to_block).await?
     };
 
     Ok(BackfillRunSummary {

@@ -315,13 +315,15 @@ pub async fn orchestrator_tickets_latest(
 
     let (data, next_cursor) = fetch_ticket_history(
         &state,
-        Some(&orchestrator),
-        None,
-        None,
-        None,
-        &valuation_version,
-        cursor,
-        limit,
+        TicketHistoryFetch {
+            orchestrator: Some(&orchestrator),
+            gateway: None,
+            start: None,
+            end: None,
+            valuation_version: &valuation_version,
+            cursor,
+            limit,
+        },
     )
     .await?;
     Ok(Json(TicketHistoryResponse { data, next_cursor }))
@@ -358,13 +360,15 @@ pub async fn gateway_tickets(
 
     let (data, next_cursor) = fetch_ticket_history(
         &state,
-        None,
-        Some(&gateway),
-        start,
-        end,
-        &valuation_version,
-        cursor,
-        limit,
+        TicketHistoryFetch {
+            orchestrator: None,
+            gateway: Some(&gateway),
+            start,
+            end,
+            valuation_version: &valuation_version,
+            cursor,
+            limit,
+        },
     )
     .await?;
     Ok(Json(TicketHistoryResponse { data, next_cursor }))
@@ -571,16 +575,29 @@ async fn fetch_reward_rows(
         .collect()
 }
 
-async fn fetch_ticket_history(
-    state: &AppState,
-    orchestrator: Option<&str>,
-    gateway: Option<&str>,
+struct TicketHistoryFetch<'a> {
+    orchestrator: Option<&'a str>,
+    gateway: Option<&'a str>,
     start: Option<NaiveDate>,
     end: Option<NaiveDate>,
-    valuation_version: &str,
+    valuation_version: &'a str,
     cursor: Option<Cursor>,
     limit: i64,
+}
+
+async fn fetch_ticket_history(
+    state: &AppState,
+    q: TicketHistoryFetch<'_>,
 ) -> Result<(Vec<TicketHistoryRow>, Option<String>), ApiError> {
+    let TicketHistoryFetch {
+        orchestrator,
+        gateway,
+        start,
+        end,
+        valuation_version,
+        cursor,
+        limit,
+    } = q;
     let cursor_clause = match cursor {
         Some(_) => "AND (e.block_number, e.log_index) < ($7, $8)",
         None => "",
@@ -802,8 +819,8 @@ async fn load_tx_fees(
                 )
                 .await
                 .map_err(ApiError::internal)?;
-                let receipt: Value = serde_json::from_slice(&outcome.response_bytes)
-                    .map_err(ApiError::internal)?;
+                let receipt: Value =
+                    serde_json::from_slice(&outcome.response_bytes).map_err(ApiError::internal)?;
                 let fee = parse_tx_fee_from_receipt(&receipt)
                     .ok_or_else(|| ApiError::internal(format!("malformed receipt for {h}")))?;
                 Ok::<(String, BigDecimal), ApiError>((h, fee))

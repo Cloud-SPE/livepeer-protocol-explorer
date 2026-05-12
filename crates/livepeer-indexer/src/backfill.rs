@@ -139,16 +139,23 @@ pub async fn resume_from(
     })
 }
 
+/// Bundle the per-contract context that every chunk in a single backfill run shares.
+/// Lets us route the chunk loop through one `&BackfillJob` instead of threading
+/// 6 borrowed parameters through every helper.
+pub struct BackfillJob<'a> {
+    pub pg: &'a PgPool,
+    pub archive: &'a Provider,
+    pub contract: ContractKind,
+    pub suffix: &'a str,
+    pub proxy_address: &'a str,
+    pub abi_hash: &'a str,
+}
+
 /// Drive a chunked backfill over `[from_block, to_block]`. Halts on strict-decode failure
 /// (the chunk's transaction is rolled back by then). Halves batch size on transient RPC
 /// errors and retries; doubles on success up to MAX_BATCH_BLOCKS.
 pub async fn drive_backfill(
-    pg: &PgPool,
-    archive: &Provider,
-    contract: ContractKind,
-    suffix: &str,
-    proxy_address: &str,
-    abi_hash: &str,
+    job: &BackfillJob<'_>,
     from_block: u64,
     to_block: u64,
 ) -> Result<DriveSummary> {
@@ -162,18 +169,7 @@ pub async fn drive_backfill(
     let mut min_batch_retries: u32 = 0;
     while next <= to_block {
         let chunk_end = (next + current_batch - 1).min(to_block);
-        match backfill_chunk(
-            pg,
-            archive,
-            contract,
-            suffix,
-            proxy_address,
-            abi_hash,
-            next,
-            chunk_end,
-        )
-        .await
-        {
+        match backfill_chunk(job, next, chunk_end).await {
             Ok(chunk) => {
                 summary.chunks += 1;
                 summary.logs_seen += chunk.logs_seen;
@@ -253,15 +249,16 @@ struct ChunkSummary {
 }
 
 async fn backfill_chunk(
-    pg: &PgPool,
-    archive: &Provider,
-    contract: ContractKind,
-    suffix: &str,
-    proxy_address: &str,
-    abi_hash: &str,
+    job: &BackfillJob<'_>,
     chunk_start: u64,
     chunk_end: u64,
 ) -> Result<ChunkSummary> {
+    let pg = job.pg;
+    let archive = job.archive;
+    let contract = job.contract;
+    let suffix = job.suffix;
+    let proxy_address = job.proxy_address;
+    let abi_hash = job.abi_hash;
     let topic0s = topic0s_for(contract);
     let logs_value =
         eth_get_logs_multi_topic(pg, archive, proxy_address, &topic0s, chunk_start, chunk_end)
@@ -289,7 +286,7 @@ async fn backfill_chunk(
 
     for raw in &raw_logs {
         match decode_one(contract, raw, &block_ts) {
-            DispatchOutcome::Decoded(row) => prepared.push(row),
+            DispatchOutcome::Decoded(row) => prepared.push(*row),
             DispatchOutcome::DecodeFailed {
                 event_name,
                 topic0,
@@ -517,7 +514,9 @@ fn is_transient(e: &anyhow::Error) -> bool {
 /// is routed by `is_strict` (halt vs dead-letter); `UnknownTopic0` is defensive (our
 /// eth_getLogs filter shouldn't return unknown topics, but if it does, dead-letter).
 enum DispatchOutcome {
-    Decoded(PreparedRow),
+    // Boxed: PreparedRow dominates the enum's size (~336B vs ~73B for the
+    // next variant); without boxing clippy::large_enum_variant fires.
+    Decoded(Box<PreparedRow>),
     DecodeFailed {
         event_name: &'static str,
         topic0: B256,
@@ -647,7 +646,7 @@ fn decode_one(
         ($name:expr, $body:block) => {{
             row.event_name = $name;
             $body
-            return DispatchOutcome::Decoded(row);
+            return DispatchOutcome::Decoded(Box::new(row));
         }};
     }
     match contract {
@@ -660,7 +659,7 @@ fn decode_one(
                         set_amount(&mut row, d.amount, LPT_DECIMALS);
                         row.to_address = Some(addr_lower(&d.transcoder));
                     }),
-                    Err(e) => return decode_failed(contract, "Reward", topic0, e),
+                    Err(e) => decode_failed(contract, "Reward", topic0, e),
                 }
             } else if topic0 == Bond::SIGNATURE_HASH {
                 match Bond::decode_log_data(&log_data, true) {
@@ -672,7 +671,7 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.delegator));
                         row.to_address = Some(addr_lower(&d.newDelegate));
                     }),
-                    Err(e) => return decode_failed(contract, "Bond", topic0, e),
+                    Err(e) => decode_failed(contract, "Bond", topic0, e),
                 }
             } else if topic0 == Unbond::SIGNATURE_HASH {
                 match Unbond::decode_log_data(&log_data, true) {
@@ -683,7 +682,7 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.delegator));
                         row.to_address = Some(addr_lower(&d.delegate));
                     }),
-                    Err(e) => return decode_failed(contract, "Unbond", topic0, e),
+                    Err(e) => decode_failed(contract, "Unbond", topic0, e),
                 }
             } else if topic0 == Rebond::SIGNATURE_HASH {
                 match Rebond::decode_log_data(&log_data, true) {
@@ -694,7 +693,7 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.delegator));
                         row.to_address = Some(addr_lower(&d.delegate));
                     }),
-                    Err(e) => return decode_failed(contract, "Rebond", topic0, e),
+                    Err(e) => decode_failed(contract, "Rebond", topic0, e),
                 }
             } else if topic0 == WithdrawStake::SIGNATURE_HASH {
                 match WithdrawStake::decode_log_data(&log_data, true) {
@@ -704,7 +703,7 @@ fn decode_one(
                         set_amount(&mut row, d.amount, LPT_DECIMALS);
                         row.from_address = Some(addr_lower(&d.delegator));
                     }),
-                    Err(e) => return decode_failed(contract, "WithdrawStake", topic0, e),
+                    Err(e) => decode_failed(contract, "WithdrawStake", topic0, e),
                 }
             } else if topic0 == TransferBond::SIGNATURE_HASH {
                 match TransferBond::decode_log_data(&log_data, true) {
@@ -715,7 +714,7 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.oldDelegator));
                         row.to_address = Some(addr_lower(&d.newDelegator));
                     }),
-                    Err(e) => return decode_failed(contract, "TransferBond", topic0, e),
+                    Err(e) => decode_failed(contract, "TransferBond", topic0, e),
                 }
             } else if topic0 == EarningsClaimed::SIGNATURE_HASH {
                 match EarningsClaimed::decode_log_data(&log_data, true) {
@@ -739,9 +738,9 @@ fn decode_one(
                                 }),
                             );
                         }
-                        return DispatchOutcome::Decoded(row);
+                        DispatchOutcome::Decoded(Box::new(row))
                     }
-                    Err(e) => return decode_failed(contract, "EarningsClaimed", topic0, e),
+                    Err(e) => decode_failed(contract, "EarningsClaimed", topic0, e),
                 }
             } else if topic0 == WithdrawFees::SIGNATURE_HASH {
                 match WithdrawFees::decode_log_data(&log_data, true) {
@@ -752,7 +751,7 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.delegator));
                         row.to_address = Some(addr_lower(&d.recipient));
                     }),
-                    Err(e) => return decode_failed(contract, "WithdrawFees", topic0, e),
+                    Err(e) => decode_failed(contract, "WithdrawFees", topic0, e),
                 }
             } else if topic0 == BondingManager::TranscoderActivated::SIGNATURE_HASH {
                 match BondingManager::TranscoderActivated::decode_log_data(&log_data, true) {
@@ -768,7 +767,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "TranscoderActivated", topic0, e),
+                    Err(e) => decode_failed(contract, "TranscoderActivated", topic0, e),
                 }
             } else if topic0 == BondingManager::TranscoderDeactivated::SIGNATURE_HASH {
                 match BondingManager::TranscoderDeactivated::decode_log_data(&log_data, true) {
@@ -784,7 +783,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "TranscoderDeactivated", topic0, e),
+                    Err(e) => decode_failed(contract, "TranscoderDeactivated", topic0, e),
                 }
             } else if topic0 == BondingManager::TranscoderUpdate::SIGNATURE_HASH {
                 match BondingManager::TranscoderUpdate::decode_log_data(&log_data, true) {
@@ -801,7 +800,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "TranscoderUpdate", topic0, e),
+                    Err(e) => decode_failed(contract, "TranscoderUpdate", topic0, e),
                 }
             } else if topic0 == TranscoderSlashed::SIGNATURE_HASH {
                 match TranscoderSlashed::decode_log_data(&log_data, true) {
@@ -826,7 +825,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "TranscoderSlashed", topic0, e),
+                    Err(e) => decode_failed(contract, "TranscoderSlashed", topic0, e),
                 }
             } else if topic0 == BondingManager::ParameterUpdate::SIGNATURE_HASH {
                 match BondingManager::ParameterUpdate::decode_log_data(&log_data, true) {
@@ -838,7 +837,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "ParameterUpdate", topic0, e),
+                    Err(e) => decode_failed(contract, "ParameterUpdate", topic0, e),
                 }
             } else if topic0 == BondingManager::SetController::SIGNATURE_HASH {
                 match BondingManager::SetController::decode_log_data(&log_data, true) {
@@ -850,10 +849,10 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "SetController", topic0, e),
+                    Err(e) => decode_failed(contract, "SetController", topic0, e),
                 }
             } else {
-                return DispatchOutcome::UnknownTopic0 { topic0 };
+                DispatchOutcome::UnknownTopic0 { topic0 }
             }
         }
         ContractKind::TicketBroker => {
@@ -866,7 +865,7 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.sender));
                         row.to_address = Some(addr_lower(&d.recipient));
                     }),
-                    Err(e) => return decode_failed(contract, "WinningTicketRedeemed", topic0, e),
+                    Err(e) => decode_failed(contract, "WinningTicketRedeemed", topic0, e),
                 }
             } else if topic0 == WinningTicketTransfer::SIGNATURE_HASH {
                 match WinningTicketTransfer::decode_log_data(&log_data, true) {
@@ -877,7 +876,7 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.sender));
                         row.to_address = Some(addr_lower(&d.recipient));
                     }),
-                    Err(e) => return decode_failed(contract, "WinningTicketTransfer", topic0, e),
+                    Err(e) => decode_failed(contract, "WinningTicketTransfer", topic0, e),
                 }
             } else if topic0 == DepositFunded::SIGNATURE_HASH {
                 match DepositFunded::decode_log_data(&log_data, true) {
@@ -887,7 +886,7 @@ fn decode_one(
                         set_amount(&mut row, d.amount, ETH_DECIMALS);
                         row.from_address = Some(addr_lower(&d.sender));
                     }),
-                    Err(e) => return decode_failed(contract, "DepositFunded", topic0, e),
+                    Err(e) => decode_failed(contract, "DepositFunded", topic0, e),
                 }
             } else if topic0 == ReserveFunded::SIGNATURE_HASH {
                 match ReserveFunded::decode_log_data(&log_data, true) {
@@ -897,7 +896,7 @@ fn decode_one(
                         set_amount(&mut row, d.amount, ETH_DECIMALS);
                         row.from_address = Some(addr_lower(&d.reserveHolder));
                     }),
-                    Err(e) => return decode_failed(contract, "ReserveFunded", topic0, e),
+                    Err(e) => decode_failed(contract, "ReserveFunded", topic0, e),
                 }
             } else if topic0 == Withdrawal::SIGNATURE_HASH {
                 match Withdrawal::decode_log_data(&log_data, true) {
@@ -908,7 +907,7 @@ fn decode_one(
                         set_amount(&mut row, total, ETH_DECIMALS);
                         row.from_address = Some(addr_lower(&d.sender));
                     }),
-                    Err(e) => return decode_failed(contract, "Withdrawal", topic0, e),
+                    Err(e) => decode_failed(contract, "Withdrawal", topic0, e),
                 }
             } else if topic0 == Unlock::SIGNATURE_HASH {
                 // TD-031: previously decoded into an empty block, leaving
@@ -920,7 +919,7 @@ fn decode_one(
                     Ok(d) => decoded!("Unlock", {
                         row.from_address = Some(addr_lower(&d.sender));
                     }),
-                    Err(e) => return decode_failed(contract, "Unlock", topic0, e),
+                    Err(e) => decode_failed(contract, "Unlock", topic0, e),
                 }
             } else if topic0 == ReserveClaimed::SIGNATURE_HASH {
                 match ReserveClaimed::decode_log_data(&log_data, true) {
@@ -937,14 +936,14 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.reserveHolder));
                         row.to_address = Some(addr_lower(&d.claimant));
                     }),
-                    Err(e) => return decode_failed(contract, "ReserveClaimed", topic0, e),
+                    Err(e) => decode_failed(contract, "ReserveClaimed", topic0, e),
                 }
             } else if topic0 == UnlockCancelled::SIGNATURE_HASH {
                 match UnlockCancelled::decode_log_data(&log_data, true) {
                     Ok(d) => decoded!("UnlockCancelled", {
                         row.from_address = Some(addr_lower(&d.sender));
                     }),
-                    Err(e) => return decode_failed(contract, "UnlockCancelled", topic0, e),
+                    Err(e) => decode_failed(contract, "UnlockCancelled", topic0, e),
                 }
             } else if topic0 == TicketBroker::ParameterUpdate::SIGNATURE_HASH {
                 match TicketBroker::ParameterUpdate::decode_log_data(&log_data, true) {
@@ -956,7 +955,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "ParameterUpdate", topic0, e),
+                    Err(e) => decode_failed(contract, "ParameterUpdate", topic0, e),
                 }
             } else if topic0 == TicketBroker::SetController::SIGNATURE_HASH {
                 match TicketBroker::SetController::decode_log_data(&log_data, true) {
@@ -968,10 +967,10 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "SetController", topic0, e),
+                    Err(e) => decode_failed(contract, "SetController", topic0, e),
                 }
             } else {
-                return DispatchOutcome::UnknownTopic0 { topic0 };
+                DispatchOutcome::UnknownTopic0 { topic0 }
             }
         }
         ContractKind::LivepeerToken => {
@@ -984,7 +983,7 @@ fn decode_one(
                         row.from_address = Some(addr_lower(&d.from));
                         row.to_address = Some(addr_lower(&d.to));
                     }),
-                    Err(e) => return decode_failed(contract, "Transfer", topic0, e),
+                    Err(e) => decode_failed(contract, "Transfer", topic0, e),
                 }
             } else if topic0 == Mint::SIGNATURE_HASH {
                 match Mint::decode_log_data(&log_data, true) {
@@ -994,7 +993,7 @@ fn decode_one(
                         set_amount(&mut row, d.amount, LPT_DECIMALS);
                         row.to_address = Some(addr_lower(&d.to));
                     }),
-                    Err(e) => return decode_failed(contract, "Mint", topic0, e),
+                    Err(e) => decode_failed(contract, "Mint", topic0, e),
                 }
             } else if topic0 == Burn::SIGNATURE_HASH {
                 match Burn::decode_log_data(&log_data, true) {
@@ -1004,12 +1003,12 @@ fn decode_one(
                         set_amount(&mut row, d.value, LPT_DECIMALS);
                         row.from_address = Some(addr_lower(&d.burner));
                     }),
-                    Err(e) => return decode_failed(contract, "Burn", topic0, e),
+                    Err(e) => decode_failed(contract, "Burn", topic0, e),
                 }
             } else if topic0 == LivepeerToken::Approval::SIGNATURE_HASH {
                 decoded!("Approval", {});
             } else {
-                return DispatchOutcome::UnknownTopic0 { topic0 };
+                DispatchOutcome::UnknownTopic0 { topic0 }
             }
         }
         ContractKind::RoundsManager => {
@@ -1026,9 +1025,9 @@ fn decode_one(
                                 }),
                             );
                         }
-                        return DispatchOutcome::Decoded(row);
+                        DispatchOutcome::Decoded(Box::new(row))
                     }
-                    Err(e) => return decode_failed(contract, "NewRound", topic0, e),
+                    Err(e) => decode_failed(contract, "NewRound", topic0, e),
                 }
             } else if topic0 == RoundsManager::ParameterUpdate::SIGNATURE_HASH {
                 match RoundsManager::ParameterUpdate::decode_log_data(&log_data, true) {
@@ -1040,7 +1039,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "ParameterUpdate", topic0, e),
+                    Err(e) => decode_failed(contract, "ParameterUpdate", topic0, e),
                 }
             } else if topic0 == RoundsManager::SetController::SIGNATURE_HASH {
                 match RoundsManager::SetController::decode_log_data(&log_data, true) {
@@ -1052,10 +1051,10 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "SetController", topic0, e),
+                    Err(e) => decode_failed(contract, "SetController", topic0, e),
                 }
             } else {
-                return DispatchOutcome::UnknownTopic0 { topic0 };
+                DispatchOutcome::UnknownTopic0 { topic0 }
             }
         }
         ContractKind::Governor => {
@@ -1075,9 +1074,9 @@ fn decode_one(
                                 }),
                             );
                         }
-                        return DispatchOutcome::Decoded(row);
+                        DispatchOutcome::Decoded(Box::new(row))
                     }
-                    Err(e) => return decode_failed(contract, "ProposalCreated", topic0, e),
+                    Err(e) => decode_failed(contract, "ProposalCreated", topic0, e),
                 }
             } else if topic0 == ProposalExecuted::SIGNATURE_HASH {
                 match ProposalExecuted::decode_log_data(&log_data, true) {
@@ -1089,9 +1088,9 @@ fn decode_one(
                                 serde_json::json!({ "proposalId": d.proposalId.to_string() }),
                             );
                         }
-                        return DispatchOutcome::Decoded(row);
+                        DispatchOutcome::Decoded(Box::new(row))
                     }
-                    Err(e) => return decode_failed(contract, "ProposalExecuted", topic0, e),
+                    Err(e) => decode_failed(contract, "ProposalExecuted", topic0, e),
                 }
             } else if topic0 == VoteCast::SIGNATURE_HASH {
                 match VoteCast::decode_log_data(&log_data, true) {
@@ -1110,9 +1109,9 @@ fn decode_one(
                             );
                         }
                         row.from_address = Some(addr_lower(&d.voter));
-                        return DispatchOutcome::Decoded(row);
+                        DispatchOutcome::Decoded(Box::new(row))
                     }
-                    Err(e) => return decode_failed(contract, "VoteCast", topic0, e),
+                    Err(e) => decode_failed(contract, "VoteCast", topic0, e),
                 }
             } else if topic0 == VoteCastWithParams::SIGNATURE_HASH {
                 match VoteCastWithParams::decode_log_data(&log_data, true) {
@@ -1135,9 +1134,9 @@ fn decode_one(
                                 }),
                             );
                         }
-                        return DispatchOutcome::Decoded(row);
+                        DispatchOutcome::Decoded(Box::new(row))
                     }
-                    Err(e) => return decode_failed(contract, "VoteCastWithParams", topic0, e),
+                    Err(e) => decode_failed(contract, "VoteCastWithParams", topic0, e),
                 }
             } else if topic0 == ProposalCanceled::SIGNATURE_HASH {
                 match ProposalCanceled::decode_log_data(&log_data, true) {
@@ -1149,7 +1148,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "ProposalCanceled", topic0, e),
+                    Err(e) => decode_failed(contract, "ProposalCanceled", topic0, e),
                 }
             } else if topic0 == ProposalQueued::SIGNATURE_HASH {
                 match ProposalQueued::decode_log_data(&log_data, true) {
@@ -1164,7 +1163,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "ProposalQueued", topic0, e),
+                    Err(e) => decode_failed(contract, "ProposalQueued", topic0, e),
                 }
             } else if topic0 == Governor::ParameterUpdate::SIGNATURE_HASH {
                 match Governor::ParameterUpdate::decode_log_data(&log_data, true) {
@@ -1176,7 +1175,7 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "ParameterUpdate", topic0, e),
+                    Err(e) => decode_failed(contract, "ParameterUpdate", topic0, e),
                 }
             } else if topic0 == Governor::SetController::SIGNATURE_HASH {
                 match Governor::SetController::decode_log_data(&log_data, true) {
@@ -1188,10 +1187,10 @@ fn decode_one(
                             );
                         }
                     }),
-                    Err(e) => return decode_failed(contract, "SetController", topic0, e),
+                    Err(e) => decode_failed(contract, "SetController", topic0, e),
                 }
             } else {
-                return DispatchOutcome::UnknownTopic0 { topic0 };
+                DispatchOutcome::UnknownTopic0 { topic0 }
             }
         }
     }

@@ -11,8 +11,8 @@
 
 use crate::bulk::{BulkBuffers, PriceRow};
 use crate::persist::{
-    insert_attempt, insert_valuation, ARBITRUM_CHAIN_ID, STATUS_FAILED_MISSING_ORACLE,
-    STATUS_FAILED_MISSING_POOL, STATUS_FAILED_SEQUENCER_OUTAGE, STATUS_PRICED,
+    ARBITRUM_CHAIN_ID, STATUS_FAILED_MISSING_ORACLE, STATUS_FAILED_MISSING_POOL,
+    STATUS_FAILED_SEQUENCER_OUTAGE, STATUS_PRICED,
 };
 use crate::tick_math;
 use alloy::primitives::U256;
@@ -463,46 +463,9 @@ struct DecodedRound {
     answered_in_round: String,
 }
 
-async fn read_round(
-    pg: &PgPool,
-    archive: &Provider,
-    aggregator: &str,
-    block: u64,
-) -> Result<Option<DecodedRound>> {
-    let calldata = AggregatorV3::latestRoundDataCall {};
-    let data = format!("0x{}", alloy::hex::encode(calldata.abi_encode()));
-    let outcome = cross_check::single_call_cached(
-        pg,
-        archive,
-        "eth_call",
-        &serde_json::json!([{ "to": aggregator, "data": data }, format!("0x{:x}", block)]),
-        Some(block as i64),
-    )
-    .await?;
-    // response_bytes is a JSON-encoded "0x..." string; strip quotes + 0x, hex-decode.
-    let s = std::str::from_utf8(&outcome.response_bytes).unwrap_or_default();
-    let hex_str = s.trim_matches('"').trim_start_matches("0x");
-    let raw = alloy::hex::decode(hex_str).context("decoding eth_call return hex")?;
-    // An empty return (0x) means the aggregator contract was not deployed at
-    // this block. Surface as None so the caller can route to MissingOracle
-    // instead of bubbling up a malformed-tuple decode error.
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    let ret = AggregatorV3::latestRoundDataCall::abi_decode_returns(&raw, true)
-        .context("ABI-decoding latestRoundData return tuple")?;
-    Ok(Some(DecodedRound {
-        round_id: ret.roundId.to_string(),
-        answer: ret.answer.to_string(),
-        started_at: ret.startedAt.to_string(),
-        updated_at: ret.updatedAt.to_string(),
-        answered_in_round: ret.answeredInRound.to_string(),
-    }))
-}
-
 /// Decode a `latestRoundData()` response from a `batch_call_cached` outcome.
 /// `Err(e)` from the batch propagates; `Ok` with empty bytes → `None`
-/// (contract not deployed at this block, same semantic as `read_round`).
+/// (contract not deployed at this block).
 fn decode_round_outcome(
     outcome: std::result::Result<
         &livepeer_core::rpc::cross_check::CrossCheckOutcome,
@@ -723,30 +686,29 @@ pub async fn run_onchain_pass_lpt(
     // (Cloudflare drops idle HTTP/2 streams) but ~all of those retry
     // successfully on a second attempt with a fresh pooled connection.
     const CONCURRENCY: usize = 14;
-    let mut set: tokio::task::JoinSet<(
+    type LptJobResult = (
         i64,
         i64,
         BigDecimal,
         anyhow::Result<(LptOutcome, Vec<PriceRow>)>,
-    )> = tokio::task::JoinSet::new();
+    );
+    struct LptPricingCtx<'a> {
+        pg: &'a PgPool,
+        archive: &'a Provider,
+        pool: &'a str,
+        chainlink: &'a str,
+        sequencer: &'a str,
+    }
+    let mut set: tokio::task::JoinSet<LptJobResult> = tokio::task::JoinSet::new();
     let mut iter = candidates.into_iter();
 
     fn try_spawn(
-        set: &mut tokio::task::JoinSet<(
-            i64,
-            i64,
-            BigDecimal,
-            anyhow::Result<(LptOutcome, Vec<PriceRow>)>,
-        )>,
+        set: &mut tokio::task::JoinSet<LptJobResult>,
         iter: &mut std::vec::IntoIter<CandidateEvent>,
         summary: &mut LptRunSummary,
-        pg: &PgPool,
-        archive: &Provider,
-        pool: &str,
-        chainlink: &str,
-        sequencer: &str,
+        ctx: &LptPricingCtx<'_>,
     ) {
-        while let Some(ev) = iter.next() {
+        for ev in iter.by_ref() {
             let asset = ev.asset.as_deref().unwrap_or_default();
             if asset != "LPT" {
                 summary.other_skipped += 1;
@@ -758,11 +720,11 @@ pub async fn run_onchain_pass_lpt(
             };
             let event_id = ev.event_id;
             let block_number = ev.block_number;
-            let pg = pg.clone();
-            let archive = archive.clone();
-            let pool = pool.to_string();
-            let chainlink = chainlink.to_string();
-            let sequencer = sequencer.to_string();
+            let pg = ctx.pg.clone();
+            let archive = ctx.archive.clone();
+            let pool = ctx.pool.to_string();
+            let chainlink = ctx.chainlink.to_string();
+            let sequencer = ctx.sequencer.to_string();
             let amt_owned = amount_native.clone();
             set.spawn(async move {
                 let r = price_lpt_amount(
@@ -783,17 +745,15 @@ pub async fn run_onchain_pass_lpt(
         }
     }
 
+    let ctx = LptPricingCtx {
+        pg,
+        archive,
+        pool: &pool,
+        chainlink: &chainlink,
+        sequencer: &sequencer,
+    };
     for _ in 0..CONCURRENCY {
-        try_spawn(
-            &mut set,
-            &mut iter,
-            &mut summary,
-            pg,
-            archive,
-            &pool,
-            &chainlink,
-            &sequencer,
-        );
+        try_spawn(&mut set, &mut iter, &mut summary, &ctx);
     }
 
     while let Some(joined) = set.join_next().await {
@@ -925,16 +885,7 @@ pub async fn run_onchain_pass_lpt(
             }
         }
         buffers.maybe_flush(pg).await?;
-        try_spawn(
-            &mut set,
-            &mut iter,
-            &mut summary,
-            pg,
-            archive,
-            &pool,
-            &chainlink,
-            &sequencer,
-        );
+        try_spawn(&mut set, &mut iter, &mut summary, &ctx);
     }
     buffers.flush(pg).await?;
 
@@ -964,29 +915,6 @@ pub(crate) enum LptOutcome {
     MissingPool {
         detail: serde_json::Value,
     },
-}
-
-async fn price_lpt_event(
-    pg: &PgPool,
-    archive: &Provider,
-    pool: &str,
-    chainlink: &str,
-    sequencer: &str,
-    ev: &CandidateEvent,
-    amount_native: &BigDecimal,
-) -> Result<(LptOutcome, Vec<PriceRow>)> {
-    price_lpt_amount(
-        pg,
-        archive,
-        pool,
-        chainlink,
-        sequencer,
-        ev.block_number as u64,
-        &ev.block_hash,
-        ev.block_timestamp,
-        amount_native,
-    )
-    .await
 }
 
 /// Pure LPT-on-chain pricing helper for the multi-asset path. Takes raw
@@ -1371,88 +1299,10 @@ struct PoolSlot0 {
     observation_cardinality: u32,
 }
 
-async fn read_pool_slot0(
-    pg: &PgPool,
-    archive: &Provider,
-    pool: &str,
-    block: u64,
-) -> Result<Option<PoolSlot0>> {
-    let calldata = UniswapV3Pool::slot0Call {};
-    let data = format!("0x{}", alloy::hex::encode(calldata.abi_encode()));
-    let outcome = cross_check::single_call_cached(
-        pg,
-        archive,
-        "eth_call",
-        &serde_json::json!([{ "to": pool, "data": data }, format!("0x{:x}", block)]),
-        Some(block as i64),
-    )
-    .await?;
-    let s = std::str::from_utf8(&outcome.response_bytes).unwrap_or_default();
-    let hex_str = s.trim_matches('"').trim_start_matches("0x");
-    if hex_str.is_empty() {
-        return Ok(None); // pool not yet deployed at this block
-    }
-    let raw = alloy::hex::decode(hex_str).context("decoding slot0() return hex")?;
-    let ret = UniswapV3Pool::slot0Call::abi_decode_returns(&raw, true)
-        .context("ABI-decoding slot0() return tuple")?;
-    let tick_i32: i32 = ret.tick.to_string().parse().context("tick to i32")?;
-    Ok(Some(PoolSlot0 {
-        sqrt_price_x96: U256::from(ret.sqrtPriceX96),
-        tick: tick_i32,
-        observation_cardinality: ret.observationCardinality as u32,
-    }))
-}
-
 #[derive(Debug)]
 struct PoolObservation {
     cumulative_then: i128,
     cumulative_now: i128,
-}
-
-async fn read_pool_observe(
-    pg: &PgPool,
-    archive: &Provider,
-    pool: &str,
-    block: u64,
-    seconds_ago: u32,
-) -> Result<Option<PoolObservation>> {
-    let calldata = UniswapV3Pool::observeCall {
-        secondsAgos: vec![seconds_ago, 0],
-    };
-    let data = format!("0x{}", alloy::hex::encode(calldata.abi_encode()));
-    let outcome = cross_check::single_call_cached(
-        pg,
-        archive,
-        "eth_call",
-        &serde_json::json!([{ "to": pool, "data": data }, format!("0x{:x}", block)]),
-        Some(block as i64),
-    )
-    .await?;
-    let s = std::str::from_utf8(&outcome.response_bytes).unwrap_or_default();
-    let hex_str = s.trim_matches('"').trim_start_matches("0x");
-    if hex_str.is_empty() {
-        return Ok(None);
-    }
-    let raw = alloy::hex::decode(hex_str).context("decoding observe() return hex")?;
-    let ret = match UniswapV3Pool::observeCall::abi_decode_returns(&raw, true) {
-        Ok(r) => r,
-        Err(_) => return Ok(None), // pool may revert (OLD) for windows it can't serve
-    };
-    if ret.tickCumulatives.len() < 2 {
-        return Ok(None);
-    }
-    let cumulative_then: i128 = ret.tickCumulatives[0]
-        .to_string()
-        .parse()
-        .context("tickCumulative[0]")?;
-    let cumulative_now: i128 = ret.tickCumulatives[1]
-        .to_string()
-        .parse()
-        .context("tickCumulative[1]")?;
-    Ok(Some(PoolObservation {
-        cumulative_then,
-        cumulative_now,
-    }))
 }
 
 async fn fetch_lpt_candidates(
@@ -1514,69 +1364,4 @@ async fn fetch_lpt_candidates(
             amount_normalized: r.get(5),
         })
         .collect())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn commit_priced(
-    pg: &PgPool,
-    event_id: i64,
-    valuation_version: &str,
-    asset: &str,
-    pricing_method: &str,
-    source: &str,
-    block_number: i64,
-    amount_native: &BigDecimal,
-    native_usd_price: &BigDecimal,
-    amount_usd: &BigDecimal,
-    pricing_chain: &serde_json::Value,
-) -> Result<()> {
-    let mut tx = pg.begin().await?;
-    insert_valuation(
-        &mut tx,
-        event_id,
-        valuation_version,
-        asset,
-        pricing_method,
-        source,
-        STATUS_PRICED,
-        block_number,
-        amount_native,
-        Some(native_usd_price),
-        Some(amount_usd),
-        pricing_chain,
-    )
-    .await?;
-    insert_attempt(
-        &mut tx,
-        event_id,
-        valuation_version,
-        asset,
-        STATUS_PRICED,
-        None,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-async fn attempt_only(
-    pg: &PgPool,
-    event_id: i64,
-    valuation_version: &str,
-    asset: &str,
-    result_status: &str,
-    error_detail: Option<serde_json::Value>,
-) -> Result<()> {
-    let mut tx = pg.begin().await?;
-    insert_attempt(
-        &mut tx,
-        event_id,
-        valuation_version,
-        asset,
-        result_status,
-        error_detail,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(())
 }

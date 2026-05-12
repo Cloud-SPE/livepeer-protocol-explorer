@@ -111,19 +111,12 @@ pub async fn events(
     // checkpoint covers the requested upper bound. While backfill is in
     // progress (or for "live" queries without an explicit `to`), the rollup
     // would return partial data, so we fall back to the direct scan.
-    let mut rollup_eligible = q.address.is_none()
-        && q.from_address.is_none()
-        && q.to_address.is_none()
-        && tz == "UTC";
+    let mut rollup_eligible =
+        q.address.is_none() && q.from_address.is_none() && q.to_address.is_none() && tz == "UTC";
     if rollup_eligible {
-        rollup_eligible = rollup_covers_range(
-            &state,
-            from_block_opt,
-            to_block_opt,
-            from_ts_opt,
-            to_ts_opt,
-        )
-        .await?;
+        rollup_eligible =
+            rollup_covers_range(&state, from_block_opt, to_block_opt, from_ts_opt, to_ts_opt)
+                .await?;
     }
 
     let valuation_version = if needs_valuations {
@@ -201,7 +194,8 @@ async fn aggregate_from_rollup(
     // path strictly faster than the direct scan, we resolve block→day via a
     // single helper query. If either resolution fails the call falls through
     // to the direct path.
-    let (from_day_opt, to_day_opt) = resolve_day_window(state, from_block_opt, to_block_opt).await?;
+    let (from_day_opt, to_day_opt) =
+        resolve_day_window(state, from_block_opt, to_block_opt).await?;
     let from_day_opt = from_day_opt.or_else(|| from_ts_opt.map(|t| t.date_naive()));
     let to_day_opt = to_day_opt.or_else(|| to_ts_opt.map(|t| t.date_naive()));
 
@@ -218,10 +212,7 @@ async fn aggregate_from_rollup(
             }
         };
     }
-    filter!(
-        q.contract.clone().map(Bind::Str),
-        "contract_name = ${idx}"
-    );
+    filter!(q.contract.clone().map(Bind::Str), "contract_name = ${idx}");
     filter!(q.event_name.clone().map(Bind::Str), "event_name = ${idx}");
     filter!(
         q.asset.clone().map(|s| Bind::Str(s.to_uppercase())),
@@ -464,12 +455,11 @@ async fn rollup_covers_range(
     let Some(ckpt) = checkpoint else {
         return Ok(false);
     };
-    let row = sqlx::query(
-        "SELECT block_number, block_timestamp FROM raw_protocol_events WHERE id = $1",
-    )
-    .bind(ckpt)
-    .fetch_optional(&state.pg)
-    .await?;
+    let row =
+        sqlx::query("SELECT block_number, block_timestamp FROM raw_protocol_events WHERE id = $1")
+            .bind(ckpt)
+            .fetch_optional(&state.pg)
+            .await?;
     let Some(row) = row else {
         return Ok(false);
     };

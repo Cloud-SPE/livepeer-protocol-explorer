@@ -54,7 +54,6 @@ pub struct BackfillCutsSummary {
     pub rows_unchanged: u64,
     pub rows_skipped_unregistered: u64,
     pub errors: u64,
-    pub csv_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,7 +127,7 @@ pub async fn run(rt: &Runtime, opts: BackfillCutsOpts) -> Result<BackfillCutsSum
             }
         }
         let s = scanned_ref.fetch_add(1, Ordering::Relaxed) + 1;
-        if s % PROGRESS_LOG_EVERY == 0 || s == total {
+        if s.is_multiple_of(PROGRESS_LOG_EVERY) || s == total {
             info!(
                 scanned = s,
                 total,
@@ -154,7 +153,6 @@ pub async fn run(rt: &Runtime, opts: BackfillCutsOpts) -> Result<BackfillCutsSum
         rows_unchanged: unchanged.load(Ordering::Relaxed),
         rows_skipped_unregistered: skipped.load(Ordering::Relaxed),
         errors: errors.load(Ordering::Relaxed),
-        csv_path: Some(csv_path.clone()),
     };
     info!(
         rows_scanned = summary.rows_scanned,
@@ -261,7 +259,9 @@ async fn process_row(
 }
 
 fn open_csv_with_header(path: &std::path::Path) -> Result<std::fs::File> {
-    let exists_and_nonempty = std::fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false);
+    let exists_and_nonempty = std::fs::metadata(path)
+        .map(|m| m.len() > 0)
+        .unwrap_or(false);
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

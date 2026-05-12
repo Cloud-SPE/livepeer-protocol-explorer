@@ -33,11 +33,15 @@ struct Cli {
     command: Command,
 }
 
+// CLI names retain the `-daily` suffix for backward-compat with scripts and
+// existing live processes. Internal Rust identifiers drop it per
+// clippy::enum_variant_names (all variants previously shared `Daily`).
 #[derive(Subcommand, Debug)]
 enum Command {
     /// TD-017 Phase 2: materialize daily orchestrator payout aggregates from
     /// finalized WinningTicketRedeemed rows plus valuation data.
-    OrchPayoutsDaily {
+    #[command(name = "orch-payouts-daily")]
+    OrchPayouts {
         #[arg(long, default_value_t = DEFAULT_BATCH_LIMIT)]
         batch_limit: i64,
         #[arg(long, default_value_t = DEFAULT_CADENCE_SECS)]
@@ -47,7 +51,8 @@ enum Command {
     },
     /// TD-017 Phase 3: materialize daily orchestrator reward aggregates from
     /// finalized Reward rows plus valuation data.
-    OrchRewardsDaily {
+    #[command(name = "orch-rewards-daily")]
+    OrchRewards {
         #[arg(long, default_value_t = DEFAULT_BATCH_LIMIT)]
         batch_limit: i64,
         #[arg(long, default_value_t = DEFAULT_CADENCE_SECS)]
@@ -57,7 +62,8 @@ enum Command {
     },
     /// TD-017 Phase 3: materialize daily ticket counts and distinct entity
     /// counts split by broadcaster kind.
-    TicketsDaily {
+    #[command(name = "tickets-daily")]
+    Tickets {
         #[arg(long, default_value_t = DEFAULT_BATCH_LIMIT)]
         batch_limit: i64,
         #[arg(long, default_value_t = DEFAULT_CADENCE_SECS)]
@@ -68,7 +74,8 @@ enum Command {
     /// TD-018 Phase 1: materialize daily event metrics (count, sum_amount_native,
     /// sum_amount_usd) per (contract, event_name, asset, valuation_version).
     /// Backs /aggregations/events broad-window queries.
-    EventMetricsDaily {
+    #[command(name = "event-metrics-daily")]
+    EventMetrics {
         #[arg(long, default_value_t = DEFAULT_BATCH_LIMIT)]
         batch_limit: i64,
         #[arg(long, default_value_t = DEFAULT_CADENCE_SECS)]
@@ -92,7 +99,7 @@ async fn main() -> Result<()> {
     info!(service = SERVICE, "config + db ready");
 
     match cli.command {
-        Command::OrchPayoutsDaily {
+        Command::OrchPayouts {
             batch_limit,
             cadence_secs,
             follow,
@@ -127,7 +134,7 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Command::OrchRewardsDaily {
+        Command::OrchRewards {
             batch_limit,
             cadence_secs,
             follow,
@@ -162,7 +169,7 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Command::TicketsDaily {
+        Command::Tickets {
             batch_limit,
             cadence_secs,
             follow,
@@ -195,7 +202,7 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Command::EventMetricsDaily {
+        Command::EventMetrics {
             batch_limit,
             cadence_secs,
             follow,
@@ -220,7 +227,8 @@ async fn main() -> Result<()> {
                 }
             } else {
                 let summary =
-                    runner::run_event_metrics_daily(&pg, cli.include_tentative, batch_limit).await?;
+                    runner::run_event_metrics_daily(&pg, cli.include_tentative, batch_limit)
+                        .await?;
                 info!(
                     events_seen = summary.events_seen,
                     rows_written = summary.rows_written,

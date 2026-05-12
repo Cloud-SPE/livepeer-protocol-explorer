@@ -31,10 +31,10 @@ const ORCH_PROFILE_BATCH_LIMIT: i64 = 500;
 ///   the post-cache `livepeer_rpc_calls_total` sustained rate was <2/s.
 /// - `concurrency = 12` runs cleanly and sustained ~0.4 cached-miss
 ///   calls/sec measured over multiple iterations.
-/// The bottleneck isn't the configured rate ceiling — it's Chainstack's
-/// burst tolerance for the uncached calls that actually leave the host.
-/// `livepeer_rpc_calls_total` only counts those, so the metric understates
-/// the brief in-flight peak that triggers 429.
+///   The bottleneck isn't the configured rate ceiling — it's Chainstack's
+///   burst tolerance for the uncached calls that actually leave the host.
+///   `livepeer_rpc_calls_total` only counts those, so the metric understates
+///   the brief in-flight peak that triggers 429.
 ///
 /// TD-022 attempted to replace this with JSON-RPC batching for a projected
 /// ~100× RPC count reduction. Empirically the actual win was only ~1.5×
@@ -178,9 +178,8 @@ pub async fn run_profile_backfill(
             let block = candidate.block_number;
             let bonding_manager_ref = bonding_manager.as_str();
             let controller_ref = controller.as_str();
-            let active_pool = Arc::new(
-                fetch_active_pool(pg, archive, bonding_manager_ref, block).await?,
-            );
+            let active_pool =
+                Arc::new(fetch_active_pool(pg, archive, bonding_manager_ref, block).await?);
 
             // Bounded concurrent fanout: read all known-orch snapshots in
             // parallel (up to NEW_ROUND_FANOUT_CONCURRENCY in flight at
@@ -212,13 +211,8 @@ pub async fn run_profile_backfill(
             // historical table). The matview `orchestrator_profile` derives
             // from this. PK on (chain_id, address, round) + ON CONFLICT
             // DO NOTHING means re-runs at the same round are idempotent.
-            let written = insert_orch_stake_by_round_batch(
-                pg,
-                &candidate,
-                current_round,
-                &snapshots,
-            )
-            .await?;
+            let written =
+                insert_orch_stake_by_round_batch(pg, &candidate, current_round, &snapshots).await?;
             summary.orch_rows_written += written;
             for (orch, _) in &snapshots {
                 orch_touched.insert(orch.clone());
@@ -473,19 +467,12 @@ async fn fetch_active_pool(
         { "to": bonding_manager, "data": first_data },
         BlockTag::Number(block_number as u64).to_param()
     ]);
-    let first_outcome = cross_check::single_call_cached(
-        pg,
-        archive,
-        "eth_call",
-        &first_params,
-        Some(block_number),
-    )
-    .await?;
+    let first_outcome =
+        cross_check::single_call_cached(pg, archive, "eth_call", &first_params, Some(block_number))
+            .await?;
     let first_raw = decode_hex_result(&first_outcome.response_bytes)?;
-    let mut current = BondingManager::getFirstTranscoderInPoolCall::abi_decode_returns(
-        &first_raw, true,
-    )?
-    ._0;
+    let mut current =
+        BondingManager::getFirstTranscoderInPoolCall::abi_decode_returns(&first_raw, true)?._0;
 
     while current != Address::ZERO {
         pool.insert(format!("{current:#x}").to_lowercase());
@@ -511,10 +498,8 @@ async fn fetch_active_pool(
         )
         .await?;
         let next_raw = decode_hex_result(&next_outcome.response_bytes)?;
-        current = BondingManager::getNextTranscoderInPoolCall::abi_decode_returns(
-            &next_raw, true,
-        )?
-        ._0;
+        current =
+            BondingManager::getNextTranscoderInPoolCall::abi_decode_returns(&next_raw, true)?._0;
     }
     Ok(pool)
 }

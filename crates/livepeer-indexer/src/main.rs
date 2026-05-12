@@ -118,16 +118,16 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            let summary = runner::run_backfill(
-                &pg,
-                &archive,
-                &cfg,
-                kind,
+            let summary = runner::run_backfill(runner::RunBackfillArgs {
+                pg: &pg,
+                archive: &archive,
+                cfg: &cfg,
+                contract: kind,
                 from_block,
                 to_block,
                 no_resume,
-                &checkpoint_suffix,
-            )
+                checkpoint_suffix: &checkpoint_suffix,
+            })
             .await?;
             info!(
                 contract = summary.contract_name,

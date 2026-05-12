@@ -284,6 +284,38 @@ impl StoredValuation {
     }
 }
 
+pub async fn insert_attempt(
+    tx: &mut Transaction<'_, Postgres>,
+    event_id: i64,
+    valuation_version: &str,
+    asset: &str,
+    result_status: &str,
+    error_detail: Option<serde_json::Value>,
+) -> Result<()> {
+    sqlx::query(
+        r#"WITH next_n AS (
+              SELECT COALESCE(MAX(attempt_number), 0) + 1 AS n
+                FROM valuation_attempts
+               WHERE event_id          = $1
+                 AND valuation_version = $2
+                 AND asset             = $3
+            )
+            INSERT INTO valuation_attempts
+                (event_id, valuation_version, asset, attempt_number,
+                 result_status, error_detail)
+            SELECT $1, $2, $3, n, $4, $5 FROM next_n
+            ON CONFLICT (event_id, valuation_version, asset, attempt_number) DO NOTHING"#,
+    )
+    .bind(event_id)
+    .bind(valuation_version)
+    .bind(asset)
+    .bind(result_status)
+    .bind(error_detail)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod determinism_tests {
     use super::*;
@@ -352,36 +384,4 @@ mod determinism_tests {
         assert!(obj.contains_key("native_usd_price"));
         assert_eq!(obj.len(), 3);
     }
-}
-
-pub async fn insert_attempt(
-    tx: &mut Transaction<'_, Postgres>,
-    event_id: i64,
-    valuation_version: &str,
-    asset: &str,
-    result_status: &str,
-    error_detail: Option<serde_json::Value>,
-) -> Result<()> {
-    sqlx::query(
-        r#"WITH next_n AS (
-              SELECT COALESCE(MAX(attempt_number), 0) + 1 AS n
-                FROM valuation_attempts
-               WHERE event_id          = $1
-                 AND valuation_version = $2
-                 AND asset             = $3
-            )
-            INSERT INTO valuation_attempts
-                (event_id, valuation_version, asset, attempt_number,
-                 result_status, error_detail)
-            SELECT $1, $2, $3, n, $4, $5 FROM next_n
-            ON CONFLICT (event_id, valuation_version, asset, attempt_number) DO NOTHING"#,
-    )
-    .bind(event_id)
-    .bind(valuation_version)
-    .bind(asset)
-    .bind(result_status)
-    .bind(error_detail)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
 }

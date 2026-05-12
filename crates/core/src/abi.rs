@@ -35,20 +35,23 @@ pub fn hash_file(path: &Path) -> Result<String> {
 
 /// Recompute hashes for a fixed set of ABI files and verify each matches the registry.
 /// Returns the verified rows on success. Any mismatch is a hard error per §5.5.
+/// `(contract_name, proxy_address, target_address, from_block, to_block, abi_path, abi_hash, strict_decode)`.
+type AbiRegistryRow = (
+    String,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    String,
+    String,
+    bool,
+);
+
 pub async fn verify_against_registry(
     pool: &PgPool,
     abi_dir: &Path,
 ) -> Result<Vec<AbiRegistration>> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        i64,
-        Option<i64>,
-        String,
-        String,
-        bool,
-    )> = sqlx::query_as(
+    let rows: Vec<AbiRegistryRow> = sqlx::query_as(
         r#"SELECT contract_name, proxy_address, target_address, from_block, to_block,
                       abi_path, abi_hash, strict_decode
                FROM contract_abi_registry

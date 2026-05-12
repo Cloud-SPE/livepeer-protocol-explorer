@@ -44,16 +44,16 @@ pub async fn run(rt: &Runtime, opts: BootstrapOpts) -> Result<()> {
         ContractKind::RoundsManager,
         ContractKind::Governor,
     ] {
-        let summary = indexer_runner::run_backfill(
-            &rt.pg,
-            &rt.archive,
-            &rt.cfg,
+        let summary = indexer_runner::run_backfill(indexer_runner::RunBackfillArgs {
+            pg: &rt.pg,
+            archive: &rt.archive,
+            cfg: &rt.cfg,
             contract,
             from_block,
             to_block,
-            opts.no_resume,
-            "",
-        )
+            no_resume: opts.no_resume,
+            checkpoint_suffix: "",
+        })
         .await?;
         info!(?summary, "bootstrap: indexer contract complete");
     }

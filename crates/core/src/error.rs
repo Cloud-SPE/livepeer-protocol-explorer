@@ -44,15 +44,22 @@ pub enum CoreError {
         message: String,
     },
 
-    #[error("RPC divergence on {method} block={block:?}: provider {provider_a} hash={hash_a} vs provider {provider_b} hash={hash_b}")]
-    RpcDivergence {
-        method: String,
-        block: Option<i64>,
-        provider_a: String,
-        hash_a: String,
-        provider_b: String,
-        hash_b: String,
-    },
+    // Boxed so the `RpcDivergence` payload (6 Strings, ~136B) doesn't bloat
+    // every `Result<T, CoreError>` across the workspace — fixes
+    // clippy::result_large_err without forcing a crate-level allow.
+    #[error("RPC divergence on {0}")]
+    RpcDivergence(Box<RpcDivergenceInfo>),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{method} block={block:?}: provider {provider_a} hash={hash_a} vs provider {provider_b} hash={hash_b}")]
+pub struct RpcDivergenceInfo {
+    pub method: String,
+    pub block: Option<i64>,
+    pub provider_a: String,
+    pub hash_a: String,
+    pub provider_b: String,
+    pub hash_b: String,
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

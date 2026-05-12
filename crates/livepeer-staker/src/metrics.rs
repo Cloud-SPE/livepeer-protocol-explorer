@@ -8,9 +8,7 @@
 //! work even though there's no HTTP surface to scrape it from there —
 //! the metrics still aggregate correctly when the daemon is running.
 
-use prometheus::{
-    opts, proto::MetricFamily, IntCounterVec, IntGauge, IntGaugeVec, Registry,
-};
+use prometheus::{opts, proto::MetricFamily, IntCounterVec, IntGauge, IntGaugeVec, Registry};
 use std::sync::OnceLock;
 
 pub struct StakerMetrics {
@@ -41,7 +39,6 @@ pub struct StakerMetrics {
     pub gateway_iteration_seconds: IntGauge,
 
     // TD-020 tx-receipts backfill — same 5-family surface as gateway.
-
     pub tx_receipts_candidates_remaining: IntGauge,
     pub tx_receipts_rows_written_total: IntCounterVec,
     pub tx_receipts_last_processed_block: IntGauge,
@@ -163,19 +160,38 @@ fn global() -> &'static StakerMetrics {
     })
 }
 
-pub fn record_gateway_iteration(
-    balance_candidates: i64,
-    balance_rows_written: u64,
-    balance_checkpoint_block: Option<i64>,
-    flow_candidates: i64,
-    flow_rows_written: u64,
-    flow_checkpoint_block: Option<i64>,
-    claimant_candidates: i64,
-    claimant_rows_written: u64,
-    claimant_checkpoint_block: Option<i64>,
-    elapsed_seconds: i64,
-    succeeded: bool,
-) {
+/// One axis of the three (balance / flow / claimant) gateway sub-iterations.
+pub struct GatewayAxisRecord {
+    pub candidates: i64,
+    pub rows_written: u64,
+    pub checkpoint_block: Option<i64>,
+}
+
+pub struct GatewayIterationRecord {
+    pub balance: GatewayAxisRecord,
+    pub flow: GatewayAxisRecord,
+    pub claimant: GatewayAxisRecord,
+    pub elapsed_seconds: i64,
+    pub succeeded: bool,
+}
+
+pub fn record_gateway_iteration(r: GatewayIterationRecord) {
+    let GatewayIterationRecord {
+        balance,
+        flow,
+        claimant,
+        elapsed_seconds,
+        succeeded,
+    } = r;
+    let balance_candidates = balance.candidates;
+    let balance_rows_written = balance.rows_written;
+    let balance_checkpoint_block = balance.checkpoint_block;
+    let flow_candidates = flow.candidates;
+    let flow_rows_written = flow.rows_written;
+    let flow_checkpoint_block = flow.checkpoint_block;
+    let claimant_candidates = claimant.candidates;
+    let claimant_rows_written = claimant.rows_written;
+    let claimant_checkpoint_block = claimant.checkpoint_block;
     let m = global();
     let result = if succeeded { "success" } else { "error" };
 

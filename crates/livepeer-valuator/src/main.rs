@@ -39,19 +39,27 @@ struct Cli {
     command: Command,
 }
 
+// CLI names keep the `backfill-` prefix for script compatibility. Internal
+// Rust identifiers drop it per clippy::enum_variant_names (all variants
+// previously shared `Backfill`).
 #[derive(Subcommand, Debug)]
 enum Command {
     /// (S8.1) Seed-hit pass — values events whose `(tx_hash, asset)` match a seed row.
-    BackfillFromSeed,
+    #[command(name = "backfill-from-seed")]
+    FromSeed,
     /// (S8.2.a) On-chain pass for ETH-valued events — Chainlink ETH/USD at event block.
-    BackfillEthOnchain,
+    #[command(name = "backfill-eth-onchain")]
+    EthOnchain,
     /// (S8.2.b) On-chain pass for LPT-valued events — Uniswap V3 TWAP × Chainlink,
     /// with degraded-spot fallback when pool cardinality < 144 (Q-OD-9).
-    BackfillLptOnchain,
+    #[command(name = "backfill-lpt-onchain")]
+    LptOnchain,
     /// (S8.3) Multi-asset pass — splits each EarningsClaimed into LPT (rewards) + ETH (fees).
-    BackfillMultiAsset,
+    #[command(name = "backfill-multi-asset")]
+    MultiAsset,
     /// Run seed → ETH on-chain → LPT on-chain → multi-asset in sequence.
-    BackfillAll,
+    #[command(name = "backfill-all")]
+    All,
 }
 
 #[tokio::main]
@@ -72,7 +80,7 @@ async fn main() -> Result<()> {
     info!(service = SERVICE, valuation_version, "config + db ready");
 
     match cli.command {
-        Command::BackfillFromSeed => {
+        Command::FromSeed => {
             let s = runner::run_seed(&pg, &valuation_version, cli.include_tentative).await?;
             info!(
                 events_considered = s.events_considered,
@@ -83,7 +91,7 @@ async fn main() -> Result<()> {
                 "seed pass summary"
             );
         }
-        Command::BackfillEthOnchain => {
+        Command::EthOnchain => {
             let archive = Provider::new(
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
@@ -105,7 +113,7 @@ async fn main() -> Result<()> {
                 "on-chain ETH pass summary"
             );
         }
-        Command::BackfillLptOnchain => {
+        Command::LptOnchain => {
             let archive = Provider::new(
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
@@ -129,7 +137,7 @@ async fn main() -> Result<()> {
                 "on-chain LPT pass summary"
             );
         }
-        Command::BackfillMultiAsset => {
+        Command::MultiAsset => {
             let archive = Provider::new(
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
@@ -152,7 +160,7 @@ async fn main() -> Result<()> {
                 "multi-asset pass summary"
             );
         }
-        Command::BackfillAll => {
+        Command::All => {
             let archive = Provider::new(
                 "chainstack",
                 cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,

@@ -160,11 +160,7 @@ async fn matview_refresh_loop(
                 Err(e) => {
                     tracing::warn!(target: "livepeer_daemon::supervisor",
                         view = %view, error = %e, "matview refresh failed");
-                    metrics.record_matview_refresh(
-                        view,
-                        started.elapsed().as_secs_f64(),
-                        false,
-                    );
+                    metrics.record_matview_refresh(view, started.elapsed().as_secs_f64(), false);
                 }
             }
         }
@@ -211,16 +207,16 @@ async fn indexer_loop(
                 .min(to_block);
             let result = with_rpc_task_label(
                 "indexer",
-                indexer_runner::run_backfill(
-                    &pg,
-                    archive.as_ref(),
-                    &cfg,
+                indexer_runner::run_backfill(indexer_runner::RunBackfillArgs {
+                    pg: &pg,
+                    archive: archive.as_ref(),
+                    cfg: &cfg,
                     contract,
                     from_block,
-                    bounded_to,
-                    true,
-                    "",
-                ),
+                    to_block: bounded_to,
+                    no_resume: true,
+                    checkpoint_suffix: "",
+                }),
             )
             .await;
             match result {

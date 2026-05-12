@@ -477,7 +477,9 @@ pub async fn list(
 // ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, ToSchema)]
-#[schema(description = "One Bond/Unbond/Rebond/EarningsClaimed/etc. event involving the delegator.")]
+#[schema(
+    description = "One Bond/Unbond/Rebond/EarningsClaimed/etc. event involving the delegator."
+)]
 pub struct DelegatorEventRow {
     pub event_id: String,
     pub event_name: String,

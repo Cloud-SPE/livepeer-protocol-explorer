@@ -86,14 +86,16 @@ pub async fn cross_check_call(
         .bind(&hash_b)
         .execute(pg)
         .await?;
-        return Err(CoreError::RpcDivergence {
-            method: method.to_string(),
-            block: block_number,
-            provider_a: a.name().to_string(),
-            hash_a,
-            provider_b: b.name().to_string(),
-            hash_b,
-        });
+        return Err(CoreError::RpcDivergence(Box::new(
+            crate::error::RpcDivergenceInfo {
+                method: method.to_string(),
+                block: block_number,
+                provider_a: a.name().to_string(),
+                hash_a,
+                provider_b: b.name().to_string(),
+                hash_b,
+            },
+        )));
     }
 
     cache::store(
@@ -174,14 +176,16 @@ pub async fn cross_check_block_hash(
         .bind(&hash_b)
         .execute(pg)
         .await?;
-        return Err(CoreError::RpcDivergence {
-            method: "eth_getBlockByNumber.hash".to_string(),
-            block: Some(block as i64),
-            provider_a: a.name().to_string(),
-            hash_a,
-            provider_b: b.name().to_string(),
-            hash_b,
-        });
+        return Err(CoreError::RpcDivergence(Box::new(
+            crate::error::RpcDivergenceInfo {
+                method: "eth_getBlockByNumber.hash".to_string(),
+                block: Some(block as i64),
+                provider_a: a.name().to_string(),
+                hash_a,
+                provider_b: b.name().to_string(),
+                hash_b,
+            },
+        )));
     }
 
     Ok(hash_a)

@@ -76,7 +76,9 @@ pub async fn run_tx_receipts_backfill(
     concurrency: usize,
 ) -> Result<TxReceiptsBackfillSummary> {
     let started = std::time::Instant::now();
-    let checkpoint = load_checkpoint(pg, TX_RECEIPTS_CHECKPOINT).await?.unwrap_or(0);
+    let checkpoint = load_checkpoint(pg, TX_RECEIPTS_CHECKPOINT)
+        .await?
+        .unwrap_or(0);
     let candidates = load_candidates(pg, checkpoint, batch_limit, include_tentative).await?;
 
     if candidates.is_empty() {
@@ -91,8 +93,7 @@ pub async fn run_tx_receipts_backfill(
         record_iteration(0, 0, Some(checkpoint), elapsed_ms / 1000, true);
         info!(
             checkpoint,
-            elapsed_ms,
-            "tx-receipts backfill complete (no candidates)"
+            elapsed_ms, "tx-receipts backfill complete (no candidates)"
         );
         return Ok(TxReceiptsBackfillSummary {
             candidates_seen: 0,
@@ -110,15 +111,14 @@ pub async fn run_tx_receipts_backfill(
         .max()
         .expect("non-empty");
 
-    let receipts: Vec<Option<ReceiptRow>> =
-        stream::iter(candidates.into_iter().map(|c| {
-            let pg = pg.clone();
-            let archive = archive.clone();
-            async move { fetch_receipt_row(&pg, &archive, c).await }
-        }))
-        .buffer_unordered(concurrency)
-        .try_collect()
-        .await?;
+    let receipts: Vec<Option<ReceiptRow>> = stream::iter(candidates.into_iter().map(|c| {
+        let pg = pg.clone();
+        let archive = archive.clone();
+        async move { fetch_receipt_row(&pg, &archive, c).await }
+    }))
+    .buffer_unordered(concurrency)
+    .try_collect()
+    .await?;
 
     let mut rows: Vec<ReceiptRow> = Vec::with_capacity(receipts.len());
     let mut skipped = 0u64;
@@ -249,7 +249,12 @@ async fn fetch_receipt_row(
         .get("effectiveGasPrice")
         .and_then(Value::as_str)
         .or_else(|| receipt.get("gasPrice").and_then(Value::as_str))
-        .with_context(|| format!("missing effectiveGasPrice/gasPrice on receipt for {}", c.tx_hash))?;
+        .with_context(|| {
+            format!(
+                "missing effectiveGasPrice/gasPrice on receipt for {}",
+                c.tx_hash
+            )
+        })?;
     let status_hex = receipt
         .get("status")
         .and_then(Value::as_str)
@@ -314,7 +319,11 @@ async fn bulk_insert(pg: &PgPool, rows: &[ReceiptRow]) -> Result<u64> {
             .push_bind(r.to_address.as_ref());
     });
     qb.push(" ON CONFLICT (chain_id, tx_hash) DO NOTHING");
-    let result = qb.build().execute(pg).await.context("bulk-inserting tx_receipts")?;
+    let result = qb
+        .build()
+        .execute(pg)
+        .await
+        .context("bulk-inserting tx_receipts")?;
     Ok(result.rows_affected())
 }
 

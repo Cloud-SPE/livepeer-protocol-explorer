@@ -67,16 +67,16 @@ pub async fn run(rt: &Runtime, opts: ReplayOpts) -> Result<()> {
                 );
                 continue;
             }
-            let summary = indexer_runner::run_backfill(
-                &rt.pg,
-                &rt.archive,
-                &rt.cfg,
+            let summary = indexer_runner::run_backfill(indexer_runner::RunBackfillArgs {
+                pg: &rt.pg,
+                archive: &rt.archive,
+                cfg: &rt.cfg,
                 contract,
                 from_block,
                 to_block,
-                true,
-                "",
-            )
+                no_resume: true,
+                checkpoint_suffix: "",
+            })
             .await?;
             info!(?summary, "replay: indexer contract complete");
         }

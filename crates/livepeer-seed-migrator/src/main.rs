@@ -9,7 +9,7 @@ use livepeer_core::{
 };
 use livepeer_seed_migrator::{compare, import};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tracing::{info, warn};
 
@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn seed_abi_registry(pg: &sqlx::PgPool, abi_dir: &PathBuf, cfg: &Config) -> Result<()> {
+async fn seed_abi_registry(pg: &sqlx::PgPool, abi_dir: &Path, cfg: &Config) -> Result<()> {
     let genesis = cfg.static_.chain.livepeer_arbitrum_genesis_block as i64;
 
     // For v1 the registry is populated with the current Delta-version ABIs covering
@@ -223,7 +223,7 @@ async fn seed_abi_registry(pg: &sqlx::PgPool, abi_dir: &PathBuf, cfg: &Config) -
     Ok(())
 }
 
-async fn probe(pg: &sqlx::PgPool, source_sqlite: &PathBuf, abi_dir: &PathBuf) -> Result<()> {
+async fn probe(pg: &sqlx::PgPool, source_sqlite: &Path, abi_dir: &Path) -> Result<()> {
     let public_table_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::BIGINT FROM information_schema.tables WHERE table_schema = 'public'",
     )
@@ -375,7 +375,7 @@ async fn verify_rpc(pg: &sqlx::PgPool, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn run_import(pg: &sqlx::PgPool, source_sqlite: &PathBuf) -> Result<()> {
+async fn run_import(pg: &sqlx::PgPool, source_sqlite: &Path) -> Result<()> {
     if !source_sqlite.exists() {
         anyhow::bail!("source SQLite not found at {}", source_sqlite.display());
     }

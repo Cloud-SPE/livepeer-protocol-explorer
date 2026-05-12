@@ -328,10 +328,7 @@ async fn fetch_valuation_rows_for_key(
         .collect()
 }
 
-async fn load_existing_candidate_keys(
-    pg: &PgPool,
-    event_id: i64,
-) -> Result<Vec<AggregateKey>> {
+async fn load_existing_candidate_keys(pg: &PgPool, event_id: i64) -> Result<Vec<AggregateKey>> {
     let rows = sqlx::query(
         r#"SELECT day_utc, contract_name, event_name, asset, valuation_version
              FROM event_metrics_daily

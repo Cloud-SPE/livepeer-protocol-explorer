@@ -162,7 +162,7 @@ fn format_alert_message(payload: &AlertManagerWebhook) -> String {
             .get("severity")
             .map(String::as_str)
             .unwrap_or("unknown");
-        out.push_str("\n");
+        out.push('\n');
         out.push_str(&format!(
             "*{}* `{}`\n",
             escape_md(name),

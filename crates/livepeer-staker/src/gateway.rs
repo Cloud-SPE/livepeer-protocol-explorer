@@ -199,19 +199,25 @@ pub async fn run_gateway_backfill(
         "gateway backfill complete"
     );
 
-    crate::metrics::record_gateway_iteration(
-        initial_balance_candidates,
-        summary.balance_rows_written,
-        summary.balance_checkpoint_block,
-        initial_flow_candidates,
-        summary.flow_rows_written,
-        summary.flow_checkpoint_block,
-        initial_claimant_candidates,
-        summary.claimant_rows_written,
-        summary.claimant_checkpoint_block,
-        elapsed.as_secs() as i64,
-        true,
-    );
+    crate::metrics::record_gateway_iteration(crate::metrics::GatewayIterationRecord {
+        balance: crate::metrics::GatewayAxisRecord {
+            candidates: initial_balance_candidates,
+            rows_written: summary.balance_rows_written,
+            checkpoint_block: summary.balance_checkpoint_block,
+        },
+        flow: crate::metrics::GatewayAxisRecord {
+            candidates: initial_flow_candidates,
+            rows_written: summary.flow_rows_written,
+            checkpoint_block: summary.flow_checkpoint_block,
+        },
+        claimant: crate::metrics::GatewayAxisRecord {
+            candidates: initial_claimant_candidates,
+            rows_written: summary.claimant_rows_written,
+            checkpoint_block: summary.claimant_checkpoint_block,
+        },
+        elapsed_seconds: elapsed.as_secs() as i64,
+        succeeded: true,
+    });
     Ok(summary)
 }
 

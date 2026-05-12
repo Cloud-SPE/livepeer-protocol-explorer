@@ -159,8 +159,7 @@ async fn main() -> Result<()> {
                 // only needed once we're caught up. On error we sleep so a
                 // failing iteration doesn't tight-loop against the RPC.
                 let mut should_sleep = true;
-                match runner::run_profile_backfill(&pg, &archive, &cfg, cli.include_tentative)
-                    .await
+                match runner::run_profile_backfill(&pg, &archive, &cfg, cli.include_tentative).await
                 {
                     Ok(summary) => {
                         info!(
@@ -212,7 +211,10 @@ async fn main() -> Result<()> {
         } => {
             let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
             let archive = Provider::new("chainstack", archive_url)?;
-            info!(cadence_secs, batch_limit, concurrency, "staker tx-receipts follow loop starting");
+            info!(
+                cadence_secs,
+                batch_limit, concurrency, "staker tx-receipts follow loop starting"
+            );
             loop {
                 let mut should_sleep = true;
                 match runner::run_tx_receipts_backfill(

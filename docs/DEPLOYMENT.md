@@ -137,7 +137,7 @@ not expose ports by default):
 ```bash
 docker exec livepeer-api    curl -sS http://127.0.0.1:8080/health
 docker exec livepeer-daemon curl -sS http://127.0.0.1:9107/health
-docker exec livepeer-api    curl -sS http://127.0.0.1:8080/network/stats
+docker exec livepeer-api    curl -sS http://127.0.0.1:8080/api/v1/network/stats
 ```
 
 ## 6. Catch-up boundary
@@ -221,17 +221,91 @@ covers:
 
 ## 8. Upgrade procedure
 
-Before deploy:
-1. take a DB backup
-2. build/pull the new image
-3. review migrations
+The canonical flow is **pull → migrate → restart**. `migrate-only` is
+idempotent — safe to run on every deploy. When there are no pending
+migrations it logs the resolved path and exits in ~1 s.
 
-Deploy:
+### 8.1 Pre-deploy
+
+1. Take a DB backup (see §7).
+2. Pull the latest source so the compose file matches the new image.
+
+   ```bash
+   git pull
+   ```
+
+3. Inspect what's pending. The current schema version on prod is in
+   `_sqlx_migrations`; the highest file in `migrations/` is what the new
+   image expects.
+
+   ```bash
+   # current
+   docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" livepeer-valuation-postgres \
+     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+   SELECT MAX(version) AS latest_applied,
+          COUNT(*)     AS total_applied,
+          COUNT(*) FILTER (WHERE NOT success) AS failed
+   FROM _sqlx_migrations;"
+
+   # expected
+   ls migrations/*.up.sql | sort | tail -1
+   ```
+
+   `failed` must be `0`. If `latest_applied < expected`, step 8.3 will
+   apply the gap. If `failed > 0`, stop and investigate before continuing.
+
+### 8.2 Pull the new image
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d postgres
-docker compose -f docker-compose.prod.yml run --rm livepeer-orchestrator migrate-only
-docker compose -f docker-compose.prod.yml up -d livepeer-daemon livepeer-api
+docker compose -f docker-compose.prod.yml pull
+```
+
+### 8.3 Apply migrations (idempotent)
+
+The orchestrator runs as a one-shot tool under `--profile tools`. The
+container `entrypoint` is the orchestrator binary, so subcommands are
+direct:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile tools \
+  run --rm livepeer-orchestrator --env-config config/env/prod.yaml migrate-only
+```
+
+What this does:
+- Reads SQL files from `/opt/livepeer/migrations` inside the image
+  (laid down by the `Dockerfile` runtime stage).
+- Resolution order: `MIGRATIONS_PATH` env override → `/opt/livepeer/migrations`
+  → source-tree fallback for local `cargo run`. See
+  `crates/livepeer-orchestrator/src/main.rs::resolve_migrations_path`.
+- sqlx consults `_sqlx_migrations` and applies only the gap, in order.
+  Already-applied versions are skipped.
+- Exits 0 on success. Re-running is a no-op.
+
+Override the path if you need to (rare):
+
+```bash
+docker compose -f docker-compose.prod.yml --profile tools run --rm \
+  -e MIGRATIONS_PATH=/some/other/path \
+  livepeer-orchestrator --env-config config/env/prod.yaml migrate-only
+```
+
+### 8.4 Restart services
+
+Bring up everything that may have shipped a new binary. Compose only
+recreates containers whose image digest changed.
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+To phase the restart (api and daemon first, workers second):
+
+```bash
+docker compose -f docker-compose.prod.yml up -d livepeer-api livepeer-daemon
+docker compose -f docker-compose.prod.yml up -d \
+  livepeer-rollups-payouts livepeer-rollups-rewards \
+  livepeer-rollups-tickets livepeer-rollups-event-metrics \
+  livepeer-enricher livepeer-staker-tx-receipts
 ```
 
 If using alerting:
@@ -240,11 +314,28 @@ If using alerting:
 docker compose -f docker-compose.prod.yml --profile ops up -d livepeer-alert-bot
 ```
 
-After deploy:
-- check daemon `/health`
-- check API `/health`
-- inspect `/backfills/status`
-- inspect daemon `/metrics`
+### 8.5 Post-deploy verification
+
+```bash
+docker exec livepeer-api    curl -sS http://127.0.0.1:8080/health
+docker exec livepeer-daemon curl -sS http://127.0.0.1:9107/health
+docker exec livepeer-api    curl -sS http://127.0.0.1:8080/backfills/status
+docker exec livepeer-daemon curl -sS http://127.0.0.1:9107/metrics | head
+```
+
+Matviews (`orchestrator_profile`, `broadcaster_profile`) are refreshed
+on a 30 s loop inside `livepeer-daemon` once it's healthy — no manual
+`REFRESH` is needed for an upgrade. (For a dump-restore see §7 step 3.)
+
+### 8.6 One-liner for scripts
+
+```bash
+git pull && \
+docker compose -f docker-compose.prod.yml pull && \
+docker compose -f docker-compose.prod.yml --profile tools \
+  run --rm livepeer-orchestrator --env-config config/env/prod.yaml migrate-only && \
+docker compose -f docker-compose.prod.yml up -d
+```
 
 ## 9. Recovery modes
 

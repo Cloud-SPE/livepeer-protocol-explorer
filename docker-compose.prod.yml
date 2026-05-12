@@ -251,26 +251,37 @@ services:
   #       condition: service_healthy
 
   # ── One-shot tools (enable with --profile tools run --rm) ──────────
-  # livepeer-orchestrator:
-  #   image: tztcloud/livepeer-valuation-system:latest
-  #   command:
-  #     - livepeer-orchestrator
-  #     - --env-config
-  #     - config/env/prod.yaml
-  #   hostname: livepeer-orchestrator
-  #   container_name: livepeer-orchestrator
-  #   environment:
-  #     DATABASE_URL: ${DATABASE_URL}
-  #     CHAINSTACK_RPC_URL: ${CHAINSTACK_RPC_URL}
-  #     SECONDARY_RPC_URL: ${SECONDARY_RPC_URL}
-  #     L1_RPC_URL: ${L1_RPC_URL}
-  #     RUST_LOG: ${RUST_LOG:-info}
-  #   profiles: ["tools"]
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   volumes:
-  #     - livepeer-valuation-seed:/seed:ro
+  #
+  # Use this for `migrate-only`, `bootstrap`, `replay`, etc. The container
+  # exits when the subcommand finishes — do NOT include `restart:` here.
+  #
+  # Examples:
+  #   docker compose -f docker-compose.prod.yml --profile tools \
+  #     run --rm livepeer-orchestrator --env-config config/env/prod.yaml migrate-only
+  #
+  #   docker compose -f docker-compose.prod.yml --profile tools \
+  #     run --rm livepeer-orchestrator --env-config config/env/prod.yaml \
+  #     bootstrap --to-block 250000000
+  livepeer-orchestrator:
+    image: tztcloud/livepeer-valuation-system:latest
+    entrypoint: ["livepeer-orchestrator"]
+    hostname: livepeer-orchestrator
+    container_name: livepeer-orchestrator
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CHAINSTACK_RPC_URL: ${CHAINSTACK_RPC_URL}
+      SECONDARY_RPC_URL: ${SECONDARY_RPC_URL}
+      L1_RPC_URL: ${L1_RPC_URL}
+      RUST_LOG: ${RUST_LOG:-info}
+      # Optional override; default `/opt/livepeer/migrations` is baked into
+      # the image by Dockerfile and matches resolve_migrations_path().
+      # MIGRATIONS_PATH: /opt/livepeer/migrations
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - livepeer-valuation-seed:/seed:ro
 
   # livepeer-seed-migrator:
   #   image: tztcloud/livepeer-valuation-system:latest

@@ -3,9 +3,30 @@ target/
 .github/
 docs/
 backups/
-tests/fixtures/seed.sqlite
+
+# Local run/log directories — never needed in the image and `run-logs/`
+# alone reaches multi-GB. These leaking into the build context is the
+# single biggest cause of slow `docker build`.
+run-logs/
+logs/
+logs.*/
+
+# Determinism baselines + operational scratch — not consumed by the build.
+baselines/
+ops/
+
+# Tests are not compiled by `cargo build --release --workspace`; the whole
+# tree is dead weight in the build context.
+tests/
+
+# Shell helpers used on the host (run scripts, status helpers). Not invoked
+# from inside the image.
+scripts/
+
 *.db
 *.db-pre-refactor
+*.sqlite
+*.log
 .env
 .env.*
 !.env.example
@@ -20,3 +41,5 @@ frontend-ui/dist/
 frontend-ui/test-results/
 frontend-ui/playwright-report/
 frontend-ui/.last-run.json
+frontend-ui/tests/
+frontend-ui/.env

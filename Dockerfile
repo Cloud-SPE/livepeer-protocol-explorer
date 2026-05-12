@@ -52,8 +52,11 @@ COPY --from=rust-builder /build/target/release/livepeer-orchestrator       /usr/
 COPY --from=rust-builder /build/target/release/livepeer-daemon             /usr/local/bin/
 COPY --from=rust-builder /build/target/release/livepeer-alert-bot          /usr/local/bin/
 
-COPY --chown=livepeer:livepeer abi/    /opt/livepeer/abi/
-COPY --chown=livepeer:livepeer config/ /opt/livepeer/config/
+COPY --chown=livepeer:livepeer abi/        /opt/livepeer/abi/
+COPY --chown=livepeer:livepeer config/     /opt/livepeer/config/
+# `livepeer-orchestrator migrate-only` reads SQL files from this directory.
+# Resolved by `resolve_migrations_path()` in livepeer-orchestrator/src/main.rs.
+COPY --chown=livepeer:livepeer migrations/ /opt/livepeer/migrations/
 
 # Static frontend bundle — served by livepeer-api as a fallback for any
 # path not matched by an API route. Default location matches FE_STATIC_DIR

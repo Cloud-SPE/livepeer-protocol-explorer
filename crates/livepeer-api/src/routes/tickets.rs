@@ -165,7 +165,11 @@ mod tests {
     };
     use tower::util::ServiceExt;
 
+    // Integration test — needs a live Postgres + .env / DATABASE_URL.
+    // CI's plain `cargo test --workspace` skips this; run locally with
+    // `cargo test -p livepeer-api -- --ignored`.
     #[tokio::test]
+    #[ignore = "requires DATABASE_URL or workspace-root .env"]
     async fn daily_timeseries_reads_ticket_rollup_table() {
         let ctx = TestContext::new().await;
         sqlx::query(

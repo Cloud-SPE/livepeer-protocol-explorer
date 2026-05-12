@@ -752,7 +752,11 @@ mod tests {
     };
     use tower::util::ServiceExt;
 
+    // Integration test — needs a live Postgres + .env / DATABASE_URL.
+    // CI's plain `cargo test --workspace` skips this; run locally with
+    // `cargo test -p livepeer-api -- --ignored`.
     #[tokio::test]
+    #[ignore = "requires DATABASE_URL or workspace-root .env"]
     async fn orchestrators_route_uses_override_and_supports_cursor_and_active_filter() {
         let ctx = TestContext::new().await;
         let orch_a = "0x1111111111111111111111111111111111111111";
@@ -884,6 +888,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires DATABASE_URL or workspace-root .env"]
     async fn gateways_route_uses_classification_default_and_override_precedence() {
         let ctx = TestContext::new().await;
         let gateway_a = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

@@ -15,7 +15,7 @@
 # rather than exiting outright (matches the profile-follow / rollup
 # follow-mode pattern so live operation keeps tracking new events).
 set -uo pipefail
-cd /home/mazup/git-repos/crypto-price-feed
+cd "$(git rev-parse --show-toplevel)"
 set -a; source .env; set +a
 export DATABASE_URL="postgres://livepeer:changeme@127.0.0.1:5432/livepeer_indexer"
 export STATIC_CONFIG="$PWD/config/arbitrum.yaml"

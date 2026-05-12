@@ -18,7 +18,7 @@
 
 set -uo pipefail
 
-ROOT=/home/mazup/git-repos/crypto-price-feed
+ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 if [[ "${1:-}" != "--confirm" ]]; then

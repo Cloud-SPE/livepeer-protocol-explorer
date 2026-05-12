@@ -73,7 +73,7 @@ latest priced LPT block: 22,067,586  (target: 457,212,919)
 Resume command (no DB wipe needed):
 
 ```bash
-cd /home/mazup/git-repos/crypto-price-feed
+cd "$(git rev-parse --show-toplevel)"
 bash scripts/full-run-post-indexer.sh \
   > logs/post-indexer-resume-$(date -u +%Y%m%dT%H%M%SZ).log 2>&1 &
 disown

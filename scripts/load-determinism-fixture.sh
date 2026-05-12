@@ -6,7 +6,7 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 1
 fi
 
-ROOT=/home/mazup/git-repos/crypto-price-feed
+ROOT="$(git rev-parse --show-toplevel)"
 FIXTURE_DIR="${1:-$ROOT/tests/fixtures}"
 
 if [[ ! -d "$FIXTURE_DIR" ]]; then

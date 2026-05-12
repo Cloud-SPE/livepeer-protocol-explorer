@@ -20,7 +20,7 @@
 
 set -uo pipefail   # no -e: we want to keep going even if a phase has retriable errors
 
-ROOT=/home/mazup/git-repos/crypto-price-feed
+ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 # Load secrets.

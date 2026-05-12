@@ -2,7 +2,7 @@
 # scripts/run-status.sh — quick check of detached run progress (works for
 # both sequential and parallel-5 launches).
 
-ROOT=/home/mazup/git-repos/crypto-price-feed
+ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 export DATABASE_URL="postgres://livepeer:changeme@127.0.0.1:5432/livepeer_indexer"
 

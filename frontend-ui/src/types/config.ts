@@ -1,11 +1,5 @@
 export interface AppConfig {
   baseApiUrl: string;
-  perfStatsUrl: string;
-  aiPerfStatsUrl: string;
-  leaderboardStatsUrl: string;
-  aiLeaderboardStatsUrl: string;
-  regionsUrl: string;
-  pipelineUrl: string;
   explorerTxBase: string;
   explorerAddressBase: string;
 }

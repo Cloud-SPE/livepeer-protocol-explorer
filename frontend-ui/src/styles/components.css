@@ -580,8 +580,7 @@ view-dashboard {
        view-rounds-list, view-round-detail,
        view-governance-proposals, view-governance-proposal-detail, view-governance-votes,
        view-reports-hub, view-payouts-summary, view-payouts-leaderboard,
-       view-rewards-leaderboard, view-tickets-timeseries,
-       view-leaderboard-perf, view-stats-perf) {
+       view-rewards-leaderboard, view-tickets-timeseries) {
   display: block;
 }
 
@@ -837,36 +836,6 @@ view-governance-proposal-detail .pill.pill--neg {
   color: var(--neg);
 }
 
-/* Stats-perf chart layout */
-view-stats-perf {
-  & .charts {
-    display: grid; grid-template-columns: 1fr; gap: var(--sp-4);
-    container-type: inline-size;
-
-    @container (min-width: 1100px) { grid-template-columns: repeat(2, 1fr); }
-  }
-  & .chart-card {
-    padding: var(--sp-5);
-
-    & h3 { font-size: var(--fs-3); margin-bottom: var(--sp-2); }
-  }
-  & input[type='search'] {
-    padding: var(--sp-1) var(--sp-2);
-    width: 100%;
-    max-width: 480px;
-  }
-  & .controls form { display: contents; }
-}
-
 view-tickets-timeseries .chart-card { padding: var(--sp-5); }
-
-/* Stats / leaderboard nav-mobile bits */
-.nav-mobile {
-  display: flex; gap: var(--sp-2);
-  overflow-x: auto;
-  padding-bottom: var(--sp-2);
-
-  @container (min-width: 900px) { display: none; }
-}
 
 }

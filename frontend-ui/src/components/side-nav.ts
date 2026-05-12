@@ -17,7 +17,6 @@ const NAV: NavItem[] = [
   { label: 'Governance', href: '#/governance/proposals', match: /^\/(governance|vote)/ },
   { label: 'Delegators', href: '#/delegators', match: /^\/delegators/ },
   { label: 'Rounds', href: '#/rounds', match: /^\/rounds/ },
-  { label: 'Performance', href: '#/performance/leaderboard', match: /^\/performance/ },
 ];
 
 @customElement('side-nav')

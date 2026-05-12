@@ -21,14 +21,12 @@ import '../views/reports-hub.js';
 import '../views/payouts-summary.js';
 import '../views/payouts-leaderboard.js';
 import '../views/rewards-leaderboard.js';
-import '../views/leaderboard-perf.js';
 import '../views/rounds-list.js';
 
 // Heavy views — lazy-loaded so ECharts only fetches on demand.
 const lazyOrchestratorDetail = () => import('../views/orchestrator-detail.js');
 const lazyRoundDetail = () => import('../views/round-detail.js');
 const lazyTicketsTimeseries = () => import('../views/tickets-timeseries.js');
-const lazyStatsPerf = () => import('../views/stats-perf.js');
 
 const lazyLoading = html`<empty-state heading="Loading view…" body="Fetching the chart bundle."></empty-state>`;
 
@@ -91,8 +89,6 @@ export class AppShell extends LitElement {
       { pattern: '/governance/proposals' },
       { pattern: '/governance/proposals/:id' },
       { pattern: '/governance/votes' },
-      { pattern: '/performance/leaderboard' },
-      { pattern: '/performance/stats' },
     ]);
   }
 
@@ -167,13 +163,6 @@ export class AppShell extends LitElement {
         );
       case '/rewards/leaderboard':
         return html`<view-rewards-leaderboard></view-rewards-leaderboard>`;
-      case '/performance/leaderboard':
-        return html`<view-leaderboard-perf></view-leaderboard-perf>`;
-      case '/performance/stats':
-        return until(
-          lazyStatsPerf().then(() => html`<view-stats-perf></view-stats-perf>`),
-          lazyLoading,
-        );
       default:
         // Reaching this means a pattern is registered in `defineRoutes` but
         // the switch above forgot to map it to a view component. That's a

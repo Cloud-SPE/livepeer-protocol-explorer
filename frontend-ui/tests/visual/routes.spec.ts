@@ -7,7 +7,6 @@ const ROUTES: Array<{ name: string; hash: string }> = [
   { name: 'governance-list',    hash: '#/governance/proposals' },
   { name: 'reports-hub',        hash: '#/reports' },
   { name: 'rewards-leaderboard',hash: '#/rewards/leaderboard' },
-  { name: 'performance-leaderboard', hash: '#/performance/leaderboard' },
 ];
 
 const EMPTY_LIST = JSON.stringify({ data: [], meta: { chain_id: '42161' } });

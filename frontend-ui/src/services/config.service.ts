@@ -12,12 +12,6 @@ import type { AppConfig, PartialAppConfig } from '../types/config.js';
 // the api container, no FE rebuild needed.
 const DEFAULT_CONFIG: AppConfig = {
   baseApiUrl: '',
-  perfStatsUrl: 'https://leaderboard-serverless.vercel.app/api/raw_stats',
-  aiPerfStatsUrl: 'https://lpc-leaderboard-serverless.vercel.app/api/raw_stats',
-  leaderboardStatsUrl: 'https://leaderboard-serverless.vercel.app/api/aggregated_stats',
-  aiLeaderboardStatsUrl: 'https://lpc-leaderboard-serverless.vercel.app/api/aggregated_stats',
-  regionsUrl: 'https://lpc-leaderboard-serverless.vercel.app/api/regions',
-  pipelineUrl: 'https://lpc-leaderboard-serverless.vercel.app/api/pipelines',
   explorerTxBase: 'https://arbiscan.io/tx/',
   explorerAddressBase: 'https://arbiscan.io/address/',
 };

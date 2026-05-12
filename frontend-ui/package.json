@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Lit + TypeScript SPA frontend for the crypto-price-feed Livepeer indexer API.",
+  "description": "Lit + TypeScript SPA frontend for Livepeer Protocol Explorer.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

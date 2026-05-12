@@ -16,7 +16,7 @@ links:
 The legacy `livepeer-backend-rs` HTTP API (Axum 0.7, SQLite, port 4000)
 exposes 17 endpoints across orchestrators, broadcasters/gateways, payouts,
 rewards, and treasury. Several of those endpoints have no equivalent in
-`crypto-price-feed`, and a few that look equivalent return semantically
+Livepeer Protocol Explorer, and a few that look equivalent return semantically
 different values because the legacy API stores Livepeer's `feeShare` in
 operator perspective (orch's keep) while the new API exposes it raw
 (delegators' share).

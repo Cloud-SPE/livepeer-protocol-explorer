@@ -12,9 +12,6 @@ import type { AppConfig, PartialAppConfig } from '../types/config.js';
 // the api container, no FE rebuild needed.
 const DEFAULT_CONFIG: AppConfig = {
   baseApiUrl: '',
-  gatewayUrl: 'https://dream-gateway.livepeer.cloud',
-  gatewayBearer: '',
-  byocGatewayUrl: 'https://openai-gateway.livepeer.cloud/v1',
   perfStatsUrl: 'https://leaderboard-serverless.vercel.app/api/raw_stats',
   aiPerfStatsUrl: 'https://lpc-leaderboard-serverless.vercel.app/api/raw_stats',
   leaderboardStatsUrl: 'https://leaderboard-serverless.vercel.app/api/aggregated_stats',

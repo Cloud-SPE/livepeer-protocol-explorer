@@ -1,8 +1,5 @@
 export interface AppConfig {
   baseApiUrl: string;
-  gatewayUrl: string;
-  gatewayBearer: string;
-  byocGatewayUrl: string;
   perfStatsUrl: string;
   aiPerfStatsUrl: string;
   leaderboardStatsUrl: string;

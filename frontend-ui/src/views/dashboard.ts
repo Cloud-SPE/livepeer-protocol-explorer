@@ -5,7 +5,6 @@ import { orchestratorsService } from '../services/orchestrators.service.js';
 import { gatewaysService } from '../services/gateways.service.js';
 import { governanceService, proposalTitle } from '../services/governance.service.js';
 import { payoutsService } from '../services/payouts.service.js';
-import { networkCapabilitiesService } from '../services/network-capabilities.service.js';
 import { networkService } from '../services/network.service.js';
 import type { NetworkStatsResponse, RoundIndexRow } from '../types/api.js';
 import {
@@ -28,7 +27,6 @@ export class ViewDashboard extends LitElement {
   @state() private gws = new ObservableController(this, gatewaysService.list$, gatewaysService.list);
   @state() private props = new ObservableController(this, governanceService.proposals$, governanceService.proposals);
   @state() private summary = new ObservableController(this, payoutsService.summary$, payoutsService.summary);
-  @state() private caps = new ObservableController(this, networkCapabilitiesService.state$, networkCapabilitiesService.state);
   @state() private networkStats: NetworkStatsResponse | null = null;
   @state() private networkLoading = false;
   @state() private networkError: string | null = null;
@@ -51,9 +49,6 @@ export class ViewDashboard extends LitElement {
     ) {
       void payoutsService.loadSummary('daily', todayIso(), 'both');
     }
-    if (!networkCapabilitiesService.state.data && !networkCapabilitiesService.state.loading) {
-      void networkCapabilitiesService.load();
-    }
     if (!this.networkStats && !this.networkLoading) {
       void this._loadNetworkStats();
     }
@@ -67,7 +62,6 @@ export class ViewDashboard extends LitElement {
     void gatewaysService.refreshList();
     void governanceService.refreshProposals();
     void payoutsService.loadSummary('daily', todayIso(), 'both');
-    void networkCapabilitiesService.load();
     void this._loadNetworkStats();
     void this._loadRecentRounds();
   }
@@ -93,30 +87,12 @@ export class ViewDashboard extends LitElement {
     }
   }
 
-  private _aiStats(): { orchs: number; models: number; warmModels: number } {
-    const data = this.caps.value?.data;
-    if (!data) return { orchs: 0, models: 0, warmModels: 0 };
-    const modelNames = new Set<string>();
-    const warmModels = new Set<string>();
-    for (const o of data.orchestrators) {
-      for (const p of o.pipelines) {
-        for (const m of p.models) {
-          const id = `${p.type}:${m.name}`;
-          modelNames.add(id);
-          if (m.status.Warm > 0) warmModels.add(id);
-        }
-      }
-    }
-    return { orchs: data.orchestrators.length, models: modelNames.size, warmModels: warmModels.size };
-  }
-
   private _lastUpdated(): string | null {
     const stamps = [
       this.orchs.value?.lastUpdated,
       this.gws.value?.lastUpdated,
       this.props.value?.lastUpdated,
       this.summary.value?.lastUpdated,
-      this.caps.value?.lastUpdated,
       this._networkRefreshAge(),
     ].filter((s): s is string => Boolean(s));
     if (stamps.length === 0) return null;
@@ -129,7 +105,6 @@ export class ViewDashboard extends LitElement {
         this.gws.value?.loading ||
         this.props.value?.loading ||
         this.summary.value?.loading ||
-        this.caps.value?.loading ||
         this.networkLoading,
     );
   }
@@ -150,7 +125,6 @@ export class ViewDashboard extends LitElement {
     const gws = this.gws.value;
     const props = this.props.value;
     const summary = this.summary.value?.summary;
-    const ai = this._aiStats();
     const network = this.networkStats;
     const top5 = (orchs?.rows ?? []).slice(0, 5);
     const recentProps = (props?.rows ?? []).slice(0, 3);
@@ -307,22 +281,6 @@ export class ViewDashboard extends LitElement {
               </div>
             </div>
             <div class="footer-links"><a href="#/reports/tickets/daily">Open chart →</a></div>
-          </article>
-
-          <article class="card">
-            <h3>AI capabilities</h3>
-            <div class="stat-grid">
-              <div class="stat">
-                <div class="label">Orchestrators</div>
-                <div class="value">${ai.orchs || '—'}</div>
-              </div>
-              <div class="stat">
-                <div class="label">Distinct models</div>
-                <div class="value">${ai.models || '—'}</div>
-                <div class="sub">${ai.warmModels} warm</div>
-              </div>
-            </div>
-            <div class="footer-links"><a href="#/ai/network-capabilities">Browse capabilities →</a></div>
           </article>
         </section>
       </article>

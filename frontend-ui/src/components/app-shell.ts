@@ -22,26 +22,13 @@ import '../views/payouts-summary.js';
 import '../views/payouts-leaderboard.js';
 import '../views/rewards-leaderboard.js';
 import '../views/leaderboard-perf.js';
-import '../views/network-capabilities.js';
 import '../views/rounds-list.js';
-import '../views/ai-settings.js';
-import '../views/ai-playground/ai-generator.js';
-import '../views/ai-playground/llm.js';
-import '../views/ai-playground/text-to-image.js';
-import '../views/ai-playground/image-to-image.js';
-import '../views/ai-playground/image-to-video.js';
-import '../views/ai-playground/image-to-text.js';
-import '../views/ai-playground/audio-to-text.js';
-import '../views/ai-playground/text-to-speech.js';
-import '../views/ai-playground/upscale.js';
-import '../views/ai-playground/segment-anything.js';
 
-// Heavy views — lazy-loaded so ECharts and the OpenAI SDK only fetch on demand.
+// Heavy views — lazy-loaded so ECharts only fetches on demand.
 const lazyOrchestratorDetail = () => import('../views/orchestrator-detail.js');
 const lazyRoundDetail = () => import('../views/round-detail.js');
 const lazyTicketsTimeseries = () => import('../views/tickets-timeseries.js');
 const lazyStatsPerf = () => import('../views/stats-perf.js');
-const lazyByocOpenai = () => import('../views/ai-playground/byoc-openai.js');
 
 const lazyLoading = html`<empty-state heading="Loading view…" body="Fetching the chart bundle."></empty-state>`;
 
@@ -106,19 +93,6 @@ export class AppShell extends LitElement {
       { pattern: '/governance/votes' },
       { pattern: '/performance/leaderboard' },
       { pattern: '/performance/stats' },
-      { pattern: '/ai/generator' },
-      { pattern: '/ai/llm' },
-      { pattern: '/ai/text-to-image' },
-      { pattern: '/ai/image-to-image' },
-      { pattern: '/ai/image-to-video' },
-      { pattern: '/ai/image-to-text' },
-      { pattern: '/ai/upscale' },
-      { pattern: '/ai/audio-to-text' },
-      { pattern: '/ai/text-to-speech' },
-      { pattern: '/ai/segment-anything-2' },
-      { pattern: '/ai/network-capabilities' },
-      { pattern: '/ai/settings' },
-      { pattern: '/ai/byoc/openai' },
     ]);
   }
 
@@ -198,35 +172,6 @@ export class AppShell extends LitElement {
       case '/performance/stats':
         return until(
           lazyStatsPerf().then(() => html`<view-stats-perf></view-stats-perf>`),
-          lazyLoading,
-        );
-      case '/ai/generator':
-        return html`<view-ai-generator></view-ai-generator>`;
-      case '/ai/llm':
-        return html`<view-llm></view-llm>`;
-      case '/ai/text-to-image':
-        return html`<view-text-to-image></view-text-to-image>`;
-      case '/ai/image-to-image':
-        return html`<view-image-to-image></view-image-to-image>`;
-      case '/ai/image-to-video':
-        return html`<view-image-to-video></view-image-to-video>`;
-      case '/ai/image-to-text':
-        return html`<view-image-to-text></view-image-to-text>`;
-      case '/ai/upscale':
-        return html`<view-upscale></view-upscale>`;
-      case '/ai/audio-to-text':
-        return html`<view-audio-to-text></view-audio-to-text>`;
-      case '/ai/text-to-speech':
-        return html`<view-text-to-speech></view-text-to-speech>`;
-      case '/ai/segment-anything-2':
-        return html`<view-segment-anything></view-segment-anything>`;
-      case '/ai/network-capabilities':
-        return html`<view-network-capabilities></view-network-capabilities>`;
-      case '/ai/settings':
-        return html`<view-ai-settings></view-ai-settings>`;
-      case '/ai/byoc/openai':
-        return until(
-          lazyByocOpenai().then(() => html`<view-byoc-openai></view-byoc-openai>`),
           lazyLoading,
         );
       default:

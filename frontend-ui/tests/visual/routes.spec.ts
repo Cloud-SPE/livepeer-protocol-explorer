@@ -8,7 +8,6 @@ const ROUTES: Array<{ name: string; hash: string }> = [
   { name: 'reports-hub',        hash: '#/reports' },
   { name: 'rewards-leaderboard',hash: '#/rewards/leaderboard' },
   { name: 'performance-leaderboard', hash: '#/performance/leaderboard' },
-  { name: 'ai-llm',             hash: '#/ai/llm' },
 ];
 
 const EMPTY_LIST = JSON.stringify({ data: [], meta: { chain_id: '42161' } });

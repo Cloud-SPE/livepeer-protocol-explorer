@@ -18,7 +18,6 @@ const NAV: NavItem[] = [
   { label: 'Delegators', href: '#/delegators', match: /^\/delegators/ },
   { label: 'Rounds', href: '#/rounds', match: /^\/rounds/ },
   { label: 'Performance', href: '#/performance/leaderboard', match: /^\/performance/ },
-  { label: 'AI Playground', href: '#/ai/generator', match: /^\/ai/ },
 ];
 
 @customElement('side-nav')

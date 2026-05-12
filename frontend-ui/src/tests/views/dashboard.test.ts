@@ -31,12 +31,6 @@ vi.mock('../../lib/sources/local-api.js', () => ({
     getPayoutLeaderboard: vi.fn().mockResolvedValue({ data: [], meta: {} }),
   },
 }));
-vi.mock('../../lib/sources/ai-gateway.js', () => ({
-  aiGateway: {
-    networkCapabilities: vi.fn().mockResolvedValue({ orchestrators: [] }),
-  },
-}));
-
 await import('../../views/dashboard.js');
 
 describe('<view-dashboard>', () => {
@@ -52,7 +46,7 @@ describe('<view-dashboard>', () => {
     vi.clearAllMocks();
   });
 
-  it('mounts and renders the five overview cards', async () => {
+  it('mounts and renders the overview cards', async () => {
     const el = document.createElement('view-dashboard');
     host.appendChild(el);
     await (el as unknown as { updateComplete: Promise<unknown> }).updateComplete;
@@ -62,7 +56,6 @@ describe('<view-dashboard>', () => {
     expect(headings).toContain('Top 5 orchestrators');
     expect(headings).toContain('Recent governance');
     expect(headings).toContain('Activity charts');
-    expect(headings).toContain('AI capabilities');
   });
 
   it('renders a refresh-all button', async () => {

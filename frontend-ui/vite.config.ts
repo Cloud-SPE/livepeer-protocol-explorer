@@ -33,7 +33,6 @@ export default defineConfig({
       output: {
         manualChunks: {
           echarts: ['echarts'],
-          openai: ['openai'],
         },
       },
     },
@@ -41,7 +40,7 @@ export default defineConfig({
     // fetch when a user actually navigates to a view that needs them.
     modulePreload: {
       resolveDependencies: (_filename, deps) =>
-        deps.filter((d) => !/\b(echarts|openai)-/.test(d)),
+        deps.filter((d) => !/\becharts-/.test(d)),
     },
   },
   resolve: {

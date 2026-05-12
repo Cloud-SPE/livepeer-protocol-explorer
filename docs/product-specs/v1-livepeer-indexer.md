@@ -1812,7 +1812,7 @@ services:
     restart: unless-stopped
   
   livepeer-daemon:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-daemon --env-config config/env/prod.yaml follow --max-start-lag-blocks 50000
     depends_on:
       - postgres
@@ -1821,7 +1821,7 @@ services:
       - "9107:9107"  # /metrics + /health
   
   livepeer-api:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-api --env-config config/env/prod.yaml
     depends_on:
       - postgres
@@ -1830,7 +1830,7 @@ services:
       - "8080:8080"  # HTTP + /metrics
 
   livepeer-alert-bot:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-alert-bot --env-config config/env/prod.yaml
 
 volumes:

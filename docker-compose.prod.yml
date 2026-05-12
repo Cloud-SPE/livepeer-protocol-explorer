@@ -1,7 +1,7 @@
 # Production compose. SPEC §15.2 — single-host shape.
 #
 # Conventions:
-# - Registry image: tztcloud/livepeer-valuation-system:latest
+# - Registry image: tztcloud/livepeer-protocol-explorer:latest
 # - Every service has hostname + container_name (debugging + log clarity)
 # - No exposed ports — all traffic is intra-network. Front a reverse proxy
 #   to publish API/metrics if needed.
@@ -37,7 +37,7 @@ services:
       retries: 5
 
   livepeer-daemon:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-daemon
       - --env-config
@@ -61,7 +61,7 @@ services:
     #   - "9107:9107"
 
   livepeer-api:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-api
       - --env-config
@@ -106,7 +106,7 @@ services:
   # and report CSVs fall back to slow per-tx RPC for unknown tx fees.
 
   livepeer-rollups-payouts:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-rollups
       - --env-config
@@ -126,7 +126,7 @@ services:
         condition: service_healthy
 
   livepeer-rollups-rewards:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-rollups
       - --env-config
@@ -144,7 +144,7 @@ services:
         condition: service_healthy
 
   livepeer-rollups-tickets:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-rollups
       - --env-config
@@ -164,7 +164,7 @@ services:
   # TD-018: backs broad-window /aggregations/events queries from the
   # event_metrics_daily rollup, off the raw-events scan path.
   livepeer-rollups-event-metrics:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-rollups
       - --env-config
@@ -185,7 +185,7 @@ services:
 
   # ENS name + avatar resolution for new addresses. L1 (Ethereum mainnet) only.
   livepeer-enricher:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-enricher
       - --env-config
@@ -205,7 +205,7 @@ services:
   # TD-020: materializes tx receipts (gas, fee, status) into tx_receipts so
   # report endpoints don't fan out per-tx eth_getTransactionReceipt calls.
   livepeer-staker-tx-receipts:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-staker
       - --env-config
@@ -231,7 +231,7 @@ services:
 
   # ── Optional: Telegram alerting (enable with --profile ops) ────────
   # livepeer-alert-bot:
-  #   image: tztcloud/livepeer-valuation-system:latest
+  #   image: tztcloud/livepeer-protocol-explorer:latest
   #   command:
   #     - livepeer-alert-bot
   #     - --env-config
@@ -263,7 +263,7 @@ services:
   #     run --rm livepeer-orchestrator --env-config config/env/prod.yaml \
   #     bootstrap --to-block 250000000
   livepeer-orchestrator:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     entrypoint: ["livepeer-orchestrator"]
     hostname: livepeer-orchestrator
     container_name: livepeer-orchestrator
@@ -284,7 +284,7 @@ services:
       - livepeer-valuation-seed:/seed:ro
 
   # livepeer-seed-migrator:
-  #   image: tztcloud/livepeer-valuation-system:latest
+  #   image: tztcloud/livepeer-protocol-explorer:latest
   #   command:
   #     - livepeer-seed-migrator
   #     - --env-config

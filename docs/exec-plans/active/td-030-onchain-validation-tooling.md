@@ -152,7 +152,7 @@ Add to `docker-compose.prod.yml` under the existing `--profile tools` block:
 
 ```yaml
   livepeer-validate:
-    image: tztcloud/livepeer-valuation-system:latest
+    image: tztcloud/livepeer-protocol-explorer:latest
     command:
       - livepeer-orchestrator
       - --env-config

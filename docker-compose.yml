@@ -17,7 +17,7 @@ services:
       retries: 5
 
   livepeer-indexer:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     build: .
     command: livepeer-indexer
     restart: unless-stopped
@@ -29,7 +29,7 @@ services:
       - "9101:9101"
 
   livepeer-reorg-watcher:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-reorg-watcher
     restart: unless-stopped
     env_file: .env
@@ -40,7 +40,7 @@ services:
       - "9102:9102"
 
   livepeer-finality-watcher:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-finality-watcher
     restart: unless-stopped
     env_file: .env
@@ -51,7 +51,7 @@ services:
       - "9103:9103"
 
   livepeer-valuator:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-valuator
     restart: unless-stopped
     env_file: .env
@@ -62,7 +62,7 @@ services:
       - "9104:9104"
 
   livepeer-staker:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-staker
     restart: unless-stopped
     env_file: .env
@@ -76,7 +76,7 @@ services:
   # Standalone follow loop around `profile-backfill`, mirroring the rollup
   # workers' --follow pattern. Cadence default 300s.
   livepeer-staker-profile-follow:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-staker profile-follow
     restart: unless-stopped
     env_file: .env
@@ -89,7 +89,7 @@ services:
   # follow loop skip-sleeps while there are still candidates, then sleeps
   # cadence_secs (default 300s) once the table is fully materialized.
   livepeer-staker-tx-receipts-follow:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-staker tx-receipts-follow
     restart: unless-stopped
     env_file: .env
@@ -98,7 +98,7 @@ services:
         condition: service_healthy
 
   livepeer-enricher:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-enricher follow
     restart: unless-stopped
     env_file: .env
@@ -107,7 +107,7 @@ services:
         condition: service_healthy
 
   livepeer-rollups:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-rollups orch-payouts-daily --follow
     restart: unless-stopped
     env_file: .env
@@ -118,7 +118,7 @@ services:
   # TD-018 Phase 1: backs broad-window /aggregations/events queries from
   # the daily event_metrics_daily rollup, off the raw-events scan path.
   livepeer-rollups-event-metrics:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-rollups event-metrics-daily --follow
     restart: unless-stopped
     env_file: .env
@@ -127,7 +127,7 @@ services:
         condition: service_healthy
 
   livepeer-api:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-api
     restart: unless-stopped
     env_file: .env
@@ -139,7 +139,7 @@ services:
       - "9106:9106"
 
   livepeer-alert-bot:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     command: livepeer-alert-bot
     restart: unless-stopped
     env_file: .env
@@ -151,7 +151,7 @@ services:
   # Run via:
   #   docker compose run --rm livepeer-seed-migrator livepeer-seed-migrator --source-sqlite /seed/sqlite-4.0.db
   livepeer-seed-migrator:
-    image: livepeer-valuation-system:latest
+    image: livepeer-protocol-explorer:latest
     profiles: ["tools"]
     env_file: .env
     depends_on:

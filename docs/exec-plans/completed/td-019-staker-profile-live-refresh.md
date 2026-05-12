@@ -202,7 +202,7 @@ async fn run_profile_follow(args: ProfileFollowArgs, ...) -> Result<()> {
 
 ```yaml
 livepeer-staker-profile-follow:
-  image: livepeer-valuation-system:latest
+  image: livepeer-protocol-explorer:latest
   command: livepeer-staker profile-follow
   restart: unless-stopped
   env_file: .env

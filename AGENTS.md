@@ -20,8 +20,13 @@ Authoritative spec: [docs/product-specs/v1-livepeer-indexer.md](docs/product-spe
 │   ├── livepeer-reorg-watcher/     bin — validates parent-hash chain continuity
 │   ├── livepeer-finality-watcher/  bin — advances finality field on L1 batch posting
 │   ├── livepeer-valuator/          bin — prices finalized events into event_valuations
-│   ├── livepeer-staker/            bin — computes stake_balances_by_block (Scope 2)
-│   ├── livepeer-api/               bin — Axum HTTP API (events / valuations / prices / stake)
+│   ├── livepeer-staker/            bin — computes stake_balances_by_block + gateway_* + profile
+│   ├── livepeer-rollups/           bin — daily aggregates (payouts / rewards / tickets / event_metrics)
+│   ├── livepeer-enricher/          bin — ENS L1 name + avatar resolver
+│   ├── livepeer-daemon/            bin — live-mode supervisor; runs all workers on cadences
+│   ├── livepeer-orchestrator/      bin — one-shot CLI (migrate-only / replay / bootstrap / backfill-cuts)
+│   ├── livepeer-api/               bin — Axum HTTP API + serves the SPA bundle
+│   ├── livepeer-alert-bot/         bin — Telegram + Discord alerting on indexer-health metrics
 │   └── livepeer-seed-migrator/     bin — one-shot SQLite → seeded_event_prices import
 ├── abi/                            vendored ABI JSON. Hashes verified at boot (SPEC §5.5).
 ├── config/
@@ -29,6 +34,7 @@ Authoritative spec: [docs/product-specs/v1-livepeer-indexer.md](docs/product-spe
 │   └── env/{dev,staging,prod}.yaml environment-specific config (no secrets)
 ├── migrations/                     sqlx-cli migrations (SPEC §11)
 ├── tests/fixtures/                 determinism fixtures (rpc_cache, seed sqlite, expected hashes)
+├── frontend-ui/                    Lit + TypeScript SPA bundled into livepeer-api via FE_STATIC_DIR
 ├── docs/
 │   ├── product-specs/              the spec (encyclopedia)
 │   ├── design-docs/                per-decision design records
@@ -37,12 +43,16 @@ Authoritative spec: [docs/product-specs/v1-livepeer-indexer.md](docs/product-spe
 │   ├── exec-plans/                 first-class execution plans (active / completed)
 │   │   └── tech-debt-tracker.md    known shortcuts and deferred work
 │   ├── generated/db-schema.md      generated from migrations (TODO)
-│   ├── references/                 external references (e.g. openai-harness.pdf)
+│   ├── references/                 external references
 │   ├── RUNBOOK.md                  operational procedures (SPEC §19)
+│   ├── DEPLOYMENT.md               production deployment shape
 │   └── DETERMINISM.md              determinism test contract (SPEC §12.4)
-├── .github/workflows/              ci.yml + determinism.yml
-├── Dockerfile                      multi-stage; one image, all 7 binaries
-├── docker-compose.yml              SPEC §15.2 single-host deployment
+├── ops/                            Prometheus + Alertmanager configs
+├── scripts/                        operator scripts (resume-catchup-all, stop-all, ...)
+├── .github/workflows/              ci.yml (auto) + determinism.yml (workflow_dispatch only)
+├── Dockerfile                      multi-stage; one image, all 12 binaries
+├── docker-compose.yml              SPEC §15.2 single-host deployment (dev)
+├── docker-compose.prod.yml         production compose pulling tztcloud/livepeer-protocol-explorer
 └── rust-toolchain.toml             pinned to 1.94.1
 ```
 

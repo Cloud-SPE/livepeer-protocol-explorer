@@ -2659,7 +2659,9 @@ name = "livepeer-orchestrator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bigdecimal",
  "clap",
+ "futures",
  "livepeer-core",
  "livepeer-finality-watcher",
  "livepeer-indexer",

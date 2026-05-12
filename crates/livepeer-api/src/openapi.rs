@@ -7,10 +7,21 @@ use utoipa::OpenApi;
         version = "1.9",
         description = "HTTP API for indexed Livepeer protocol events, valuation outcomes, token prices, stake snapshots, governance views, and transcoder context. The API is backed by deterministic replayable Postgres state derived from Arbitrum and Ethereum RPC inputs."
     ),
+    // Versioned business surface lives under /api/v1. Operational endpoints
+    // (/health, /metrics, /backfills/status, /config.json) are un-versioned
+    // and live at the host root — they're infrastructure, not API. Swagger
+    // UI's "Try it out" buttons resolve `servers[0].url` + the per-handler
+    // `path = "..."`, so handler paths here remain un-prefixed.
+    servers(
+        (url = "/api/v1", description = "Versioned API base path on the same origin as the FE"),
+    ),
+    // Operational endpoints (/health, /metrics, /backfills/status,
+    // /config.json) live at the host root, not under /api/v1, so they're
+    // intentionally excluded from this spec — Swagger UI's "Try it out"
+    // resolves servers[0].url + the per-handler `path`, which would
+    // mis-route them to /api/v1/health etc. Their behavior is documented
+    // in docs/DEPLOYMENT.md and is stable by contract.
     paths(
-        crate::routes::operational::health,
-        crate::routes::operational::metrics,
-        crate::routes::operational::backfill_status,
         crate::routes::events::list,
         crate::routes::events::get_one,
         crate::routes::valuations::for_event,
@@ -53,7 +64,6 @@ use utoipa::OpenApi;
         crate::routes::stake::at_block,
         crate::routes::stake::range,
         crate::routes::stake::delegators_at_block,
-        crate::routes::operational::frontend_config,
         crate::routes::transcoders::latest,
         crate::routes::transcoders::at_block,
         crate::routes::transcoders::history,
@@ -79,8 +89,6 @@ use utoipa::OpenApi;
         schemas(
             crate::error::ErrorEnvelope,
             crate::error::ErrorBody,
-            crate::routes::operational::BackfillStatus,
-            crate::routes::operational::Checkpoint,
             crate::routes::events::EventsQuery,
             crate::routes::events::EventRow,
             crate::routes::events::ValuationInline,
@@ -196,7 +204,6 @@ use utoipa::OpenApi;
         )
     ),
     tags(
-        (name = "Operational", description = "Health, metrics, and pipeline checkpoint visibility."),
         (name = "Events", description = "Canonical raw protocol events with optional inline valuation outcomes."),
         (name = "Valuations", description = "Versioned valuation outcomes attached to finalized monetary events."),
         (name = "Aggregations", description = "Time-bucketed analytics over raw events and valuation rows."),

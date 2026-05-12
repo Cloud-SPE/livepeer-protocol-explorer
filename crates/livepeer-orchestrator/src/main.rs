@@ -1,3 +1,4 @@
+mod backfill_cuts;
 mod bootstrap;
 mod replay;
 mod reset;
@@ -78,6 +79,30 @@ enum Command {
         skip_seed_import: bool,
         #[arg(long, default_value_t = false)]
         skip_cross_check: bool,
+    },
+    /// One-shot historical backfill of `orch_stake_by_round` cut columns
+    /// using chain-truth via `BondingManager.getTranscoder()` at each row's
+    /// snapshot block. Replaces values that were derived from the stale
+    /// `TranscoderUpdate` event payload (which carried *pending*, not
+    /// *active*, cuts). Idempotent. Never deletes.
+    BackfillOrchCuts {
+        /// Bounded concurrency for the eth_call fanout. Chainstack
+        /// empirically tolerated 12 sustained; 24+ tripped 429.
+        #[arg(long, default_value_t = 12)]
+        concurrency: usize,
+        /// Path to write the change-log CSV. Defaults to
+        /// `/tmp/cuts-backfill-<unix>.csv`.
+        #[arg(long)]
+        csv_out: Option<PathBuf>,
+        /// Compute deltas and write the CSV, but roll back the UPDATEs.
+        /// Useful for previewing what would change before committing.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Restrict to a single orch address (case-insensitive). Useful for
+        /// spot-checking the fix against one of the known-failing orchs
+        /// before running the full sweep.
+        #[arg(long)]
+        address: Option<String>,
     },
 }
 
@@ -183,15 +208,72 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Command::BackfillOrchCuts {
+            concurrency,
+            csv_out,
+            dry_run,
+            address,
+        } => {
+            let rt = Runtime {
+                cfg,
+                pg,
+                archive,
+                l1,
+                source_sqlite: None,
+            };
+            backfill_cuts::run(
+                &rt,
+                backfill_cuts::BackfillCutsOpts {
+                    concurrency,
+                    csv_out,
+                    dry_run,
+                    address,
+                },
+            )
+            .await?;
+        }
     }
     Ok(())
 }
 
 async fn run_migrations(pg: &sqlx::PgPool) -> Result<()> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let path = resolve_migrations_path()?;
+    info!(path = %path.display(), "loading migrations");
     let migrator = sqlx::migrate::Migrator::new(path.as_path()).await?;
     migrator.run(pg).await?;
     Ok(())
+}
+
+// Locate the `migrations/` directory at runtime. The previous compile-time
+// path baked in `/build/...` from the rust-builder stage, which doesn't exist
+// in the slim runtime image — so `migrate-only` from the prod container would
+// fail with FileNotFound. Resolution order:
+//   1. `MIGRATIONS_PATH` env override (escape hatch),
+//   2. `/opt/livepeer/migrations` (laid down by the runtime stage of Dockerfile),
+//   3. compile-time source-tree path (works for `cargo run` from any subdir).
+fn resolve_migrations_path() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("MIGRATIONS_PATH") {
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return Ok(path);
+        }
+        anyhow::bail!(
+            "MIGRATIONS_PATH={} but the directory does not exist",
+            path.display()
+        );
+    }
+    let runtime = PathBuf::from("/opt/livepeer/migrations");
+    if runtime.exists() {
+        return Ok(runtime);
+    }
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    if source.exists() {
+        return Ok(source);
+    }
+    anyhow::bail!(
+        "could not locate migrations directory; tried MIGRATIONS_PATH, /opt/livepeer/migrations, and {}",
+        source.display()
+    );
 }
 
 async fn resolve_to_block(archive: &Provider, to_block: Option<u64>) -> Result<u64> {

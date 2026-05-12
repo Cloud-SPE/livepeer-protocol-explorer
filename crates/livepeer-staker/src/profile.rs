@@ -23,8 +23,8 @@ const PERCENT_DENOMINATOR: i64 = 10_000;
 const FULL_PERCENT_RAW: i64 = 1_000_000;
 const ORCH_PROFILE_BATCH_LIMIT: i64 = 500;
 /// Bounded concurrency for the per-NewRound orchestrator fanout.
-/// Each known orch makes ~2-3 `eth_call`s inside `read_orchestrator_snapshot`,
-/// so the effective in-flight RPC count is `concurrency × ~3`. Empirical
+/// Each known orch makes ~3-4 `eth_call`s inside `read_orchestrator_snapshot`,
+/// so the effective in-flight RPC count is `concurrency × ~4`. Empirical
 /// findings (2026-05-08):
 /// - `concurrency = 32` and `= 24` both immediately tripped HTTP 429 from
 ///   Chainstack on cold-cache bursts at the first NewRound, even though
@@ -93,6 +93,19 @@ struct TranscoderCuts {
     reward_cut_percent: BigDecimal,
     fee_share_percent: BigDecimal,
     fee_cut_percent: BigDecimal,
+}
+
+/// Public result type for `fetch_active_transcoder_state`. Includes the
+/// `last_reward_round` field so callers (e.g. the cuts backfill subcommand)
+/// can detect the never-registered zero state without misinterpreting a
+/// legitimate 0% cut.
+#[derive(Debug, Clone)]
+pub struct ActiveTranscoderState {
+    /// `getTranscoder` slot 0. Zero when the address was never registered.
+    pub last_reward_round: u64,
+    pub reward_cut_percent: BigDecimal,
+    pub fee_share_percent: BigDecimal,
+    pub fee_cut_percent: BigDecimal,
 }
 
 #[derive(Debug)]
@@ -408,7 +421,9 @@ async fn read_orchestrator_snapshot(
     let stake_raw = decode_hex_result(&stake_outcome.response_bytes)?;
     let stake = BondingManager::transcoderTotalStakeCall::abi_decode_returns(&stake_raw, true)?;
 
-    let cuts = load_latest_transcoder_cuts(pg, orchestrator, block_number).await?;
+    let cuts =
+        read_active_transcoder_cuts(pg, archive, bonding_manager, orchestrator, block_number)
+            .await?;
     // is_active = membership in the on-chain active pool at this block.
     // Falls back to event-history-based last_lifecycle_event_at for the
     // timestamp only (the bool was unreliable because the protocol can
@@ -504,50 +519,77 @@ async fn fetch_active_pool(
     Ok(pool)
 }
 
-async fn load_latest_transcoder_cuts(
+/// Reads the orch's **active** `rewardCut` / `feeShare` from chain storage
+/// at `block_number` via `BondingManager.getTranscoder`.
+///
+/// The previous implementation read these from the most recent
+/// `TranscoderUpdate` event in `raw_protocol_events`. That event carries the
+/// `pending` values set by `transcoder(rewardCut, feeShare)` — the protocol
+/// only copies pending → active when the orch calls `reward()` in a
+/// subsequent round, and that copy emits no event. Orchs that requested a
+/// change but haven't earned since had stale-but-divergent cuts in the API.
+async fn read_active_transcoder_cuts(
     pg: &PgPool,
+    archive: &Provider,
+    bonding_manager: &str,
     orchestrator: &str,
     block_number: i64,
 ) -> Result<TranscoderCuts> {
-    let row = sqlx::query(
-        r#"SELECT raw_event -> 'decoded' ->> 'rewardCut' AS reward_cut_raw,
-                  raw_event -> 'decoded' ->> 'feeShare'  AS fee_share_raw
-             FROM raw_protocol_events
-            WHERE chain_id = $1
-              AND is_canonical = TRUE
-              AND event_name = 'TranscoderUpdate'
-              AND to_address = $2
-              AND block_number <= $3
-            ORDER BY block_number DESC, log_index DESC
-            LIMIT 1"#,
-    )
-    .bind(ARBITRUM_CHAIN_ID)
-    .bind(orchestrator)
-    .bind(block_number)
-    .fetch_optional(pg)
-    .await?;
+    let state =
+        fetch_active_transcoder_state(pg, archive, bonding_manager, orchestrator, block_number)
+            .await?;
+    Ok(TranscoderCuts {
+        reward_cut_percent: state.reward_cut_percent,
+        fee_share_percent: state.fee_share_percent,
+        fee_cut_percent: state.fee_cut_percent,
+    })
+}
 
-    let reward_cut_raw = row
-        .as_ref()
-        .and_then(|r| {
-            r.try_get::<Option<String>, _>("reward_cut_raw")
-                .ok()
-                .flatten()
-        })
-        .unwrap_or_else(|| "0".to_string());
-    let fee_share_raw = row
-        .as_ref()
-        .and_then(|r| {
-            r.try_get::<Option<String>, _>("fee_share_raw")
-                .ok()
-                .flatten()
-        })
-        .unwrap_or_else(|| "0".to_string());
+/// Reads the full active `getTranscoder` view (3 fields exposed): the
+/// `lastRewardRound` slot plus the three percentage values. Public so the
+/// historical-cuts backfill subcommand can use `last_reward_round == 0` as
+/// the never-registered discriminator (avoids overwriting a legitimate 0%
+/// reward_cut with the chain's all-zero unregistered state).
+pub async fn fetch_active_transcoder_state(
+    pg: &PgPool,
+    archive: &Provider,
+    bonding_manager: &str,
+    orchestrator: &str,
+    block_number: i64,
+) -> Result<ActiveTranscoderState> {
+    let orch_addr = Address::from_str(orchestrator).context("parsing orchestrator address")?;
+    let data = format!(
+        "0x{}",
+        alloy::hex::encode(
+            BondingManager::getTranscoderCall {
+                _transcoder: orch_addr,
+            }
+            .abi_encode()
+        )
+    );
+    let params = json!([
+        { "to": bonding_manager, "data": data },
+        BlockTag::Number(block_number as u64).to_param()
+    ]);
+    let outcome =
+        cross_check::single_call_cached(pg, archive, "eth_call", &params, Some(block_number))
+            .await?;
+    let raw = decode_hex_result(&outcome.response_bytes)?;
+    let decoded = BondingManager::getTranscoderCall::abi_decode_returns(&raw, true)?;
+
+    let reward_cut_raw = decoded.rewardCut.to_string();
+    let fee_share_raw = decoded.feeShare.to_string();
 
     let reward_cut_percent = raw_percent_to_decimal(&reward_cut_raw)?;
     let fee_share_percent = raw_percent_to_decimal(&fee_share_raw)?;
     let fee_cut_percent = inverse_raw_percent_to_decimal(&fee_share_raw)?;
-    Ok(TranscoderCuts {
+
+    // U256 → u64 truncation. Round numbers are tiny (~4k today, ~1M in a
+    // century), so this fits trivially.
+    let last_reward_round = decoded.lastRewardRound.try_into().unwrap_or(u64::MAX);
+
+    Ok(ActiveTranscoderState {
+        last_reward_round,
         reward_cut_percent,
         fee_share_percent,
         fee_cut_percent,

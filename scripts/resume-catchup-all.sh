@@ -12,6 +12,7 @@ set -a; source .env; set +a
 export DATABASE_URL="postgres://livepeer:changeme@127.0.0.1:5432/livepeer_indexer"
 export STATIC_CONFIG="$PWD/config/arbitrum.yaml"
 export ENV_CONFIG="$PWD/config/env/dev.yaml"
+export FE_STATIC_DIR="$PWD/frontend-ui/dist"
 
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p run-logs/live

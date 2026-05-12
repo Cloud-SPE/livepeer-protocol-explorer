@@ -43,6 +43,11 @@ import type {
   VoteListResponse,
 } from '../../types/api.js';
 
+// All business endpoints are versioned under /api/v1. We only ever bump
+// this constant when the backend ships a new versioned mount; callers
+// inside this file keep their un-prefixed paths.
+const API_VERSION_PREFIX = '/api/v1';
+
 let _client: ApiClient | null = null;
 let _baseUrl = '';
 
@@ -50,7 +55,7 @@ function client(): ApiClient {
   const cfg = configService.value;
   if (!_client || cfg.baseApiUrl !== _baseUrl) {
     _baseUrl = cfg.baseApiUrl;
-    _client = createApi({ baseUrl: cfg.baseApiUrl });
+    _client = createApi({ baseUrl: `${cfg.baseApiUrl}${API_VERSION_PREFIX}` });
   }
   return _client;
 }

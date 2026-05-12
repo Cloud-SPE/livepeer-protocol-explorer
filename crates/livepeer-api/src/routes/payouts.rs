@@ -618,7 +618,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/payouts/leaderboard?from=2026-01-01&to=2026-01-31&valuation_version=test-version&limit=1")
+                    .uri("/api/v1/payouts/leaderboard?from=2026-01-01&to=2026-01-31&valuation_version=test-version&limit=1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -638,7 +638,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/payouts/leaderboard?from=2026-01-01&to=2026-01-31&valuation_version=test-version&limit=1&cursor={cursor}"))
+                    .uri(format!("/api/v1/payouts/leaderboard?from=2026-01-01&to=2026-01-31&valuation_version=test-version&limit=1&cursor={cursor}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -654,7 +654,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/payouts/summary/daily/2026-01-01?job_type=ai&valuation_version=test-version")
+                    .uri("/api/v1/payouts/summary/daily/2026-01-01?job_type=ai&valuation_version=test-version")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -670,7 +670,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/payouts/summary/weekly/2026-01-01?valuation_version=test-version")
+                    .uri("/api/v1/payouts/summary/weekly/2026-01-01?valuation_version=test-version")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -685,7 +685,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/payouts/summary/monthly/2026-01-15?job_type=transcoding&valuation_version=test-version")
+                    .uri("/api/v1/payouts/summary/monthly/2026-01-15?job_type=transcoding&valuation_version=test-version")
                     .body(Body::empty())
                     .unwrap(),
             )

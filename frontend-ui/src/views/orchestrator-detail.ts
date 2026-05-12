@@ -150,11 +150,6 @@ export class ViewOrchestratorDetail extends LitElement {
         type: 'line',
       },
       {
-        name: 'Fee cut (orch keep)',
-        data: points.map(p => [p.block_timestamp, parseFloat(p.fee_cut_percent ?? '0')]),
-        type: 'line',
-      },
-      {
         name: 'Fee share (to delegators)',
         data: points.map(p => [p.block_timestamp, parseFloat(p.fee_share_percent ?? '0')]),
         type: 'line',

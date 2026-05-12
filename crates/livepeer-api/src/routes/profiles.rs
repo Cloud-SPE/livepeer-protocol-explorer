@@ -815,7 +815,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/orchestrators?limit=2")
+                    .uri("/api/v1/orchestrators?limit=2")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -837,7 +837,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/orchestrators?limit=2&cursor={cursor}"))
+                    .uri(format!("/api/v1/orchestrators?limit=2&cursor={cursor}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -854,7 +854,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/orchestrators?active_only=true")
+                    .uri("/api/v1/orchestrators?active_only=true")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -871,7 +871,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/orchestrators/{orch_a}"))
+                    .uri(format!("/api/v1/orchestrators/{orch_a}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -955,7 +955,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/gateways?limit=2")
+                    .uri("/api/v1/gateways?limit=2")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -978,7 +978,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/gateways/{gateway_a}/profile"))
+                    .uri(format!("/api/v1/gateways/{gateway_a}/profile"))
                     .body(Body::empty())
                     .unwrap(),
             )

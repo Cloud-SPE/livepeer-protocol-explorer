@@ -236,104 +236,94 @@ export class ViewDashboard extends LitElement {
             </div>
           </article>
 
-          <a class="card-link" href="#/orchestrators">
-            <article class="card">
-              <h3>Top 5 orchestrators</h3>
-              ${top5.length === 0
-                ? html`<p class="muted">Loading…</p>`
-                : html`
-                    <ol>
-                      ${top5.map(
-                        (o, i) => html`
-                          <li>
-                            <span class="name">${i + 1}. ${o.display_name || o.address.slice(0, 10) + '…'}</span>
-                            <span class="meta mono">${formatNative(o.total_stake, 18, { digits: 0, compact: true })} LPT</span>
-                          </li>
-                        `,
-                      )}
-                    </ol>
-                  `}
-              <div class="footer-links"><a href="#/orchestrators">View all →</a></div>
-            </article>
-          </a>
+          <article class="card">
+            <h3>Top 5 orchestrators</h3>
+            ${top5.length === 0
+              ? html`<p class="muted">Loading…</p>`
+              : html`
+                  <ol>
+                    ${top5.map(
+                      (o, i) => html`
+                        <li>
+                          <span class="name">${i + 1}. ${o.display_name || o.address.slice(0, 10) + '…'}</span>
+                          <span class="meta mono">${formatNative(o.total_stake, 18, { digits: 0, compact: true })} LPT</span>
+                        </li>
+                      `,
+                    )}
+                  </ol>
+                `}
+            <div class="footer-links"><a href="#/orchestrators">View all →</a></div>
+          </article>
 
-          <a class="card-link" href="#/rounds">
-            <article class="card">
-              <h3>Recent rounds</h3>
-              ${this.recentRounds.length === 0
-                ? html`<p class="muted">Loading…</p>`
-                : html`
-                    <ol>
-                      ${this.recentRounds.map(
-                        (r) => html`
-                          <li>
-                            <span class="name">Round ${r.round}</span>
-                            <span class="meta mono">${formatUsd(r.payouts_usd_on_day)}<span class="muted"> · ${r.active_orchestrators} orchs</span></span>
-                          </li>
-                        `,
-                      )}
-                    </ol>
-                  `}
-              <div class="footer-links"><a href="#/rounds">Browse all rounds →</a></div>
-            </article>
-          </a>
+          <article class="card">
+            <h3>Recent rounds</h3>
+            ${(this.recentRounds?.length ?? 0) === 0
+              ? html`<p class="muted">Loading…</p>`
+              : html`
+                  <ol>
+                    ${(this.recentRounds ?? []).map(
+                      (r) => html`
+                        <li>
+                          <span class="name">Round ${r.round}</span>
+                          <span class="meta mono">${formatUsd(r.payouts_usd_on_day)}<span class="muted"> · ${r.active_orchestrators} orchs</span></span>
+                        </li>
+                      `,
+                    )}
+                  </ol>
+                `}
+            <div class="footer-links"><a href="#/rounds">Browse all rounds →</a></div>
+          </article>
 
-          <a class="card-link" href="#/governance/proposals">
-            <article class="card">
-              <h3>Recent governance</h3>
-              ${recentProps.length === 0
-                ? html`<p class="muted">Loading…</p>`
-                : html`
-                    <ol>
-                      ${recentProps.map(
-                        (p) => html`
-                          <li>
-                            <span class="name">${proposalTitle(p)}</span>
-                            <span class="meta" title=${formatTimestamp(p.created_at)}>${formatRelative(p.created_at)}</span>
-                          </li>
-                        `,
-                      )}
-                    </ol>
-                  `}
-              <div class="footer-links"><a href="#/governance/proposals">All proposals →</a></div>
-            </article>
-          </a>
+          <article class="card">
+            <h3>Recent governance</h3>
+            ${recentProps.length === 0
+              ? html`<p class="muted">Loading…</p>`
+              : html`
+                  <ol>
+                    ${recentProps.map(
+                      (p) => html`
+                        <li>
+                          <span class="name">${proposalTitle(p)}</span>
+                          <span class="meta" title=${formatTimestamp(p.created_at)}>${formatRelative(p.created_at)}</span>
+                        </li>
+                      `,
+                    )}
+                  </ol>
+                `}
+            <div class="footer-links"><a href="#/governance/proposals">All proposals →</a></div>
+          </article>
 
-          <a class="card-link" href="#/reports/tickets/daily">
-            <article class="card">
-              <h3>Activity charts</h3>
-              <p class="muted">7-day ticket volume, payouts leaderboard, rewards over time.</p>
-              <div class="stat-grid">
-                <div class="pill-tile">
-                  <div class="num">${summary?.ticket_count ?? '—'}</div>
-                  <div class="meta">Tickets today</div>
-                </div>
-                <div class="pill-tile">
-                  <div class="num">${formatNative(summary?.sum_face_value_native, 18, { digits: 2, compact: true })} ETH</div>
-                  <div class="meta">Face value today</div>
-                </div>
+          <article class="card">
+            <h3>Activity charts</h3>
+            <p class="muted">7-day ticket volume, payouts leaderboard, rewards over time.</p>
+            <div class="stat-grid">
+              <div class="pill-tile">
+                <div class="num">${summary?.ticket_count ?? '—'}</div>
+                <div class="meta">Tickets today</div>
               </div>
-              <div class="footer-links"><a href="#/reports/tickets/daily">Open chart →</a></div>
-            </article>
-          </a>
-
-          <a class="card-link" href="#/ai/network-capabilities">
-            <article class="card">
-              <h3>AI capabilities</h3>
-              <div class="stat-grid">
-                <div class="stat">
-                  <div class="label">Orchestrators</div>
-                  <div class="value">${ai.orchs || '—'}</div>
-                </div>
-                <div class="stat">
-                  <div class="label">Distinct models</div>
-                  <div class="value">${ai.models || '—'}</div>
-                  <div class="sub">${ai.warmModels} warm</div>
-                </div>
+              <div class="pill-tile">
+                <div class="num">${formatNative(summary?.sum_face_value_native, 18, { digits: 2, compact: true })} ETH</div>
+                <div class="meta">Face value today</div>
               </div>
-              <div class="footer-links"><a href="#/ai/network-capabilities">Browse capabilities →</a></div>
-            </article>
-          </a>
+            </div>
+            <div class="footer-links"><a href="#/reports/tickets/daily">Open chart →</a></div>
+          </article>
+
+          <article class="card">
+            <h3>AI capabilities</h3>
+            <div class="stat-grid">
+              <div class="stat">
+                <div class="label">Orchestrators</div>
+                <div class="value">${ai.orchs || '—'}</div>
+              </div>
+              <div class="stat">
+                <div class="label">Distinct models</div>
+                <div class="value">${ai.models || '—'}</div>
+                <div class="sub">${ai.warmModels} warm</div>
+              </div>
+            </div>
+            <div class="footer-links"><a href="#/ai/network-capabilities">Browse capabilities →</a></div>
+          </article>
         </section>
       </article>
     `;

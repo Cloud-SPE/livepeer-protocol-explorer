@@ -247,7 +247,7 @@ export class AppShell extends LitElement {
   override render() {
     return html`
       <header class="app-bar" role="banner">
-        <a href="#/" class="brand">Livepeer Tools</a>
+        <a href="#/" class="brand">Livepeer Protocol Explorer</a>
         <div class="spacer"></div>
         <theme-switcher></theme-switcher>
       </header>
@@ -257,7 +257,7 @@ export class AppShell extends LitElement {
         </aside>
         <main id="main" tabindex="-1">${this._renderView()}</main>
       </div>
-      <footer class="footer">Livepeer Tools · backed by livepeer-api</footer>
+      <footer class="footer">Livepeer Protocol Explorer · built by <a href="https://www.livepeer.cloud" target="_blank" rel="noopener noreferrer">Cloud SPE</a></footer>
     `;
   }
 }

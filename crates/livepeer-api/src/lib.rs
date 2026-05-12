@@ -23,8 +23,13 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 pub fn build_router(state: AppState) -> Router {
+    // Versioned business API. Mounted at `/api/v1`. When a v2 ships, add
+    // a sibling `v2_routes(state.clone())` and `.nest("/api/v2", ...)`.
+    // Operational + frontend stay at root — they're infrastructure, not
+    // versioned business surface.
     Router::new()
-        // Operational
+        // Operational (un-versioned — Prometheus / k8s probes / FE config
+        // depend on stable paths)
         .route("/health", get(routes::operational::health))
         .route("/metrics", get(routes::operational::metrics))
         .route(
@@ -35,6 +40,33 @@ pub fn build_router(state: AppState) -> Router {
         // as the FE bundle. Registered before the static fallback so this
         // route wins over /opt/livepeer/frontend-ui/dist/config.json.
         .route("/config.json", get(routes::operational::frontend_config))
+        // All business endpoints under /api/v1.
+        .nest("/api/v1", v1_routes())
+        .with_state(state)
+        // CORS: env-driven so other UIs / third-party callers can hit the
+        // API cross-origin. The bundled FE is same-origin (served by this
+        // process) and doesn't need CORS for itself.
+        // See `build_cors_layer` for the env contract.
+        .layer(build_cors_layer())
+        .layer(TraceLayer::new_for_http())
+        .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi::ApiDoc::openapi()))
+        // Static frontend bundle. FE_STATIC_DIR overrides; defaults to the
+        // Dockerfile install path. ServeDir handles known assets (proper
+        // content-type, range requests, last-modified). For unknown paths
+        // we fall back to a small in-memory index.html service that returns
+        // 200 OK — required for SPA deep-linking, since
+        // `ServeDir::not_found_service` would otherwise propagate the 404
+        // even though the body is correct. API routes registered above
+        // always win over this fallback (axum Router precedence).
+        .fallback_service(static_frontend_service())
+        // Cache-Control headers per response (decides via path + content
+        // type so API responses are left untouched).
+        .layer(middleware::from_fn(static_cache_headers))
+}
+
+/// All v1 business endpoints. Mounted under `/api/v1` by `build_router`.
+fn v1_routes() -> Router<AppState> {
+    Router::new()
         // Events
         .route("/events", get(routes::events::list))
         .route("/events/{id}", get(routes::events::get_one))
@@ -227,26 +259,6 @@ pub fn build_router(state: AppState) -> Router {
             "/transcoders/{transcoder}/profile/block/{block}",
             get(routes::transcoders::profile_at_block),
         )
-        .with_state(state)
-        // CORS: env-driven so other UIs / third-party callers can hit the
-        // API cross-origin. The bundled FE is same-origin (served by this
-        // process) and doesn't need CORS for itself.
-        // See `build_cors_layer` for the env contract.
-        .layer(build_cors_layer())
-        .layer(TraceLayer::new_for_http())
-        .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi::ApiDoc::openapi()))
-        // Static frontend bundle. FE_STATIC_DIR overrides; defaults to the
-        // Dockerfile install path. ServeDir handles known assets (proper
-        // content-type, range requests, last-modified). For unknown paths
-        // we fall back to a small in-memory index.html service that returns
-        // 200 OK — required for SPA deep-linking, since
-        // `ServeDir::not_found_service` would otherwise propagate the 404
-        // even though the body is correct. API routes registered above
-        // always win over this fallback (axum Router precedence).
-        .fallback_service(static_frontend_service())
-        // Cache-Control headers per response (decides via path + content
-        // type so API responses are left untouched).
-        .layer(middleware::from_fn(static_cache_headers))
 }
 
 /// Add `Cache-Control` headers to responses produced by the static-frontend

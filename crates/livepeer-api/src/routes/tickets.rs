@@ -188,7 +188,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/tickets/timeseries/daily?start=2026-03-01&end=2026-03-03")
+                    .uri("/api/v1/tickets/timeseries/daily?start=2026-03-01&end=2026-03-03")
                     .body(Body::empty())
                     .unwrap(),
             )

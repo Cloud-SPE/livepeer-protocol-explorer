@@ -465,7 +465,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/rewards/leaderboard?from=2026-02-01&to=2026-02-28&valuation_version=test-version&limit=1")
+                    .uri("/api/v1/rewards/leaderboard?from=2026-02-01&to=2026-02-28&valuation_version=test-version&limit=1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -482,7 +482,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/rewards/leaderboard?from=2026-02-01&to=2026-02-28&valuation_version=test-version&limit=1&cursor={cursor}"))
+                    .uri(format!("/api/v1/rewards/leaderboard?from=2026-02-01&to=2026-02-28&valuation_version=test-version&limit=1&cursor={cursor}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -496,7 +496,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/rewards/summary/daily/2026-02-01?valuation_version=test-version")
+                    .uri("/api/v1/rewards/summary/daily/2026-02-01?valuation_version=test-version")
                     .body(Body::empty())
                     .unwrap(),
             )

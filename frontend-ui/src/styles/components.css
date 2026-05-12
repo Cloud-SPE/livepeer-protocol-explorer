@@ -46,7 +46,7 @@ app-shell {
     }
   }
   & main {
-    padding: var(--sp-5) var(--sp-4);
+    padding: var(--sp-5) var(--sp-page);
     max-width: var(--layout-max);
     margin-inline: auto;
     width: 100%;
@@ -322,6 +322,28 @@ data-table {
   display: block;
   container-type: inline-size;
 
+  & .pagination {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+    padding: var(--sp-2) var(--sp-3);
+    font-size: var(--fs-1);
+    color: var(--fg-muted);
+
+    & .size {
+      display: inline-flex; align-items: center; gap: var(--sp-2);
+
+      & select {
+        padding: var(--sp-1) var(--sp-2);
+        font-size: var(--fs-1);
+      }
+    }
+    & .status { flex: 1; }
+    & .nav { display: inline-flex; gap: var(--sp-2); }
+    & button { font-size: var(--fs-1); padding: var(--sp-1) var(--sp-3); }
+  }
+
   & .scroll {
     overflow-x: auto;
     border: var(--bw-1) solid var(--border);
@@ -560,16 +582,19 @@ view-dashboard {
   display: block;
   container-type: inline-size;
 
-  /* Auto-fit grid: cards always fill the available width; columns added
-     automatically as the viewport widens. Each sub-card has a min width
-     of 360px (or 100% on tiny screens), so we naturally land at 1 / 2 / 3
-     columns depending on width without explicit breakpoints. Hero cards
-     span the full row. */
+  /* Use fixed dashboard columns so each row shares the same track widths.
+     This avoids the last row expanding into uneven card widths. */
   & .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
+    grid-template-columns: 1fr;
     gap: var(--sp-4);
-    align-items: start;
+    align-items: stretch;
+  }
+  @container (min-width: 800px) {
+    & .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @container (min-width: 1200px) {
+    & .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
   & .span-2,
   & .span-3 { grid-column: 1 / -1; }
@@ -577,9 +602,9 @@ view-dashboard {
   /* .card-link is defined in base.css. Dashboard cards rely on it being a
      grid cell — the rule above sets width/height to 100% so this works. */
   & .card {
-    padding: var(--sp-4);
+    /* padding inherited from base .card (var(--sp-5)). Override only via gap. */
     display: grid;
-    gap: var(--sp-2);
+    gap: var(--sp-3);
     align-content: start;
     width: 100%;
     height: 100%;
@@ -593,7 +618,7 @@ view-dashboard {
   }
   & .stat-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: var(--sp-3);
     container-type: inline-size;
   }
@@ -749,7 +774,7 @@ view-ai-generator {
 /* Network capabilities */
 view-network-capabilities {
   & .orch {
-    padding: var(--sp-4);
+    padding: var(--sp-5);
     margin-bottom: var(--sp-3);
 
     & header {
@@ -820,6 +845,37 @@ section-tabs {
   }
 }
 
+/* Generic in-page tab strip (detail-page Overview/Charts split, etc.) */
+page-tabs {
+  display: block;
+  margin-bottom: var(--sp-5);
+
+  & .strip {
+    display: flex;
+    gap: var(--sp-1);
+    border-bottom: var(--bw-1) solid var(--border);
+    flex-wrap: wrap;
+  }
+  & button {
+    padding: var(--sp-2) var(--sp-4);
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--fg-muted);
+    cursor: pointer;
+    font-size: var(--fs-2);
+    margin-bottom: -1px;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+
+    &:hover { color: var(--fg); }
+    &[aria-selected='true'] {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      font-weight: 600;
+    }
+  }
+}
+
 /* Proposal-detail Description / Votes tab strip */
 view-governance-proposal-detail .proposal-tabs {
   display: flex;
@@ -869,7 +925,7 @@ view-governance-proposals {
     container-type: inline-size;
   }
   & article.prop {
-    padding: var(--sp-4);
+    padding: var(--sp-5);
     background: var(--bg-elev);
     border: var(--bw-1) solid var(--border);
     border-radius: var(--r-3);
@@ -956,7 +1012,7 @@ view-stats-perf {
     @container (min-width: 1100px) { grid-template-columns: repeat(2, 1fr); }
   }
   & .chart-card {
-    padding: var(--sp-4);
+    padding: var(--sp-5);
 
     & h3 { font-size: var(--fs-3); margin-bottom: var(--sp-2); }
   }
@@ -968,7 +1024,7 @@ view-stats-perf {
   & .controls form { display: contents; }
 }
 
-view-tickets-timeseries .chart-card { padding: var(--sp-4); }
+view-tickets-timeseries .chart-card { padding: var(--sp-5); }
 
 /* AI settings form */
 view-ai-settings {
@@ -976,7 +1032,7 @@ view-ai-settings {
   & fieldset {
     border: var(--bw-1) solid var(--border);
     border-radius: var(--r-2);
-    padding: var(--sp-4);
+    padding: var(--sp-5);
     display: grid;
     gap: var(--sp-3);
   }
@@ -1037,7 +1093,7 @@ view-ai-settings {
     font-size: var(--fs-1); color: var(--fg-muted);
   }
   & .stack { display: grid; gap: var(--sp-3); }
-  & .out-card { padding: var(--sp-4); }
+  & .out-card { padding: var(--sp-5); }
   & .reasoning {
     margin-top: var(--sp-3);
     padding: var(--sp-3);

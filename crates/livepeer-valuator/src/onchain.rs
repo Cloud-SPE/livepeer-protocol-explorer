@@ -919,8 +919,10 @@ pub(crate) enum LptOutcome {
 
 /// Pure LPT-on-chain pricing helper for the multi-asset path. Takes raw
 /// `(block, block_hash, block_timestamp, amount_native)` instead of a CandidateEvent.
-/// Returns the outcome plus the LPT/USD + LPT/WETH `token_prices_by_block`
-/// rows the caller should push to its `BulkBuffers`.
+/// Returns the outcome plus the LPT/USD + LPT/WETH + ETH/USD `token_prices_by_block`
+/// rows the caller should push to its `BulkBuffers`. ETH/USD is mirrored so the
+/// `/prices/ETH/USD/block/{N}` endpoint resolves at every block we price LPT at —
+/// needed by the backend-rs Reward tx-fee path.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn price_lpt_amount(
     pg: &PgPool,
@@ -1110,7 +1112,7 @@ pub(crate) async fn price_lpt_amount(
             "v1",
             DEGRADED_VERSION_SUFFIX
         );
-        // Mirror derived LPT/USD + intermediate LPT/WETH into token_prices_by_block.
+        // Mirror derived LPT/USD + intermediate LPT/WETH + Chainlink ETH/USD into token_prices_by_block.
         prices.push(PriceRow {
             chain_id: ARBITRUM_CHAIN_ID,
             asset: "LPT".into(),
@@ -1136,6 +1138,22 @@ pub(crate) async fn price_lpt_amount(
             pool_address: Some(pool.to_string()),
             oracle_address: None,
             raw: None,
+        });
+        // Also persist the intermediate Chainlink ETH/USD read so callers (e.g. the
+        // backend-rs Reward tx-fee path) can resolve `/prices/ETH/USD/block/{N}` for
+        // every block we price LPT at, without a second on-chain pass.
+        prices.push(PriceRow {
+            chain_id: ARBITRUM_CHAIN_ID,
+            asset: "ETH".into(),
+            quote: "USD".into(),
+            block_number: block as i64,
+            block_hash: block_hash.to_string(),
+            block_timestamp,
+            price: eth_usd_price.clone(),
+            source: "chainlink_eth_usd".into(),
+            pool_address: None,
+            oracle_address: Some(chainlink.to_string()),
+            raw: Some(chainlink_audit(&cl)),
         });
         return Ok((
             LptOutcome::PricedDegraded {
@@ -1222,7 +1240,7 @@ pub(crate) async fn price_lpt_amount(
 
     let version = "v1_lpt_weth_twap_30min_x_chainlink_eth".to_string();
 
-    // Mirror TWAP-derived LPT/USD + LPT/WETH into token_prices_by_block.
+    // Mirror TWAP-derived LPT/USD + LPT/WETH + Chainlink ETH/USD into token_prices_by_block.
     prices.push(PriceRow {
         chain_id: ARBITRUM_CHAIN_ID,
         asset: "LPT".into(),
@@ -1250,6 +1268,22 @@ pub(crate) async fn price_lpt_amount(
         raw: Some(
             serde_json::json!({"meanTick": avg_tick, "sqrtPriceX96": sqrt_price_x96.to_string()}),
         ),
+    });
+    // Also persist the intermediate Chainlink ETH/USD read so callers (e.g. the
+    // backend-rs Reward tx-fee path) can resolve `/prices/ETH/USD/block/{N}` for
+    // every block we price LPT at, without a second on-chain pass.
+    prices.push(PriceRow {
+        chain_id: ARBITRUM_CHAIN_ID,
+        asset: "ETH".into(),
+        quote: "USD".into(),
+        block_number: block as i64,
+        block_hash: block_hash.to_string(),
+        block_timestamp,
+        price: eth_usd_price.clone(),
+        source: "chainlink_eth_usd".into(),
+        pool_address: None,
+        oracle_address: Some(chainlink.to_string()),
+        raw: Some(chainlink_audit(&cl)),
     });
 
     Ok((

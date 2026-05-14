@@ -34,6 +34,11 @@ pub struct EventsQuery {
     pub to_address: Option<String>,
     /// Any-role address match (matches either from_address or to_address).
     pub address: Option<String>,
+    /// Exact transaction-hash match. Lowercase-normalized server-side so callers
+    /// can pass mixed-case hashes. Honored on the default and `block_*` sorts;
+    /// ignored by `sort=amount_usd_desc`. Combine with `event_name` when a tx
+    /// emits multiple logs of different kinds.
+    pub tx_hash: Option<String>,
     /// Asset symbol filter such as `LPT` or `ETH`.
     pub asset: Option<String>,
     #[serde(default)]
@@ -210,6 +215,10 @@ pub async fn list(
     add_filter!(
         q.to_address.map(|s| Bind::Str(s.to_lowercase())),
         "to_address = ${idx}"
+    );
+    add_filter!(
+        q.tx_hash.map(|s| Bind::Str(s.to_lowercase())),
+        "tx_hash = ${idx}"
     );
     if let Some(addr) = q.address.as_ref() {
         let lower = addr.to_lowercase();
@@ -497,4 +506,257 @@ async fn list_by_amount_usd_desc(
         next_cursor: None,
         last_finalized_block: None,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{build_router, metrics::Metrics, state::AppState};
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use livepeer_core::{db, rpc::Provider};
+    use serde_json::Value;
+    use sqlx::PgPool;
+    use std::{
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tower::util::ServiceExt;
+
+    // Integration test — needs a live Postgres + .env / DATABASE_URL.
+    // CI's plain `cargo test --workspace` skips this; run locally with
+    // `cargo test -p livepeer-api -- --ignored`.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL or workspace-root .env"]
+    async fn tx_hash_filter_returns_canonical_event_with_inline_valuation() {
+        let ctx = TestContext::new().await;
+        let reward_tx = "0xaaaa000000000000000000000000000000000000000000000000000000000001";
+        let ticket_tx = "0xbbbb000000000000000000000000000000000000000000000000000000000002";
+
+        let reward_event_id = seed_event(
+            &ctx.pg,
+            ctx.chain_id,
+            reward_tx,
+            "BondingManager",
+            "Reward",
+            Some("LPT"),
+        )
+        .await;
+        seed_valuation(&ctx.pg, reward_event_id, "LPT", "test-version", "1.5").await;
+
+        let ticket_event_id = seed_event(
+            &ctx.pg,
+            ctx.chain_id,
+            ticket_tx,
+            "TicketBroker",
+            "WinningTicketRedeemed",
+            Some("ETH"),
+        )
+        .await;
+        seed_valuation(&ctx.pg, ticket_event_id, "ETH", "test-version", "3500").await;
+
+        // Exact match: tx_hash → returns the Reward row with its LPT valuation inline.
+        let body = ctx
+            .get(&format!(
+                "/api/v1/events?tx_hash={reward_tx}&with_valuations=true"
+            ))
+            .await;
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(body["data"][0]["event_name"], "Reward");
+        assert_eq!(body["data"][0]["tx_hash"], reward_tx);
+        assert_eq!(body["data"][0]["valuations"][0]["asset"], "LPT");
+        assert_eq!(body["data"][0]["valuations"][0]["native_usd_price"], "1.5");
+
+        // tx_hash + event_name disambiguates when callers know which log they want.
+        let body = ctx
+            .get(&format!(
+                "/api/v1/events?tx_hash={ticket_tx}&event_name=WinningTicketRedeemed&with_valuations=true"
+            ))
+            .await;
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(body["data"][0]["event_name"], "WinningTicketRedeemed");
+        assert_eq!(body["data"][0]["valuations"][0]["asset"], "ETH");
+        assert_eq!(body["data"][0]["valuations"][0]["native_usd_price"], "3500");
+
+        // Lowercase-normalization: mixed-case hash still matches the stored row.
+        let body = ctx
+            .get("/api/v1/events?tx_hash=0xAAAA000000000000000000000000000000000000000000000000000000000001")
+            .await;
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(body["data"][0]["tx_hash"], reward_tx);
+
+        // No-match: bogus hash returns empty data, no next_cursor.
+        let body = ctx
+            .get("/api/v1/events?tx_hash=0xdeadbeef000000000000000000000000000000000000000000000000000000ff")
+            .await;
+        assert_eq!(body["data"].as_array().unwrap().len(), 0);
+        assert!(body["next_cursor"].is_null());
+    }
+
+    struct TestContext {
+        app: axum::Router,
+        pg: PgPool,
+        chain_id: i64,
+    }
+
+    impl TestContext {
+        async fn new() -> Self {
+            let pg = db::connect(&test_database_url(), 5).await.unwrap();
+            let chain_id = unique_chain_id();
+            let archive = Provider::new("test", "http://127.0.0.1:9").unwrap();
+            let state = AppState {
+                pg: pg.clone(),
+                default_version: "test-version".to_string(),
+                chain_id,
+                ticket_broker_address: "0x0000000000000000000000000000000000000000".to_string(),
+                archive,
+                metrics: Arc::new(Metrics::new()),
+            };
+            Self {
+                app: build_router(state),
+                pg,
+                chain_id,
+            }
+        }
+
+        async fn get(&self, uri: &str) -> Value {
+            let response = self
+                .app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "uri={uri}");
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+    }
+
+    impl Drop for TestContext {
+        fn drop(&mut self) {
+            let url = test_database_url();
+            let chain_id = self.chain_id;
+            std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Runtime::new() {
+                    rt.block_on(async move {
+                        if let Ok(pg) = db::connect(&url, 1).await {
+                            let _ = sqlx::query(
+                                r#"DELETE FROM event_valuations
+                                    WHERE event_id IN (
+                                      SELECT id FROM raw_protocol_events WHERE chain_id = $1
+                                    );
+                                   DELETE FROM raw_protocol_events WHERE chain_id = $1;"#,
+                            )
+                            .bind(chain_id)
+                            .execute(&pg)
+                            .await;
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    async fn seed_event(
+        pg: &PgPool,
+        chain_id: i64,
+        tx_hash: &str,
+        contract_name: &str,
+        event_name: &str,
+        asset: Option<&str>,
+    ) -> i64 {
+        let row = sqlx::query(
+            r#"INSERT INTO raw_protocol_events (
+                   chain_id, tx_hash, log_index, block_number, block_hash, block_timestamp,
+                   contract_address, contract_name, event_name, event_signature,
+                   asset, is_valuable, finality, is_canonical, raw_event, abi_hash_used
+               ) VALUES (
+                   $1, $2, 0, 100, '0xblock', now(),
+                   '0x0000000000000000000000000000000000000001', $3, $4, '0xsig',
+                   $5, TRUE, 'finalized', TRUE, '{}'::jsonb, 'abi-test'
+               ) RETURNING id"#,
+        )
+        .bind(chain_id)
+        .bind(tx_hash)
+        .bind(contract_name)
+        .bind(event_name)
+        .bind(asset)
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        sqlx::Row::get::<i64, _>(&row, 0)
+    }
+
+    async fn seed_valuation(
+        pg: &PgPool,
+        event_id: i64,
+        asset: &str,
+        valuation_version: &str,
+        native_usd_price: &str,
+    ) {
+        sqlx::query(
+            r#"INSERT INTO event_valuations (
+                   chain_id, event_id, valuation_version, asset, pricing_method,
+                   source, block_number, amount_native, native_usd_price,
+                   amount_usd, pricing_chain, status
+               ) VALUES (
+                   42161, $1, $2, $3, 'test',
+                   'test', 100, 0, $4::numeric,
+                   0, '{}'::jsonb, 'priced'
+               )"#,
+        )
+        .bind(event_id)
+        .bind(valuation_version)
+        .bind(asset)
+        .bind(native_usd_price)
+        .execute(pg)
+        .await
+        .unwrap();
+    }
+
+    fn unique_chain_id() -> i64 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64;
+        970_000 + (nanos % 100_000)
+    }
+
+    fn test_database_url() -> String {
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            return url.replace("@postgres:", "@127.0.0.1:");
+        }
+        let env_path = format!("{}/../../.env", env!("CARGO_MANIFEST_DIR"));
+        let env_file = std::fs::read_to_string(&env_path)
+            .unwrap_or_else(|_| panic!("{env_path} must exist for API route tests"));
+        let mut user = None;
+        let mut password = None;
+        let mut db_name = None;
+        let mut port = None;
+        for line in env_file.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') || trimmed.is_empty() {
+                continue;
+            }
+            let Some((key, value)) = trimmed.split_once('=') else {
+                continue;
+            };
+            let value = value.trim().trim_matches('"');
+            match key.trim() {
+                "POSTGRES_USER" => user = Some(value.to_string()),
+                "POSTGRES_PASSWORD" => password = Some(value.to_string()),
+                "POSTGRES_DB" => db_name = Some(value.to_string()),
+                "POSTGRES_PORT" => port = Some(value.to_string()),
+                _ => {}
+            }
+        }
+        format!(
+            "postgres://{}:{}@127.0.0.1:{}/{}",
+            user.expect("POSTGRES_USER"),
+            password.expect("POSTGRES_PASSWORD"),
+            port.unwrap_or_else(|| "5432".to_string()),
+            db_name.expect("POSTGRES_DB"),
+        )
+    }
 }

@@ -120,7 +120,7 @@ Pinned in `rust-toolchain.toml` to **Rust 1.94.1**. CI matches via `dtolnay/rust
 | `livepeer-indexer` | Pull logs for one contract over a block range and decode them. |
 | `livepeer-reorg-watcher` | Validate parent-hash continuity and route reorg mutations. |
 | `livepeer-finality-watcher` | Advance the `finality` column when L1 batches post. |
-| `livepeer-valuator` | Price finalized events. Subcommands: `backfill-from-seed`, `backfill-eth-onchain`, `backfill-lpt-onchain`, `backfill-multi-asset`, `backfill-all`. |
+| `livepeer-valuator` | Price finalized events. Subcommands: `backfill-from-seed`, `backfill-eth-onchain`, `backfill-lpt-onchain`, `backfill-multi-asset`, `backfill-all`, `backfill-eth-prices`. |
 | `livepeer-staker` | Compute stake/gateway/profile derived tables. Subcommands: `backfill`, `gateway-backfill`, `profile-follow`, `tx-receipts-follow`, `refresh-pending`. |
 | `livepeer-rollups` | Daily aggregate workers. Subcommands: `orch-payouts-daily`, `orch-rewards-daily`, `tickets-daily`, `event-metrics-daily` (each accepts `--follow` for live mode). |
 | `livepeer-enricher` | ENS L1 name + avatar resolver for orchestrators and gateways. |

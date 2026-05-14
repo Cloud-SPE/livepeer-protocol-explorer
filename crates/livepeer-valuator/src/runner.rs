@@ -1,4 +1,5 @@
 use crate::{
+    backfill_eth_prices::{self, BackfillEthPricesSummary},
     multi_asset::{self, MultiAssetSummary},
     onchain::{self, LptRunSummary, OnChainRunSummary},
     seed::{self, SeedRunSummary},
@@ -51,6 +52,14 @@ pub async fn run_multi_asset(
     include_tentative: bool,
 ) -> Result<MultiAssetSummary> {
     multi_asset::run_multi_asset_pass(pg, archive, cfg, valuation_version, include_tentative).await
+}
+
+pub async fn run_backfill_eth_prices(
+    pg: &PgPool,
+    archive: &Provider,
+    cfg: &Config,
+) -> Result<BackfillEthPricesSummary> {
+    backfill_eth_prices::run(pg, archive, cfg).await
 }
 
 pub async fn run_all(

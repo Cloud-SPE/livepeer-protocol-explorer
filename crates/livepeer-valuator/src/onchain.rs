@@ -28,7 +28,7 @@ use sqlx::{PgPool, Row};
 use std::str::FromStr;
 use tracing::{debug, info, warn};
 
-const CHAINLINK_DECIMALS: u32 = 8;
+pub(crate) const CHAINLINK_DECIMALS: u32 = 8;
 const PRICING_METHOD_ETH: &str = "chainlink_eth_usd";
 const SOURCE_ETH: &str = "chainlink_dual_rpc";
 
@@ -40,7 +40,7 @@ const TWAP_WINDOW_SECS: u32 = 1_800;
 const REQUIRED_CARDINALITY: u32 = 144;
 
 // Hardcoded sentinels per SPEC §7.3.3 / §7.3.4.
-const STALENESS_FAIL_SECS: i64 = 86_400;
+pub(crate) const STALENESS_FAIL_SECS: i64 = 86_400;
 const STALENESS_WARN_SECS: i64 = 14_400;
 
 // 2^192 as a decimal string for use in BigDecimal math (sqrtPriceX96^2 / 2^192 → price).
@@ -455,18 +455,18 @@ fn chainlink_audit_for_eth(cl: &DecodedRound) -> serde_json::Value {
 }
 
 #[derive(Debug)]
-struct DecodedRound {
-    round_id: String,
-    answer: String,
-    started_at: String,
-    updated_at: String,
-    answered_in_round: String,
+pub(crate) struct DecodedRound {
+    pub(crate) round_id: String,
+    pub(crate) answer: String,
+    pub(crate) started_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) answered_in_round: String,
 }
 
 /// Decode a `latestRoundData()` response from a `batch_call_cached` outcome.
 /// `Err(e)` from the batch propagates; `Ok` with empty bytes → `None`
 /// (contract not deployed at this block).
-fn decode_round_outcome(
+pub(crate) fn decode_round_outcome(
     outcome: std::result::Result<
         &livepeer_core::rpc::cross_check::CrossCheckOutcome,
         &livepeer_core::error::CoreError,
@@ -1297,7 +1297,7 @@ pub(crate) async fn price_lpt_amount(
     ))
 }
 
-fn chainlink_audit(cl: &DecodedRound) -> serde_json::Value {
+pub(crate) fn chainlink_audit(cl: &DecodedRound) -> serde_json::Value {
     serde_json::json!({
         "roundId":         cl.round_id,
         "answer":          cl.answer,

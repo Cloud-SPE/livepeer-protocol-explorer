@@ -60,6 +60,12 @@ enum Command {
     /// Run seed → ETH on-chain → LPT on-chain → multi-asset in sequence.
     #[command(name = "backfill-all")]
     All,
+    /// One-off historical backfill: persist Chainlink ETH/USD into
+    /// token_prices_by_block for every block that already has an LPT valuation
+    /// but lacks an ETH/USD cache row. Needed once after the price_lpt_amount
+    /// ETH-mirror change; idempotent thereafter.
+    #[command(name = "backfill-eth-prices")]
+    EthPrices,
 }
 
 #[tokio::main]
@@ -158,6 +164,20 @@ async fn main() -> Result<()> {
                 eth_zero_amount_rows = s.eth_zero_amount_rows,
                 failures = s.failures,
                 "multi-asset pass summary"
+            );
+        }
+        Command::EthPrices => {
+            let archive = Provider::new(
+                "chainstack",
+                cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?,
+            )?;
+            let s = runner::run_backfill_eth_prices(&pg, &archive, &cfg).await?;
+            info!(
+                blocks_considered = s.blocks_considered,
+                priced = s.priced,
+                failed_sequencer_outage = s.failed_sequencer_outage,
+                failed_missing_oracle = s.failed_missing_oracle,
+                "ETH/USD backfill summary"
             );
         }
         Command::All => {

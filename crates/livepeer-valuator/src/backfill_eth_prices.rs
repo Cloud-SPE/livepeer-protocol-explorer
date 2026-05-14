@@ -120,6 +120,18 @@ async fn price_eth_at_block(
         ),
     ];
     let outcomes = cross_check::batch_call_cached(pg, archive, &batch).await?;
+    // Per-call RPC errors (e.g. `execution reverted` — Chainlink reverts at
+    // blocks before the aggregator's first round was published) collapse to
+    // MissingOracle, the same way empty bytes do. Without this, a single
+    // reverted call kills the whole backfill instead of skipping the block.
+    if let Err(e) = outcomes[0].as_ref() {
+        warn!(block = blk.block_number, error = %e, "skipping: sequencer eth_call errored");
+        return Ok(BlockOutcome::MissingOracle);
+    }
+    if let Err(e) = outcomes[1].as_ref() {
+        warn!(block = blk.block_number, error = %e, "skipping: chainlink eth_call errored");
+        return Ok(BlockOutcome::MissingOracle);
+    }
     let seq_res = decode_round_outcome(outcomes[0].as_ref())?;
     let cl_res = decode_round_outcome(outcomes[1].as_ref())?;
 

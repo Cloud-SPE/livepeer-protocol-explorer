@@ -175,7 +175,7 @@ fn format_alert_message(payload: &AlertManagerWebhook) -> String {
             out.push_str(&format!("{}\n", escape_md(description)));
         }
         out.push_str(&format!(
-            "- status: `{}`\n- starts_at: `{}`\n",
+            "- status: `{}`\n- starts at: `{}`\n",
             escape_md(&alert.status),
             escape_md(&alert.starts_at)
         ));

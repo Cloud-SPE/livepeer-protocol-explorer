@@ -35,7 +35,10 @@ struct TicketEventRow {
     valuation_version: String,
     broadcaster_kind: String,
     face_value_native: BigDecimal,
-    face_value_usd: BigDecimal,
+    // NULL for terminal-failure valuations (migration 017): events whose ETH
+    // USD price was unavailable (failed_missing_oracle / pool / sequencer).
+    // amount_native stays NOT NULL, so only the USD side is optional.
+    face_value_usd: Option<BigDecimal>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,9 +134,7 @@ pub async fn run_once(
         )
         .await?;
         let commission_native = commission_from_fee_share(&row.face_value_native, &fee_share_raw);
-        let commission_usd = commission_from_fee_share(&row.face_value_usd, &fee_share_raw);
         let delegators_native = &row.face_value_native - &commission_native;
-        let delegators_usd = &row.face_value_usd - &commission_usd;
         let gateway_seen_key = GatewaySeenKey {
             aggregate: key.clone(),
             gateway_address: row.gateway_address.clone(),
@@ -151,13 +152,19 @@ pub async fn run_once(
         let agg = aggregates.entry(key).or_insert_with(AggregateRow::zero);
         agg.ticket_count += 1;
         agg.sum_face_value_native += row.face_value_native.clone();
-        agg.sum_face_value_usd += row.face_value_usd.clone();
         agg.sum_commission_native += commission_native;
-        agg.sum_commission_usd += commission_usd;
         agg.sum_delegators_share_native += delegators_native;
-        agg.sum_delegators_share_usd += delegators_usd;
+        // USD side only for priced rows; terminal-failure valuations
+        // (NULL amount_usd) still count toward ticket_count + native sums.
+        if let Some(face_value_usd) = row.face_value_usd.as_ref() {
+            let commission_usd = commission_from_fee_share(face_value_usd, &fee_share_raw);
+            let delegators_usd = face_value_usd - &commission_usd;
+            agg.sum_face_value_usd += face_value_usd.clone();
+            agg.sum_commission_usd += commission_usd;
+            agg.sum_delegators_share_usd += delegators_usd;
+            agg.usd_rows_priced += 1;
+        }
         agg.distinct_gateways += distinct_increment;
-        agg.usd_rows_priced += 1;
         agg.source_max_event_id = agg.source_max_event_id.max(row.event_id);
         max_event_id = max_event_id.max(row.event_id);
     }
@@ -297,7 +304,7 @@ async fn fetch_ticket_rows(
                 valuation_version: row.get("valuation_version"),
                 broadcaster_kind: row.get("broadcaster_kind"),
                 face_value_native: row.get("face_value_native"),
-                face_value_usd: row.get("face_value_usd"),
+                face_value_usd: row.try_get("face_value_usd").ok(),
             })
         })
         .collect()
@@ -380,18 +387,22 @@ async fn rebuild_aggregate_for_key(
         )
         .await?;
         let commission_native = commission_from_fee_share(&row.face_value_native, &fee_share_raw);
-        let commission_usd = commission_from_fee_share(&row.face_value_usd, &fee_share_raw);
         let delegators_native = &row.face_value_native - &commission_native;
-        let delegators_usd = &row.face_value_usd - &commission_usd;
 
         aggregate.ticket_count += 1;
         aggregate.sum_face_value_native += row.face_value_native.clone();
-        aggregate.sum_face_value_usd += row.face_value_usd.clone();
         aggregate.sum_commission_native += commission_native;
-        aggregate.sum_commission_usd += commission_usd;
         aggregate.sum_delegators_share_native += delegators_native;
-        aggregate.sum_delegators_share_usd += delegators_usd;
-        aggregate.usd_rows_priced += 1;
+        // USD side only for priced rows; terminal-failure valuations
+        // (NULL amount_usd) still count toward ticket_count + native sums.
+        if let Some(face_value_usd) = row.face_value_usd.as_ref() {
+            let commission_usd = commission_from_fee_share(face_value_usd, &fee_share_raw);
+            let delegators_usd = face_value_usd - &commission_usd;
+            aggregate.sum_face_value_usd += face_value_usd.clone();
+            aggregate.sum_commission_usd += commission_usd;
+            aggregate.sum_delegators_share_usd += delegators_usd;
+            aggregate.usd_rows_priced += 1;
+        }
         aggregate.source_max_event_id = aggregate.source_max_event_id.max(row.event_id);
         if seen_gateways.insert(row.gateway_address) {
             aggregate.distinct_gateways += 1;
@@ -581,7 +592,7 @@ async fn fetch_ticket_rows_for_key(
                 valuation_version: row.get("valuation_version"),
                 broadcaster_kind: row.get("broadcaster_kind"),
                 face_value_native: row.get("face_value_native"),
-                face_value_usd: row.get("face_value_usd"),
+                face_value_usd: row.try_get("face_value_usd").ok(),
             })
         })
         .collect()

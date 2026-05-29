@@ -429,6 +429,9 @@ async fn fetch_payout_like_rows(
                ON v.event_id = e.id
               AND v.asset = 'ETH'
               AND v.valuation_version = $4
+              -- exclude terminal-failure valuations (NULL USD); they
+              -- reappear once re-priced. See migration 017.
+              AND v.amount_usd IS NOT NULL
         LEFT JOIN LATERAL (
                SELECT raw_event
                  FROM raw_protocol_events tu
@@ -518,6 +521,9 @@ async fn fetch_reward_rows(
                ON v.event_id = e.id
               AND v.asset = 'LPT'
               AND v.valuation_version = $4
+              -- exclude terminal-failure valuations (NULL USD); they
+              -- reappear once re-priced. See migration 017.
+              AND v.amount_usd IS NOT NULL
         LEFT JOIN LATERAL (
                SELECT raw_event
                  FROM raw_protocol_events tu
@@ -619,6 +625,9 @@ async fn fetch_ticket_history(
                ON v.event_id = e.id
               AND v.asset = 'ETH'
               AND v.valuation_version = $4
+              -- exclude terminal-failure valuations (NULL USD); they
+              -- reappear once re-priced. See migration 017.
+              AND v.amount_usd IS NOT NULL
         LEFT JOIN LATERAL (
                SELECT raw_event
                  FROM raw_protocol_events tu

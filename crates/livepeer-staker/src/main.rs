@@ -49,6 +49,13 @@ enum Command {
     /// calling BondingManager.pendingStake / pendingFees at each EarningsClaimed
     /// event block.
     RefreshPending,
+    /// Round-anchored current-stake refresh. Once per protocol round, at the
+    /// latest finalized NewRound block, reads getDelegator + pendingStake for
+    /// every delegator whose latest stake row claims a positive bonded
+    /// principal, and writes truthful rows (source 'round_refresh'). Keeps
+    /// passive delegators' stake current between their own events and
+    /// self-heals stale delegate/balance state.
+    RefreshCurrentStake,
     /// (TD-017 Phase 1) Materialize deterministic orchestrator and broadcaster
     /// profile rows from indexed trigger events plus cached point-in-time RPC reads.
     ProfileBackfill,
@@ -99,7 +106,7 @@ async fn main() -> Result<()> {
             let summary = runner::run_backfill(&pg, cli.include_tentative).await?;
             info!(
                 events_seen = summary.events_seen,
-                bond_events = summary.bond_events,
+                delegators_replayed = summary.delegators_replayed,
                 stake_rows_written = summary.stake_rows_written,
                 delegators_registered = summary.delegators_registered,
                 skipped_unregistered = summary.skipped_unregistered,
@@ -134,6 +141,21 @@ async fn main() -> Result<()> {
                 failed_decode = summary.failed_decode,
                 no_stake_row = summary.no_stake_row,
                 "staker pending refresh summary"
+            );
+        }
+        Command::RefreshCurrentStake => {
+            let archive_url = cfg.archive_rpc_url().context("CHAINSTACK_RPC_URL")?;
+            let archive = Provider::new("chainstack", archive_url)?;
+            let summary =
+                runner::run_refresh_current_stake(&pg, &archive, &cfg, cli.include_tentative)
+                    .await?;
+            info!(
+                round = summary.round,
+                anchor_block = summary.anchor_block,
+                candidates = summary.candidates,
+                rows_refreshed = summary.rows_refreshed,
+                zeroed = summary.zeroed,
+                "staker current-stake refresh summary"
             );
         }
         Command::ProfileBackfill => {

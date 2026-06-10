@@ -104,7 +104,8 @@ struct ReplayOutcome {
 
 pub async fn run_flow_backfill(pg: &PgPool, include_tentative: bool) -> Result<FlowSummary> {
     let checkpoint = load_flow_checkpoint(pg).await?;
-    let new_events = fetch_new_event_heads(pg, include_tentative, checkpoint, FLOW_BATCH_SIZE).await?;
+    let new_events =
+        fetch_new_event_heads(pg, include_tentative, checkpoint, FLOW_BATCH_SIZE).await?;
     info!(
         checkpoint,
         events = new_events.len(),
@@ -186,19 +187,17 @@ fn replay_delegator(delegator: &str, events: &[&StakeEvent]) -> ReplayOutcome {
     let mut skipped_unregistered = 0u64;
 
     let write_row = |rows: &mut BTreeMap<i64, RowWrite>,
-                         ev: &StakeEvent,
-                         delegate: &Option<String>,
-                         balance: &BigDecimal,
-                         source: &'static str| {
+                     ev: &StakeEvent,
+                     delegate: &Option<String>,
+                     balance: &BigDecimal,
+                     source: &'static str| {
         rows.insert(
             ev.block_number,
             RowWrite {
                 block_number: ev.block_number,
                 block_timestamp: ev.block_timestamp,
                 block_hash: ev.block_hash.clone(),
-                delegate_address: delegate
-                    .clone()
-                    .unwrap_or_else(|| ZERO_ADDRESS.to_string()),
+                delegate_address: delegate.clone().unwrap_or_else(|| ZERO_ADDRESS.to_string()),
                 bonded_principal: balance.clone(),
                 source,
                 triggering_event_id: ev.event_id,
@@ -614,7 +613,14 @@ mod tests {
     fn full_unbond_deactivates_registry() {
         let events = vec![
             ev(1, "Bond", 100, Some(DELEGATOR), Some(ORCH_A), Some("1000")),
-            ev(2, "Unbond", 200, Some(DELEGATOR), Some(ORCH_A), Some("1000")),
+            ev(
+                2,
+                "Unbond",
+                200,
+                Some(DELEGATOR),
+                Some(ORCH_A),
+                Some("1000"),
+            ),
             ev(3, "WithdrawStake", 300, Some(DELEGATOR), None, Some("1000")),
         ];
         let out = replay(&events);
@@ -644,8 +650,22 @@ mod tests {
     fn unbond_then_rebond_restores_balance() {
         let events = vec![
             ev(1, "Bond", 100, Some(DELEGATOR), Some(ORCH_A), Some("1000")),
-            ev(2, "Unbond", 200, Some(DELEGATOR), Some(ORCH_A), Some("1000")),
-            ev(3, "Rebond", 300, Some(DELEGATOR), Some(ORCH_A), Some("1000")),
+            ev(
+                2,
+                "Unbond",
+                200,
+                Some(DELEGATOR),
+                Some(ORCH_A),
+                Some("1000"),
+            ),
+            ev(
+                3,
+                "Rebond",
+                300,
+                Some(DELEGATOR),
+                Some(ORCH_A),
+                Some("1000"),
+            ),
         ];
         let out = replay(&events);
         assert_eq!(out.rows[2].bonded_principal, BigDecimal::from(1000u64));
@@ -712,7 +732,14 @@ mod tests {
         // Replay with and without a "late" unbond — the rebuilt history is
         // exactly what a from-scratch replay would produce.
         let bond = ev(1, "Bond", 100, Some(DELEGATOR), Some(ORCH_A), Some("1000"));
-        let late_unbond = ev(9, "Unbond", 150, Some(DELEGATOR), Some(ORCH_A), Some("1000"));
+        let late_unbond = ev(
+            9,
+            "Unbond",
+            150,
+            Some(DELEGATOR),
+            Some(ORCH_A),
+            Some("1000"),
+        );
         let claim_after = claim(3, 200, ORCH_A, "0");
 
         let without = replay(&[bond.clone(), claim_after.clone()]);

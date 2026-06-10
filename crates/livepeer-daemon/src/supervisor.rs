@@ -458,7 +458,12 @@ async fn staker_loop(
         info!(?refresh, "daemon: staker refresh iteration complete");
         let current = with_rpc_task_label(
             "staker",
-            staker_runner::run_refresh_current_stake(&pg, archive.as_ref(), &cfg, include_tentative),
+            staker_runner::run_refresh_current_stake(
+                &pg,
+                archive.as_ref(),
+                &cfg,
+                include_tentative,
+            ),
         )
         .await;
         let current = match current {

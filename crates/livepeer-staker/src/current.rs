@@ -118,14 +118,10 @@ pub async fn refresh_current_stake(
         "round refresh starting"
     );
 
-    let states =
-        read_states_batched(pg, archive, bonding_manager, &anchor, &candidates).await?;
+    let states = read_states_batched(pg, archive, bonding_manager, &anchor, &candidates).await?;
 
     let zero = BigDecimal::from(0u64);
-    summary.zeroed = states
-        .iter()
-        .filter(|s| s.bonded_principal == zero)
-        .count() as u64;
+    summary.zeroed = states.iter().filter(|s| s.bonded_principal == zero).count() as u64;
 
     for chunk in states.chunks(UPSERT_CHUNK) {
         upsert_rows(pg, &anchor, chunk).await?;
@@ -260,10 +256,8 @@ async fn batch_with_retries(
     let mut pending_idx: Vec<usize> = (0..requests.len()).collect();
 
     for attempt in 0..=LAYER_STALE_RETRIES {
-        let batch: Vec<(String, Value, Option<i64>)> = pending_idx
-            .iter()
-            .map(|&i| requests[i].clone())
-            .collect();
+        let batch: Vec<(String, Value, Option<i64>)> =
+            pending_idx.iter().map(|&i| requests[i].clone()).collect();
         let results = cross_check::batch_call_cached(pg, archive, &batch).await?;
         let mut retry_idx = Vec::new();
         for (slot, result) in pending_idx.iter().zip(results.into_iter()) {
@@ -297,7 +291,11 @@ async fn batch_with_retries(
         .collect())
 }
 
-async fn upsert_rows(pg: &PgPool, anchor: &NewRoundAnchor, states: &[RefreshedState]) -> Result<()> {
+async fn upsert_rows(
+    pg: &PgPool,
+    anchor: &NewRoundAnchor,
+    states: &[RefreshedState],
+) -> Result<()> {
     let mut delegators: Vec<&str> = Vec::with_capacity(states.len());
     let mut delegates: Vec<&str> = Vec::with_capacity(states.len());
     let mut bondeds: Vec<BigDecimal> = Vec::with_capacity(states.len());
@@ -454,4 +452,3 @@ fn u256_to_decimal(u: &U256, decimals: u32) -> BigDecimal {
     let raw = BigDecimal::from_str(&u.to_string()).unwrap_or_default();
     raw / BigDecimal::from(10u128.pow(decimals))
 }
-

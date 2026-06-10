@@ -455,8 +455,24 @@ async fn staker_loop(
                 return Err(e);
             }
         };
-        update_task_rpc_metrics(&metrics, "staker");
         info!(?refresh, "daemon: staker refresh iteration complete");
+        let current = with_rpc_task_label(
+            "staker",
+            staker_runner::run_refresh_current_stake(&pg, archive.as_ref(), &cfg, include_tentative),
+        )
+        .await;
+        let current = match current {
+            Ok(summary) => summary,
+            Err(e) => {
+                metrics.record_failure("staker", &e, started.elapsed().as_secs_f64());
+                return Err(e);
+            }
+        };
+        update_task_rpc_metrics(&metrics, "staker");
+        info!(
+            ?current,
+            "daemon: staker current-stake refresh iteration complete"
+        );
         metrics.record_success("staker", started.elapsed().as_secs_f64());
     }
     Ok(())

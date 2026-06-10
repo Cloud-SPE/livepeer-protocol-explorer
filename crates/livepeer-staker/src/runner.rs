@@ -1,4 +1,5 @@
 use crate::{
+    current::{self, RoundRefreshSummary},
     flow::{self, FlowSummary},
     gateway::{self, GatewayBackfillSummary},
     pending::{self, PendingSummary},
@@ -20,6 +21,16 @@ pub async fn run_gateway_backfill(
     include_tentative: bool,
 ) -> Result<GatewayBackfillSummary> {
     gateway::run_gateway_backfill(pg, archive, cfg, include_tentative).await
+}
+
+pub async fn run_refresh_current_stake(
+    pg: &PgPool,
+    archive: &Provider,
+    cfg: &Config,
+    include_tentative: bool,
+) -> Result<RoundRefreshSummary> {
+    let bonding_manager = cfg.static_.contracts.bonding_manager.to_lowercase();
+    current::refresh_current_stake(pg, archive, &bonding_manager, include_tentative).await
 }
 
 pub async fn run_refresh_pending(

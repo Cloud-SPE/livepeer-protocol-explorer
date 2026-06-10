@@ -1,7 +1,11 @@
 //! Per-delegator endpoints (TD-027 + extensions).
 //!
-//! `stake_balances_by_block` is per (delegator, delegate, block); the
-//! current portfolio is the latest snapshot per (delegator, delegate).
+//! `stake_balances_by_block` is per (delegator, block). Livepeer delegation
+//! is single-target: a delegator bonds their entire stake to exactly one
+//! delegate, and a Bond to a new delegate moves all of it. The current state
+//! of a delegator is therefore the single latest row per delegator — NOT the
+//! latest row per (delegator, delegate), which would resurrect every
+//! delegation the delegator has ever left behind.
 
 use crate::{cursor::Cursor, error::ApiError, state::AppState};
 use axum::{
@@ -44,8 +48,9 @@ pub struct DelegatorResponse {
     pub is_active: bool,
     pub first_bond_block: String,
     pub last_seen_block: String,
-    /// Delegations the delegator currently holds. Ordered by
-    /// `bonded_principal DESC`.
+    /// Delegations the delegator currently holds. Livepeer delegation is
+    /// single-target, so this contains at most one entry — the delegator's
+    /// latest observed state, omitted when fully unbonded.
     pub delegations: Vec<DelegationRow>,
     pub chain_id: String,
 }
@@ -92,10 +97,11 @@ pub async fn get(
         return Err(ApiError::not_found("delegator not found"));
     };
 
+    // Single-delegation protocol: current state is the one latest row per
+    // delegator. Older (delegator, delegate) pairs are history, not holdings.
     let rows = sqlx::query(
         r#"
-        SELECT DISTINCT ON (delegate_address)
-               delegate_address,
+        SELECT delegate_address,
                bonded_principal,
                pending_stake,
                pending_fees,
@@ -104,7 +110,8 @@ pub async fn get(
                block_timestamp
           FROM stake_balances_by_block
          WHERE chain_id = $1 AND delegator_address = $2
-         ORDER BY delegate_address, block_number DESC
+         ORDER BY block_number DESC
+         LIMIT 1
         "#,
     )
     .bind(state.chain_id)
@@ -112,11 +119,11 @@ pub async fn get(
     .fetch_all(&state.pg)
     .await?;
 
-    let mut delegations: Vec<DelegationRow> = rows
+    let delegations: Vec<DelegationRow> = rows
         .iter()
         .filter_map(|r| {
             let principal: BigDecimal = r.get("bonded_principal");
-            if principal == BigDecimal::from(0) {
+            if principal <= BigDecimal::from(0) {
                 return None;
             }
             Some(DelegationRow {
@@ -142,12 +149,6 @@ pub async fn get(
             })
         })
         .collect();
-
-    delegations.sort_by(|a, b| {
-        let ba = BigDecimal::from_str(&a.bonded_principal).unwrap_or_default();
-        let bb = BigDecimal::from_str(&b.bonded_principal).unwrap_or_default();
-        bb.cmp(&ba)
-    });
 
     Ok(Json(DelegatorResponse {
         delegator_address: address,
@@ -249,11 +250,16 @@ pub async fn for_orchestrator(
         .map(OrchDelegatorsCursor::decode)
         .transpose()?;
 
+    // The delegate filter must be applied AFTER selecting each delegator's
+    // latest row overall. Filtering inside the DISTINCT ON would pick the
+    // latest row *under this orchestrator*, resurrecting delegators who have
+    // since moved their stake elsewhere or fully unbonded.
     let rows = sqlx::query(
         r#"
         WITH latest AS (
             SELECT DISTINCT ON (delegator_address)
                    delegator_address,
+                   delegate_address,
                    bonded_principal,
                    pending_stake,
                    pending_fees,
@@ -261,12 +267,13 @@ pub async fn for_orchestrator(
                    block_number,
                    block_timestamp
               FROM stake_balances_by_block
-             WHERE chain_id = $1 AND delegate_address = $2
+             WHERE chain_id = $1
              ORDER BY delegator_address, block_number DESC
         )
         SELECT *
           FROM latest
-         WHERE bonded_principal > 0
+         WHERE delegate_address = $2
+           AND bonded_principal > 0
            AND ($3::numeric IS NULL
                 OR bonded_principal < $3
                 OR (bonded_principal = $3 AND delegator_address > $4))
@@ -336,9 +343,11 @@ pub async fn for_orchestrator(
 #[schema(description = "One delegator and their aggregate bonded total.")]
 pub struct DelegatorIndexRow {
     pub delegator_address: String,
-    /// Sum of `bonded_principal` across all delegations the delegator currently holds.
+    /// The delegator's current bonded principal (single-target delegation:
+    /// this is their latest observed bonded amount, not a sum over history).
     pub total_bonded: String,
-    /// Count of delegations with non-zero bonded principal.
+    /// Count of delegations with non-zero bonded principal. Always 1 in a
+    /// single-delegation protocol; kept for response-shape compatibility.
     pub delegation_count: u32,
     pub is_active: bool,
     pub first_bond_block: Option<String>,
@@ -391,23 +400,25 @@ pub async fn list(
         .map(DelegatorIndexCursor::decode)
         .transpose()?;
 
+    // Single-delegation protocol: a delegator's current bonded total is the
+    // bonded_principal on their single latest row. Aggregating latest-per-
+    // (delegator, delegate) would re-add every delegation they ever moved
+    // away from.
     let rows = sqlx::query(
         r#"
         WITH latest AS (
-            SELECT DISTINCT ON (delegator_address, delegate_address)
+            SELECT DISTINCT ON (delegator_address)
                    delegator_address,
-                   delegate_address,
                    bonded_principal
               FROM stake_balances_by_block
              WHERE chain_id = $1
-             ORDER BY delegator_address, delegate_address, block_number DESC
+             ORDER BY delegator_address, block_number DESC
         ), agg AS (
             SELECT delegator_address,
-                   SUM(bonded_principal) AS total_bonded,
-                   COUNT(*) FILTER (WHERE bonded_principal > 0) AS delegation_count
+                   bonded_principal AS total_bonded,
+                   1::bigint        AS delegation_count
               FROM latest
-             GROUP BY delegator_address
-            HAVING SUM(bonded_principal) > 0
+             WHERE bonded_principal > 0
         )
         SELECT a.delegator_address,
                a.total_bonded,

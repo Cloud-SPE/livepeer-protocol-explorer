@@ -63,6 +63,13 @@ COPY --chown=livepeer:livepeer migrations/ /opt/livepeer/migrations/
 # in `crates/livepeer-api/src/lib.rs::static_frontend_service`.
 COPY --from=fe-builder --chown=livepeer:livepeer /fe/dist /opt/livepeer/frontend-ui/dist
 
+# TD-033: shared avatar cache directory. livepeer-enricher resolves ENS
+# avatars to image files here; livepeer-api serves them. Both mount the
+# same volume at this path (AVATAR_STORE_DIR). Created owned by the runtime
+# user so an empty named volume mounted here inherits writable ownership on
+# first mount.
+RUN mkdir -p /opt/livepeer/avatars && chown livepeer:livepeer /opt/livepeer/avatars
+
 USER livepeer
 WORKDIR /opt/livepeer
 

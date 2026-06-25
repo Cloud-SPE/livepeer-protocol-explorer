@@ -102,9 +102,14 @@ services:
     command: livepeer-enricher follow
     restart: unless-stopped
     env_file: .env
+    # TD-033: write resolved avatar images to the shared volume.
+    environment:
+      AVATAR_STORE_DIR: /opt/livepeer/avatars
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - livepeer-avatars:/opt/livepeer/avatars
 
   livepeer-rollups:
     image: livepeer-protocol-explorer:latest
@@ -131,9 +136,14 @@ services:
     command: livepeer-api
     restart: unless-stopped
     env_file: .env
+    # TD-033: read locally-cached avatars from the shared volume.
+    environment:
+      AVATAR_STORE_DIR: /opt/livepeer/avatars
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - livepeer-avatars:/opt/livepeer/avatars
     ports:
       - "8080:8080"
       - "9106:9106"
@@ -162,3 +172,5 @@ services:
 
 volumes:
   postgres_data:
+  # TD-033: avatar image cache shared by livepeer-enricher + livepeer-api.
+  livepeer-avatars:

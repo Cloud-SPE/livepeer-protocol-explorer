@@ -42,6 +42,7 @@ async fn main() -> Result<()> {
         ticket_broker_address: cfg.static_.contracts.ticket_broker.to_lowercase(),
         archive,
         metrics: std::sync::Arc::new(metrics::Metrics::new()),
+        avatar_dir: std::env::var_os("AVATAR_STORE_DIR").map(PathBuf::from),
     };
 
     let router = build_router(state);

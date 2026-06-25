@@ -1,3 +1,4 @@
+pub mod avatar;
 pub mod http;
 pub mod metrics;
 pub mod runner;

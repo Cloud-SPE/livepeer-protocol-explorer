@@ -21,16 +21,31 @@ use livepeer_core::rpc::{BlockTag, Provider};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
+use tokio::time::sleep;
 use tracing::{debug, warn};
 
 /// Public IPFS gateway used to rewrite `ipfs://` / `ipns://` URIs into
 /// browser/HTTP-loadable URLs at fetch time.
 const IPFS_GATEWAY: &str = "https://ipfs.io/ipfs/";
 const IPNS_GATEWAY: &str = "https://ipfs.io/ipns/";
+/// Gateway hosts (scheme + authority, no trailing slash) tried in order for
+/// any IPFS/IPNS path. Public gateways are individually flaky/slow, so we
+/// fail over across several rather than giving up on the first timeout.
+const IPFS_GATEWAY_HOSTS: &[&str] = &[
+    "https://ipfs.io",
+    "https://dweb.link",
+    "https://gateway.pinata.cloud",
+    "https://nftstorage.link",
+    "https://4everland.io",
+];
 /// Hard cap on a single fetched payload (image or NFT metadata). ENS
 /// avatars are small; this just bounds a hostile record's blast radius.
 const MAX_BYTES: usize = 8 * 1024 * 1024;
-const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Per-request timeout. Public IPFS gateways are slow to serve cold
+/// content, so this is generous; the gateway fail-over bounds total time.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// Extra attempts per candidate URL before moving on (transient errors).
+const FETCH_RETRIES: usize = 1;
 /// Extensions we know how to sniff and serve. Used both to pick the
 /// stored filename and to clean up stale files when an avatar changes type.
 const KNOWN_EXTS: &[&str] = &["png", "jpg", "gif", "webp", "svg"];
@@ -59,7 +74,9 @@ fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(FETCH_TIMEOUT)
-            .user_agent("livepeer-enricher-avatar/1.0")
+            // Browser-ish UA: some CDNs reject obvious bot agents for image
+            // hotlinks. Honest token appended for operators.
+            .user_agent("Mozilla/5.0 (compatible; livepeer-enricher/1.0; +https://livepeer.org)")
             .build()
             .expect("building avatar http client")
     })
@@ -78,7 +95,9 @@ pub async fn resolve_and_store(
         Ok(Some(b)) => b,
         Ok(None) => return Ok(None),
         Err(e) => {
-            warn!(address = %address, avatar = %raw_avatar, error = %e, "avatar resolution failed; keeping any existing cached file");
+            // `{:#}` prints the full anyhow context chain (e.g. the
+            // underlying timeout), not just the top "fetching <url>" frame.
+            warn!(address = %address, avatar = %raw_avatar, error = format!("{e:#}"), "avatar resolution failed; keeping any existing cached file");
             return Ok(None);
         }
     };
@@ -172,14 +191,59 @@ async fn resolve_nft(l1: &Provider, rest: &str) -> Result<Vec<u8>> {
 }
 
 /// Fetch bytes from a non-NFT URI: `data:`, `http(s)://`, `ipfs://`, or
-/// `ipns://`.
+/// `ipns://`. For IPFS/IPNS content, fails over across multiple public
+/// gateways; for any URL, retries a transient error before giving up.
 async fn fetch_uri_bytes(uri: &str) -> Result<Vec<u8>> {
     if let Some(rest) = uri.strip_prefix("data:") {
         return decode_data_uri(rest);
     }
     let url = to_http_url(uri)?;
+    let candidates = fetch_candidates(&url);
+    let mut last_err: Option<anyhow::Error> = None;
+    for candidate in &candidates {
+        for attempt in 0..=FETCH_RETRIES {
+            match fetch_once(candidate).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < FETCH_RETRIES {
+                        sleep(Duration::from_millis(400)).await;
+                    }
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("no fetch candidates for {url}")))
+}
+
+/// Build the ordered list of URLs to try for `url`. IPFS/IPNS gateway URLs
+/// expand to the same path across every gateway in `IPFS_GATEWAY_HOSTS`;
+/// any other URL is tried as-is.
+fn fetch_candidates(url: &str) -> Vec<String> {
+    if let Some(suffix) = ipfs_path_suffix(url) {
+        IPFS_GATEWAY_HOSTS
+            .iter()
+            .map(|host| format!("{host}{suffix}"))
+            .collect()
+    } else {
+        vec![url.to_string()]
+    }
+}
+
+/// If `url` is a path-style IPFS/IPNS gateway URL, return the
+/// `/ipfs/<cid>...` or `/ipns/<name>...` suffix so it can be retried on
+/// other gateways. Subdomain-style gateways (e.g. `<cid>.ipfs.dweb.link`)
+/// have no such suffix and are fetched as-is.
+fn ipfs_path_suffix(url: &str) -> Option<&str> {
+    ["/ipfs/", "/ipns/"]
+        .iter()
+        .filter_map(|marker| url.find(marker).map(|idx| &url[idx..]))
+        .next()
+}
+
+async fn fetch_once(url: &str) -> Result<Vec<u8>> {
     let resp = http_client()
-        .get(&url)
+        .get(url)
         .send()
         .await
         .with_context(|| format!("fetching {url}"))?
@@ -323,6 +387,31 @@ mod tests {
             Some("svg")
         );
         assert_eq!(sniff_ext(b"not an image"), None);
+    }
+
+    #[test]
+    fn ipfs_urls_fan_out_across_gateways() {
+        let c = fetch_candidates("https://ipfs.io/ipfs/QmHash/1272.png");
+        assert_eq!(c.len(), IPFS_GATEWAY_HOSTS.len());
+        assert_eq!(c[0], "https://ipfs.io/ipfs/QmHash/1272.png");
+        assert!(c.contains(&"https://dweb.link/ipfs/QmHash/1272.png".to_string()));
+        // ipns path is also recognized
+        assert_eq!(
+            ipfs_path_suffix("https://ipfs.io/ipns/example.eth/logo.png"),
+            Some("/ipns/example.eth/logo.png")
+        );
+    }
+
+    #[test]
+    fn non_ipfs_urls_are_tried_as_is() {
+        let c = fetch_candidates("https://cdn.example.com/a.png");
+        assert_eq!(c, vec!["https://cdn.example.com/a.png".to_string()]);
+        assert_eq!(ipfs_path_suffix("https://cdn.example.com/a.png"), None);
+        // subdomain-style ipns gateway has no path suffix → fetched as-is
+        assert_eq!(
+            ipfs_path_suffix("https://foo.ipns.dweb.link/logo.png"),
+            None
+        );
     }
 
     #[test]

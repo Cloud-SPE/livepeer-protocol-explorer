@@ -327,6 +327,7 @@ async fn load_pending_orchestrator_addresses(
     chain_id: i64,
     limit: i64,
 ) -> Result<Vec<String>> {
+    let should_fill_avatar_cache = crate::avatar::store_dir().is_some();
     let rows = sqlx::query(
         r#"SELECT p.address
              FROM orchestrator_profile p
@@ -338,6 +339,11 @@ async fn load_pending_orchestrator_addresses(
                     e.address IS NULL
                  OR e.ens_last_resolved_at IS NULL
                  OR e.ens_last_resolved_at < now() - ($2 * interval '1 day')
+                 OR (
+                       $4
+                   AND e.ens_avatar_url IS NOT NULL
+                   AND e.ens_avatar_stored_ext IS NULL
+                 )
               )
          ORDER BY COALESCE(e.ens_last_resolved_at, to_timestamp(0)) ASC, p.address ASC
             LIMIT $3"#,
@@ -345,6 +351,7 @@ async fn load_pending_orchestrator_addresses(
     .bind(chain_id)
     .bind(TTL_DAYS)
     .bind(limit)
+    .bind(should_fill_avatar_cache)
     .fetch_all(pg)
     .await?;
     Ok(rows.into_iter().map(|r| r.get("address")).collect())

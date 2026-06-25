@@ -18,3 +18,5 @@ alloy.workspace = true
 livepeer-core.workspace = true
 axum.workspace = true
 prometheus.workspace = true
+reqwest.workspace = true
+base64.workspace = true

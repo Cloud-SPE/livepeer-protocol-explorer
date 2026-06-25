@@ -184,6 +184,11 @@ fn v1_routes() -> Router<AppState> {
             "/orchestrators/{address}",
             get(routes::profiles::orchestrators_get),
         )
+        // TD-033: locally-cached avatar image, served from this origin.
+        .route(
+            "/orchestrators/{address}/avatar",
+            get(routes::profiles::orchestrators_avatar),
+        )
         // Orchestrator history (TD-027)
         .route(
             "/orchestrators/{address}/stake-history",

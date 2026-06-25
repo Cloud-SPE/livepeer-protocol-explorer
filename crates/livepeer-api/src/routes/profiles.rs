@@ -1,14 +1,24 @@
 use crate::{error::ApiError, state::AppState};
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::Response,
     Json,
 };
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::str::FromStr;
 use utoipa::{IntoParams, ToSchema};
+
+/// Revalidation-based caching for locally-served avatars. Bytes can change
+/// under a fixed per-orchestrator URL (an operator updates their ENS
+/// avatar), so we can't mark these `immutable`; instead clients revalidate
+/// against the `ETag` and get a cheap `304`.
+const AVATAR_CACHE_CONTROL: &str = "public, max-age=300, must-revalidate";
 
 const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 1_000;
@@ -111,7 +121,12 @@ pub async fn orchestrators_list(
 
     let sql = r#"SELECT p.address,
                         COALESCE(o.display_name, e.ens_name) AS display_name,
-                        COALESCE(o.avatar_url, e.ens_avatar_url) AS avatar_url,
+                        COALESCE(
+                            o.avatar_url,
+                            CASE WHEN e.ens_avatar_stored_ext IS NOT NULL
+                                 THEN '/api/v1/orchestrators/' || p.address || '/avatar' END,
+                            CASE WHEN e.ens_avatar_url LIKE 'http%' THEN e.ens_avatar_url END
+                        ) AS avatar_url,
                         p.total_stake,
                         p.latest_fee_cut_percent,
                         p.latest_fee_share_percent,
@@ -179,7 +194,12 @@ pub async fn orchestrators_get(
     let row = sqlx::query(
         r#"SELECT p.address,
                   COALESCE(o.display_name, e.ens_name) AS display_name,
-                  COALESCE(o.avatar_url, e.ens_avatar_url) AS avatar_url,
+                  COALESCE(
+                      o.avatar_url,
+                      CASE WHEN e.ens_avatar_stored_ext IS NOT NULL
+                           THEN '/api/v1/orchestrators/' || p.address || '/avatar' END,
+                      CASE WHEN e.ens_avatar_url LIKE 'http%' THEN e.ens_avatar_url END
+                  ) AS avatar_url,
                   p.total_stake,
                   p.latest_fee_cut_percent,
                   p.latest_fee_share_percent,
@@ -207,6 +227,113 @@ pub async fn orchestrators_get(
         return Err(ApiError::not_found("orchestrator profile not found"));
     };
     Ok(Json(to_orchestrator_row(&row)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/orchestrators/{address}/avatar",
+    tag = "Profiles",
+    params(
+        ("address" = String, Path, description = "Orchestrator address.")
+    ),
+    responses(
+        (status = 200, description = "Locally-cached orchestrator avatar image (content-type per stored format)."),
+        (status = 304, description = "Avatar unchanged since the client's cached copy (ETag match)."),
+        (status = 404, description = "No locally-cached avatar for the address.", body = crate::error::ErrorEnvelope),
+        (status = 500, description = "Unexpected server error.", body = crate::error::ErrorEnvelope)
+    )
+)]
+pub async fn orchestrators_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(address): Path<String>,
+) -> Result<Response, ApiError> {
+    let address = normalize_addr(&address)?;
+    let Some(dir) = state.avatar_dir.as_ref() else {
+        return Err(ApiError::not_found("avatar not found"));
+    };
+    // The stored extension both confirms an avatar is cached and tells us
+    // the file name + content-type. NULL/absent → nothing cached.
+    let ext: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT ens_avatar_stored_ext
+             FROM orchestrator_ens
+            WHERE chain_id = $1
+              AND address = $2"#,
+    )
+    .bind(state.chain_id)
+    .bind(&address)
+    .fetch_optional(&state.pg)
+    .await?
+    .flatten();
+    let Some(ext) = ext else {
+        return Err(ApiError::not_found("avatar not found"));
+    };
+
+    let path = dir.join(format!("{address}.{ext}"));
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        // Marker present but file missing (e.g. volume not yet synced):
+        // treat as not-found rather than a 500.
+        Err(_) => return Err(ApiError::not_found("avatar not found")),
+    };
+    let etag = avatar_etag(&bytes);
+
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .is_some_and(|v| v.as_bytes() == etag.as_bytes())
+    {
+        return avatar_response(StatusCode::NOT_MODIFIED, None, &etag);
+    }
+    avatar_response(StatusCode::OK, Some((bytes, content_type_for(&ext))), &etag)
+}
+
+/// Build an avatar response with the shared cache headers. `body` is
+/// `None` for `304 Not Modified`.
+fn avatar_response(
+    status: StatusCode,
+    body: Option<(Vec<u8>, &'static str)>,
+    etag: &str,
+) -> Result<Response, ApiError> {
+    let (payload, content_type) = match body {
+        Some((bytes, ct)) => (Body::from(bytes), Some(ct)),
+        None => (Body::empty(), None),
+    };
+    let mut resp = Response::new(payload);
+    *resp.status_mut() = status;
+    let h = resp.headers_mut();
+    if let Some(ct) = content_type {
+        h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ct));
+    }
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(AVATAR_CACHE_CONTROL),
+    );
+    h.insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).map_err(ApiError::internal)?,
+    );
+    Ok(resp)
+}
+
+/// Strong `ETag` from the image bytes (first 8 bytes of SHA-256), matching
+/// the static-bundle scheme in `lib.rs`.
+fn avatar_etag(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("\"{hex}\"")
+}
+
+fn content_type_for(ext: &str) -> &'static str {
+    match ext {
+        "png" => "image/png",
+        "jpg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
 }
 
 #[utoipa::path(
@@ -1013,6 +1140,7 @@ mod tests {
                 ticket_broker_address: "0x0000000000000000000000000000000000000000".to_string(),
                 archive,
                 metrics: Arc::new(Metrics::new()),
+                avatar_dir: None,
             };
             Self {
                 app: build_router(state),

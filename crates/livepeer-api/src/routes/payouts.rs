@@ -718,6 +718,7 @@ mod tests {
                 ticket_broker_address: "0x0000000000000000000000000000000000000000".to_string(),
                 archive,
                 metrics: Arc::new(Metrics::new()),
+                avatar_dir: None,
             };
             Self {
                 app: build_router(state),

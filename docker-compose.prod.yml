@@ -11,6 +11,9 @@
 # - --env-config config/env/prod.yaml on every binary.
 #
 # Bring up:   docker compose -f docker-compose.prod.yml up -d
+#   Order is enforced: postgres → livepeer-migrate (applies pending DB
+#   migrations, exits 0) → all long-running services. No manual migrate
+#   step is needed; re-running `up -d` re-runs the migrator as a no-op.
 # Tools:      docker compose -f docker-compose.prod.yml --profile tools run --rm livepeer-orchestrator ...
 # Alerting:   docker compose -f docker-compose.prod.yml --profile ops up -d livepeer-alert-bot
 #
@@ -36,6 +39,35 @@ services:
       timeout: 5s
       retries: 5
 
+  # One-shot schema migrator. Runs `livepeer-orchestrator migrate-only` to
+  # completion, then exits 0. Every long-running service gates on this via
+  # `condition: service_completed_successfully`, so nothing boots against an
+  # un-migrated schema. Idempotent: a no-op when no migrations are pending.
+  #
+  # NOTE: the orchestrator binary constructs the archive + L1 RPC providers
+  # before dispatching any subcommand, so even `migrate-only` requires
+  # CHAINSTACK_RPC_URL and L1_RPC_URL to be present (the URLs are built but
+  # never used by migrate-only — any valid value satisfies them).
+  livepeer-migrate:
+    image: tztcloud/livepeer-protocol-explorer:latest
+    command:
+      - livepeer-orchestrator
+      - --env-config
+      - config/env/prod.yaml
+      - migrate-only
+    restart: "no"
+    hostname: livepeer-migrate
+    container_name: livepeer-migrate
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CHAINSTACK_RPC_URL: ${CHAINSTACK_RPC_URL}
+      SECONDARY_RPC_URL: ${SECONDARY_RPC_URL}
+      L1_RPC_URL: ${L1_RPC_URL}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   livepeer-daemon:
     image: tztcloud/livepeer-protocol-explorer:latest
     command:
@@ -57,6 +89,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
     # ports:
     #   - "9107:9107"
 
@@ -86,9 +120,16 @@ services:
       FE_BASE_API_URL: ${FE_BASE_API_URL:-}
       FE_EXPLORER_TX_BASE: ${FE_EXPLORER_TX_BASE:-}
       FE_EXPLORER_ADDRESS_BASE: ${FE_EXPLORER_ADDRESS_BASE:-}
+      # TD-033: read locally-cached avatars from the shared volume. Must
+      # match livepeer-enricher's AVATAR_STORE_DIR + mount path below.
+      AVATAR_STORE_DIR: ${AVATAR_STORE_DIR:-/opt/livepeer/avatars}
     depends_on:
       postgres:
         condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - livepeer-avatars:/opt/livepeer/avatars
     # ports:
     #   - "8080:8080"
 
@@ -115,6 +156,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
 
   livepeer-rollups-rewards:
     image: tztcloud/livepeer-protocol-explorer:latest
@@ -133,6 +176,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
 
   livepeer-rollups-tickets:
     image: tztcloud/livepeer-protocol-explorer:latest
@@ -151,6 +196,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
 
   # TD-018: backs broad-window /aggregations/events queries from the
   # event_metrics_daily rollup, off the raw-events scan path.
@@ -173,6 +220,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
 
   # ENS name + avatar resolution for new addresses. L1 (Ethereum mainnet) only.
   livepeer-enricher:
@@ -189,9 +238,16 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       L1_RPC_URL: ${L1_RPC_URL}
       RUST_LOG: ${RUST_LOG:-info}
+      # TD-033: write resolved avatar images to the shared volume. Must
+      # match livepeer-api's AVATAR_STORE_DIR + mount path.
+      AVATAR_STORE_DIR: ${AVATAR_STORE_DIR:-/opt/livepeer/avatars}
     depends_on:
       postgres:
         condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - livepeer-avatars:/opt/livepeer/avatars
 
   # TD-020: materializes tx receipts (gas, fee, status) into tx_receipts so
   # report endpoints don't fan out per-tx eth_getTransactionReceipt calls.
@@ -219,6 +275,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
 
   # ── Optional: Telegram alerting (enable with --profile ops) ────────
   # livepeer-alert-bot:
@@ -240,16 +298,16 @@ services:
   #   depends_on:
   #     postgres:
   #       condition: service_healthy
+  #     livepeer-migrate:
+  #       condition: service_completed_successfully
 
   # ── One-shot tools (enable with --profile tools run --rm) ──────────
   #
-  # Use this for `migrate-only`, `bootstrap`, `replay`, etc. The container
+  # Use this for ad-hoc `bootstrap`, `replay`, etc. (`migrate-only` now runs
+  # automatically via the livepeer-migrate service above). The container
   # exits when the subcommand finishes — do NOT include `restart:` here.
   #
   # Examples:
-  #   docker compose -f docker-compose.prod.yml --profile tools \
-  #     run --rm livepeer-orchestrator --env-config config/env/prod.yaml migrate-only
-  #
   #   docker compose -f docker-compose.prod.yml --profile tools \
   #     run --rm livepeer-orchestrator --env-config config/env/prod.yaml \
   #     bootstrap --to-block 250000000
@@ -297,6 +355,11 @@ volumes:
     external: true
   livepeer-valuation-seed:
     external: true
+  # TD-033: avatar image cache shared by livepeer-enricher (writer) and
+  # livepeer-api (reader). Not external: the cache is fully rebuildable by
+  # the enricher, so it's fine for `down -v` to discard it (the next sweep
+  # re-resolves and repopulates).
+  livepeer-avatars:
 
 networks:
   default:

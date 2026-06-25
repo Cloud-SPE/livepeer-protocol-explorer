@@ -400,7 +400,72 @@ async fn resolve_and_upsert_orchestrator(
     .bind(&projection.ens_avatar_url)
     .execute(pg)
     .await?;
+    cache_orchestrator_avatar(pg, l1, chain_id, address, &projection).await;
     Ok(projection)
+}
+
+/// TD-033: resolve the raw ENS avatar record to local image bytes and
+/// record the stored extension. Best-effort and side-effecting: never
+/// fails the sweep. When resolution yields nothing we leave any
+/// previously-cached file and `ens_avatar_stored_ext` untouched (the main
+/// upsert above does not write that column), so a transient fetch failure
+/// can't blank a working avatar. Disabled entirely when `AVATAR_STORE_DIR`
+/// is unset.
+async fn cache_orchestrator_avatar(
+    pg: &PgPool,
+    l1: &Provider,
+    chain_id: i64,
+    address: &str,
+    projection: &EnsProjection,
+) {
+    let Some(dir) = crate::avatar::store_dir() else {
+        return;
+    };
+    match &projection.ens_avatar_url {
+        Some(raw) => {
+            match crate::avatar::resolve_and_store(l1, dir, address, raw).await {
+                Ok(Some(ext)) => {
+                    if let Err(e) =
+                        set_orchestrator_avatar_ext(pg, chain_id, address, Some(&ext)).await
+                    {
+                        warn!(address = %address, error = %e, "failed to record cached avatar extension");
+                    }
+                }
+                // Ok(None): resolution failed/unsupported — keep prior cache.
+                Ok(None) => {}
+                Err(e) => warn!(address = %address, error = %e, "avatar caching errored"),
+            }
+        }
+        None => {
+            // No avatar record anymore: drop any cached file + marker.
+            if let Err(e) = crate::avatar::clear(dir, address).await {
+                warn!(address = %address, error = %e, "failed to clear cached avatar");
+            }
+            if let Err(e) = set_orchestrator_avatar_ext(pg, chain_id, address, None).await {
+                warn!(address = %address, error = %e, "failed to clear cached avatar extension");
+            }
+        }
+    }
+}
+
+async fn set_orchestrator_avatar_ext(
+    pg: &PgPool,
+    chain_id: i64,
+    address: &str,
+    ext: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"UPDATE orchestrator_ens
+              SET ens_avatar_stored_ext = $3
+            WHERE chain_id = $1
+              AND address = $2"#,
+    )
+    .bind(chain_id)
+    .bind(address)
+    .bind(ext)
+    .execute(pg)
+    .await?;
+    Ok(())
 }
 
 async fn resolve_and_upsert_broadcaster(

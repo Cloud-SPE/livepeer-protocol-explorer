@@ -49,6 +49,7 @@ use utoipa::OpenApi;
         crate::routes::prices::range,
         crate::routes::profiles::orchestrators_list,
         crate::routes::profiles::orchestrators_get,
+        crate::routes::profiles::orchestrators_avatar,
         crate::routes::profiles::gateways_list,
         crate::routes::profiles::gateways_get,
         crate::routes::gateways::balance_latest,

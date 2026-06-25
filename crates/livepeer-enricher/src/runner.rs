@@ -15,7 +15,7 @@ use tracing::{info, warn};
 
 const ENS_REGISTRY: &str = "0x00000000000c2e074ec69a0dfb2997ba6c7d2e1e";
 const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
-const TTL_DAYS: i64 = 30;
+const DEFAULT_TTL_DAYS: i64 = 7;
 pub const DEFAULT_BATCH_LIMIT: i64 = 100;
 const FAILURE_BREAKER_THRESHOLD: usize = 5;
 const FAILURE_BREAKER_COOLDOWN_SECS: u64 = 60;
@@ -322,6 +322,20 @@ struct RawEnsLog {
     data: String,
 }
 
+/// Re-resolution TTL in days. Rows older than this are swept and re-resolved.
+/// Configurable via `ENRICHER_TTL_DAYS`; falls back to [`DEFAULT_TTL_DAYS`] when
+/// unset or not a positive integer. Read once and cached for the process.
+fn ttl_days() -> i64 {
+    static TTL_DAYS: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *TTL_DAYS.get_or_init(|| {
+        std::env::var("ENRICHER_TTL_DAYS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|&d| d > 0)
+            .unwrap_or(DEFAULT_TTL_DAYS)
+    })
+}
+
 async fn load_pending_orchestrator_addresses(
     pg: &PgPool,
     chain_id: i64,
@@ -349,7 +363,7 @@ async fn load_pending_orchestrator_addresses(
             LIMIT $3"#,
     )
     .bind(chain_id)
-    .bind(TTL_DAYS)
+    .bind(ttl_days())
     .bind(limit)
     .bind(should_fill_avatar_cache)
     .fetch_all(pg)
@@ -378,7 +392,7 @@ async fn load_pending_broadcaster_addresses(
             LIMIT $3"#,
     )
     .bind(chain_id)
-    .bind(TTL_DAYS)
+    .bind(ttl_days())
     .bind(limit)
     .fetch_all(pg)
     .await?;

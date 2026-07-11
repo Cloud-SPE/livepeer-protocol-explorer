@@ -110,12 +110,13 @@ pub async fn run_seed_pass(
     // since the last seed run. Bypassed when cold (no valuations for this
     // version — post-truncate/replay) or include_tentative. Break-glass: delete
     // the SEED cursor row (or `--reset-seed-cursor`) to force a full re-scan.
+    // seeded_event_prices is append-only (ON CONFLICT DO NOTHING) and has no
+    // serial id, so its row count is a cheap, monotonic change signal: it rises
+    // exactly when new seeds are imported.
     let seed_key = crate::cursor::pass_key(valuation_version, "SEED");
-    let cur_max_seed: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT MAX(id) FROM seeded_event_prices",
-    )
-    .fetch_one(pg)
-    .await?;
+    let cur_seed_count: i64 = sqlx::query_scalar("SELECT count(*) FROM seeded_event_prices")
+        .fetch_one(pg)
+        .await?;
     if !include_tentative {
         let stored: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT seed_max_id FROM valuator_cursors WHERE pass_key = $1",
@@ -130,7 +131,7 @@ pub async fn run_seed_pass(
         .bind(valuation_version)
         .fetch_one(pg)
         .await?;
-        if has_valuations && stored.is_some() && stored == cur_max_seed {
+        if has_valuations && stored == Some(cur_seed_count) {
             let summary = SeedRunSummary::default();
             info!(?summary, "seed-pass skipped (no new seeds imported)");
             return Ok(summary);
@@ -275,7 +276,7 @@ pub async fn run_seed_pass(
                  DO UPDATE SET watermark = now(), seed_max_id = EXCLUDED.seed_max_id, updated_at = now()",
         )
         .bind(&seed_key)
-        .bind(cur_max_seed)
+        .bind(cur_seed_count)
         .execute(pg)
         .await?;
     }

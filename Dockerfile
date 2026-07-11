@@ -72,6 +72,16 @@ COPY --from=fe-builder --chown=livepeer:livepeer /fe/dist /opt/livepeer/frontend
 # first mount.
 RUN mkdir -p /opt/livepeer/avatars && chown livepeer:livepeer /opt/livepeer/avatars
 
+# Build provenance. Pass `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the
+# deployed image self-reports the exact commit it was built from. Placed last
+# so a changed SHA never invalidates the Rust/FE build cache. Read it back with:
+#   docker inspect --format '{{.Config.Labels.git_sha}}' <image>
+#   docker exec <container> printenv GIT_SHA
+# to answer "is my change actually deployed?" without log archaeology.
+ARG GIT_SHA=unknown
+LABEL git_sha=$GIT_SHA
+ENV GIT_SHA=$GIT_SHA
+
 USER livepeer
 WORKDIR /opt/livepeer
 

@@ -18,7 +18,12 @@ services:
 
   livepeer-indexer:
     image: livepeer-protocol-explorer:latest
-    build: .
+    build:
+      context: .
+      # Stamp the image with the commit it was built from. Build with:
+      #   GIT_SHA=$(git rev-parse HEAD) docker compose build
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     command: livepeer-indexer
     restart: unless-stopped
     env_file: .env

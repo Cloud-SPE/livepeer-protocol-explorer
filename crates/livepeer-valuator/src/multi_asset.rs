@@ -51,6 +51,7 @@ struct MultiAssetCandidate {
     block_timestamp: chrono::DateTime<chrono::Utc>,
     rewards_wei: String, // u256 as decimal string
     fees_wei: String,    // u256 as decimal string
+    finalized_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub async fn run_multi_asset_pass(
@@ -60,7 +61,16 @@ pub async fn run_multi_asset_pass(
     valuation_version: &str,
     include_tentative: bool,
 ) -> Result<MultiAssetSummary> {
-    let candidates = fetch_candidates(pg, valuation_version, include_tentative).await?;
+    let cursor_key = crate::cursor::pass_key(valuation_version, "MULTI");
+    let floor = crate::cursor::scan_floor(
+        pg,
+        valuation_version,
+        &cursor_key,
+        crate::cursor::DEFAULT_LOOKBACK_SECS,
+        include_tentative,
+    )
+    .await?;
+    let candidates = fetch_candidates(pg, valuation_version, include_tentative, floor).await?;
     info!(
         candidates = candidates.len(),
         valuation_version, include_tentative, "multi-asset pass starting"
@@ -70,6 +80,8 @@ pub async fn run_multi_asset_pass(
         events_considered: candidates.len() as u64,
         ..Default::default()
     };
+    // Oldest finalized_at left unresolved via a transient failure on either half.
+    let mut min_unresolved: Option<chrono::DateTime<chrono::Utc>> = None;
 
     let pool = cfg.static_.pricing.uniswap_v3_lpt_weth_pool.clone();
     let chainlink = cfg.static_.pricing.chainlink_eth_usd_aggregator.clone();
@@ -78,6 +90,8 @@ pub async fn run_multi_asset_pass(
 
     for ev in &candidates {
         let block = ev.block_number as u64;
+        // Pins the cursor if either half hits a *transient* (retryable) failure.
+        let mut ev_transient = false;
 
         // Parse the wei amounts. BigDecimal handles arbitrary-precision integers.
         let rewards_wei = BigDecimal::from_str(&ev.rewards_wei).unwrap_or_default();
@@ -234,6 +248,8 @@ pub async fn run_multi_asset_pass(
                             STATUS_FAILED_MISSING_POOL,
                             detail,
                         );
+                    } else {
+                        ev_transient = true;
                     }
                     summary.failures += 1;
                     warn!(event_id = ev.event_id, error = %e, "EarningsClaimed.rewards pricing errored");
@@ -326,13 +342,23 @@ pub async fn run_multi_asset_pass(
                 }
                 Err(e) => {
                     summary.failures += 1;
+                    ev_transient = true;
                     warn!(event_id = ev.event_id, error = %e, "EarningsClaimed.fees pricing errored");
                 }
+            }
+        }
+
+        if ev_transient {
+            if let Some(fa) = ev.finalized_at {
+                min_unresolved = Some(min_unresolved.map_or(fa, |m| m.min(fa)));
             }
         }
         buffers.maybe_flush(pg).await?;
     }
     buffers.flush(pg).await?;
+
+    let frontier = crate::cursor::frontier_multi(pg, ARBITRUM_CHAIN_ID).await?;
+    crate::cursor::advance(pg, &cursor_key, min_unresolved, frontier, include_tentative).await?;
 
     info!(?summary, "multi-asset pass complete");
     Ok(summary)
@@ -342,11 +368,13 @@ async fn fetch_candidates(
     pg: &PgPool,
     valuation_version: &str,
     include_tentative: bool,
+    floor: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<MultiAssetCandidate>> {
-    let finality_filter = if include_tentative {
-        ""
+    // The finalized_at floor ($4) is applied only when NOT include_tentative.
+    let (finality_filter, floor_filter) = if include_tentative {
+        ("", "")
     } else {
-        "AND r.finality = 'finalized'"
+        ("AND r.finality = 'finalized'", "AND r.finalized_at >= $4")
     };
     // Multi-asset events have asset=NULL on raw_protocol_events. Each event needs TWO
     // valuations (LPT + ETH); we consider it "complete" only when both rows exist.
@@ -354,7 +382,8 @@ async fn fetch_candidates(
     let sql = format!(
         r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp,
                    COALESCE(r.raw_event -> 'decoded' ->> 'rewards', '0') AS rewards_wei,
-                   COALESCE(r.raw_event -> 'decoded' ->> 'fees',    '0') AS fees_wei
+                   COALESCE(r.raw_event -> 'decoded' ->> 'fees',    '0') AS fees_wei,
+                   r.finalized_at
               FROM raw_protocol_events r
              WHERE r.chain_id      = $1
                AND r.is_valuable   = TRUE
@@ -362,6 +391,7 @@ async fn fetch_candidates(
                AND r.event_name    = 'EarningsClaimed'
                AND r.asset         IS NULL
                {finality_filter}
+               {floor_filter}
                AND (
                     (
                         NOT EXISTS (
@@ -400,12 +430,14 @@ async fn fetch_candidates(
                )
              ORDER BY r.block_number, r.log_index"#
     );
-    let rows = sqlx::query(&sql)
+    let mut q = sqlx::query(&sql)
         .bind(ARBITRUM_CHAIN_ID)
         .bind(valuation_version)
-        .bind(&degraded)
-        .fetch_all(pg)
-        .await?;
+        .bind(&degraded);
+    if !include_tentative {
+        q = q.bind(floor);
+    }
+    let rows = q.fetch_all(pg).await?;
     Ok(rows
         .into_iter()
         .map(|r| MultiAssetCandidate {
@@ -415,6 +447,7 @@ async fn fetch_candidates(
             block_timestamp: r.get(3),
             rewards_wei: r.try_get(4).unwrap_or_else(|_| "0".to_string()),
             fees_wei: r.try_get(5).unwrap_or_else(|_| "0".to_string()),
+            finalized_at: r.get(6),
         })
         .collect())
 }

@@ -52,6 +52,12 @@ enum Command {
         version: Option<String>,
         #[arg(long, default_value_t = false)]
         include_tentative: bool,
+        /// How often to REFRESH the profile materialized views, in seconds.
+        /// Each refresh takes seconds on a large DB and contends with the
+        /// valuator — raise this (e.g. 300) to cut DB load at the cost of
+        /// profile-page freshness.
+        #[arg(long, env = "DAEMON_MATVIEW_REFRESH_SECS", default_value_t = 30)]
+        matview_refresh_secs: u64,
     },
 }
 
@@ -85,6 +91,7 @@ async fn main() -> Result<()> {
             max_start_lag_blocks,
             version,
             include_tentative,
+            matview_refresh_secs,
         } => {
             let version =
                 version.unwrap_or_else(|| cfg.static_.pricing.default_valuation_version.clone());
@@ -98,6 +105,7 @@ async fn main() -> Result<()> {
                     max_start_lag_blocks,
                     valuation_version: version,
                     include_tentative,
+                    matview_refresh_secs,
                 },
             )
             .await?;

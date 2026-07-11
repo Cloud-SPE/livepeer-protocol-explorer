@@ -36,6 +36,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 livepeer
 
@@ -51,6 +52,7 @@ COPY --from=rust-builder /build/target/release/livepeer-seed-migrator      /usr/
 COPY --from=rust-builder /build/target/release/livepeer-orchestrator       /usr/local/bin/
 COPY --from=rust-builder /build/target/release/livepeer-daemon             /usr/local/bin/
 COPY --from=rust-builder /build/target/release/livepeer-alert-bot          /usr/local/bin/
+COPY --from=rust-builder /build/target/release/livepeer-mcp-diag           /usr/local/bin/
 
 COPY --chown=livepeer:livepeer abi/        /opt/livepeer/abi/
 COPY --chown=livepeer:livepeer config/     /opt/livepeer/config/
@@ -69,6 +71,16 @@ COPY --from=fe-builder --chown=livepeer:livepeer /fe/dist /opt/livepeer/frontend
 # user so an empty named volume mounted here inherits writable ownership on
 # first mount.
 RUN mkdir -p /opt/livepeer/avatars && chown livepeer:livepeer /opt/livepeer/avatars
+
+# Build provenance. Pass `--build-arg GIT_SHA=$(git rev-parse HEAD)` so the
+# deployed image self-reports the exact commit it was built from. Placed last
+# so a changed SHA never invalidates the Rust/FE build cache. Read it back with:
+#   docker inspect --format '{{.Config.Labels.git_sha}}' <image>
+#   docker exec <container> printenv GIT_SHA
+# to answer "is my change actually deployed?" without log archaeology.
+ARG GIT_SHA=unknown
+LABEL git_sha=$GIT_SHA
+ENV GIT_SHA=$GIT_SHA
 
 USER livepeer
 WORKDIR /opt/livepeer

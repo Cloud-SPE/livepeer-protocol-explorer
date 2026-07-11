@@ -96,6 +96,9 @@ struct CandidateEvent {
     block_timestamp: chrono::DateTime<chrono::Utc>,
     asset: Option<String>,
     amount_normalized: Option<BigDecimal>,
+    /// When this event was finalized — the key for the incremental cursor.
+    /// NULL only when include_tentative pulled in a not-yet-finalized row.
+    finalized_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Walk all unvalued, valuable, canonical, ETH-valued events at the requested
@@ -107,7 +110,16 @@ pub async fn run_onchain_pass_eth(
     valuation_version: &str,
     include_tentative: bool,
 ) -> Result<OnChainRunSummary> {
-    let candidates = fetch_eth_candidates(pg, valuation_version, include_tentative).await?;
+    let cursor_key = crate::cursor::pass_key(valuation_version, "ETH");
+    let floor = crate::cursor::scan_floor(
+        pg,
+        valuation_version,
+        &cursor_key,
+        crate::cursor::DEFAULT_LOOKBACK_SECS,
+        include_tentative,
+    )
+    .await?;
+    let candidates = fetch_eth_candidates(pg, valuation_version, include_tentative, floor).await?;
     info!(
         candidates = candidates.len(),
         valuation_version, include_tentative, "on-chain ETH pass starting"
@@ -118,6 +130,9 @@ pub async fn run_onchain_pass_eth(
         ..Default::default()
     };
     let mut buffers = BulkBuffers::new();
+    // Oldest finalized_at this cycle left unresolved via a *transient* failure
+    // (retryable) — pins the cursor so those events are re-scanned next cycle.
+    let mut min_unresolved: Option<chrono::DateTime<chrono::Utc>> = None;
 
     for ev in &candidates {
         let asset = ev.asset.as_deref().unwrap_or_default();
@@ -200,12 +215,19 @@ pub async fn run_onchain_pass_eth(
             }
             Err(e) => {
                 summary.other_skipped += 1;
+                if let Some(fa) = ev.finalized_at {
+                    min_unresolved = Some(min_unresolved.map_or(fa, |m| m.min(fa)));
+                }
                 warn!(event_id = ev.event_id, error = %e, "on-chain pricing failed; will retry next run");
             }
         }
         buffers.maybe_flush(pg).await?;
     }
     buffers.flush(pg).await?;
+
+    // Advance the cursor only after all outcomes are durably committed.
+    let frontier = crate::cursor::frontier_for_asset(pg, ARBITRUM_CHAIN_ID, "ETH").await?;
+    crate::cursor::advance(pg, &cursor_key, min_unresolved, frontier, include_tentative).await?;
 
     info!(?summary, "on-chain ETH pass complete");
     Ok(summary)
@@ -553,21 +575,26 @@ async fn fetch_eth_candidates(
     pg: &PgPool,
     valuation_version: &str,
     include_tentative: bool,
+    floor: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<CandidateEvent>> {
-    let finality_filter = if include_tentative {
-        ""
+    // The finalized_at floor ($3) is applied only when NOT include_tentative
+    // (tentative rows have NULL finalized_at). The anti-joins are unchanged —
+    // the floor only narrows the scan.
+    let (finality_filter, floor_filter) = if include_tentative {
+        ("", "")
     } else {
-        "AND r.finality = 'finalized'"
+        ("AND r.finality = 'finalized'", "AND r.finalized_at >= $3")
     };
     // Also exclude events with prior failed attempts. See note in fetch_lpt_candidates.
     let sql = format!(
-        r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp, r.asset, r.amount_normalized
+        r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp, r.asset, r.amount_normalized, r.finalized_at
              FROM raw_protocol_events r
             WHERE r.chain_id      = $1
               AND r.is_valuable   = TRUE
               AND r.is_canonical  = TRUE
               AND r.asset         = 'ETH'
               {finality_filter}
+              {floor_filter}
               AND NOT EXISTS (
                     SELECT 1
                       FROM event_valuations v
@@ -585,11 +612,13 @@ async fn fetch_eth_candidates(
                 )
             ORDER BY r.block_number, r.log_index"#
     );
-    let rows = sqlx::query(&sql)
+    let mut q = sqlx::query(&sql)
         .bind(ARBITRUM_CHAIN_ID)
-        .bind(valuation_version)
-        .fetch_all(pg)
-        .await?;
+        .bind(valuation_version);
+    if !include_tentative {
+        q = q.bind(floor);
+    }
+    let rows = q.fetch_all(pg).await?;
     Ok(rows
         .into_iter()
         .map(|r| CandidateEvent {
@@ -599,6 +628,7 @@ async fn fetch_eth_candidates(
             block_timestamp: r.get(3),
             asset: r.get(4),
             amount_normalized: r.get(5),
+            finalized_at: r.get(6),
         })
         .collect())
 }
@@ -653,9 +683,21 @@ pub async fn run_onchain_pass_lpt(
 ) -> Result<LptRunSummary> {
     let mut summary = LptRunSummary::default();
 
+    let cursor_key = crate::cursor::pass_key(valuation_version, "LPT");
+    let floor = crate::cursor::scan_floor(
+        pg,
+        valuation_version,
+        &cursor_key,
+        crate::cursor::DEFAULT_LOOKBACK_SECS,
+        include_tentative,
+    )
+    .await?;
+    // Oldest finalized_at left unresolved via a *transient* failure (retryable).
+    let mut min_unresolved: Option<chrono::DateTime<chrono::Utc>> = None;
+
     // Walk all unvalued LPT events (TWAP version + degraded version both gated by
     // separate keys in event_valuations, so a degraded run later won't conflict).
-    let candidates = fetch_lpt_candidates(pg, valuation_version, include_tentative).await?;
+    let candidates = fetch_lpt_candidates(pg, valuation_version, include_tentative, floor).await?;
     summary.events_considered = candidates.len() as u64;
     info!(
         candidates = candidates.len(),
@@ -689,6 +731,7 @@ pub async fn run_onchain_pass_lpt(
     type LptJobResult = (
         i64,
         i64,
+        Option<chrono::DateTime<chrono::Utc>>,
         BigDecimal,
         anyhow::Result<(LptOutcome, Vec<PriceRow>)>,
     );
@@ -720,6 +763,7 @@ pub async fn run_onchain_pass_lpt(
             };
             let event_id = ev.event_id;
             let block_number = ev.block_number;
+            let finalized_at = ev.finalized_at;
             let pg = ctx.pg.clone();
             let archive = ctx.archive.clone();
             let pool = ctx.pool.to_string();
@@ -739,7 +783,7 @@ pub async fn run_onchain_pass_lpt(
                     &amount_native,
                 )
                 .await;
-                (event_id, block_number, amt_owned, r)
+                (event_id, block_number, finalized_at, amt_owned, r)
             });
             return;
         }
@@ -757,7 +801,7 @@ pub async fn run_onchain_pass_lpt(
     }
 
     while let Some(joined) = set.join_next().await {
-        let (event_id, block_number, amount_native, result) = joined?;
+        let (event_id, block_number, finalized_at, amount_native, result) = joined?;
         match result {
             Ok((
                 LptOutcome::PricedTwap {
@@ -880,6 +924,9 @@ pub async fn run_onchain_pass_lpt(
                     warn!(event_id, error = %e, "LPT pricing failed deterministically; suppressing future retries");
                 } else {
                     summary.other_skipped += 1;
+                    if let Some(fa) = finalized_at {
+                        min_unresolved = Some(min_unresolved.map_or(fa, |m| m.min(fa)));
+                    }
                     warn!(event_id, error = %e, "LPT pricing failed; will retry next run");
                 }
             }
@@ -888,6 +935,9 @@ pub async fn run_onchain_pass_lpt(
         try_spawn(&mut set, &mut iter, &mut summary, &ctx);
     }
     buffers.flush(pg).await?;
+
+    let frontier = crate::cursor::frontier_for_asset(pg, ARBITRUM_CHAIN_ID, "LPT").await?;
+    crate::cursor::advance(pg, &cursor_key, min_unresolved, frontier, include_tentative).await?;
 
     info!(?summary, "on-chain LPT pass complete");
     Ok(summary)
@@ -1343,11 +1393,13 @@ async fn fetch_lpt_candidates(
     pg: &PgPool,
     valuation_version: &str,
     include_tentative: bool,
+    floor: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<CandidateEvent>> {
-    let finality_filter = if include_tentative {
-        ""
+    // The finalized_at floor ($4) is applied only when NOT include_tentative.
+    let (finality_filter, floor_filter) = if include_tentative {
+        ("", "")
     } else {
-        "AND r.finality = 'finalized'"
+        ("AND r.finality = 'finalized'", "AND r.finalized_at >= $4")
     };
     // Match either the canonical version OR its degraded sibling — once an event has
     // been priced under either, it's done.
@@ -1357,13 +1409,14 @@ async fn fetch_lpt_candidates(
     // prior failed attempt will fail again with the same details — no value
     // in re-trying within a single run.
     let sql = format!(
-        r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp, r.asset, r.amount_normalized
+        r#"SELECT r.id, r.block_number, r.block_hash, r.block_timestamp, r.asset, r.amount_normalized, r.finalized_at
              FROM raw_protocol_events r
             WHERE r.chain_id     = $1
               AND r.is_valuable  = TRUE
               AND r.is_canonical = TRUE
               AND r.asset        = 'LPT'
               {finality_filter}
+              {floor_filter}
               AND NOT EXISTS (
                     SELECT 1
                       FROM event_valuations v
@@ -1381,12 +1434,14 @@ async fn fetch_lpt_candidates(
                 )
             ORDER BY r.block_number, r.log_index"#
     );
-    let rows = sqlx::query(&sql)
+    let mut q = sqlx::query(&sql)
         .bind(ARBITRUM_CHAIN_ID)
         .bind(valuation_version)
-        .bind(&degraded)
-        .fetch_all(pg)
-        .await?;
+        .bind(&degraded);
+    if !include_tentative {
+        q = q.bind(floor);
+    }
+    let rows = q.fetch_all(pg).await?;
     Ok(rows
         .into_iter()
         .map(|r| CandidateEvent {
@@ -1396,6 +1451,7 @@ async fn fetch_lpt_candidates(
             block_timestamp: r.get(3),
             asset: r.get(4),
             amount_normalized: r.get(5),
+            finalized_at: r.get(6),
         })
         .collect())
 }

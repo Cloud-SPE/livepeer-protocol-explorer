@@ -1,0 +1,29 @@
+[package]
+name = "livepeer-mcp-diag"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "livepeer-mcp-diag"
+path = "src/main.rs"
+
+[dependencies]
+livepeer-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+sqlx.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+futures.workspace = true
+rmcp.workspace = true
+# Docker adapter (Phase 2): container_state + worker_logs via the socket proxy.
+# bollard.workspace = true

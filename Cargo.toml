@@ -14,6 +14,7 @@ members = [
     "crates/livepeer-orchestrator",
     "crates/livepeer-daemon",
     "crates/livepeer-alert-bot",
+    "crates/livepeer-mcp-diag",
 ]
 
 [workspace.package]
@@ -49,6 +50,11 @@ chrono = { version = "=0.4.39", features = ["serde"] }
 bigdecimal = { version = "=0.4.7", features = ["serde"] }
 utoipa = { version = "=5.4.0", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "=9.0.2", features = ["axum"] }
+# Read-only diagnostics MCP server (crates/livepeer-mcp-diag). schemars is
+# re-exported by rmcp (rmcp::schemars) so it is not pinned separately. The
+# Docker adapter talks to the socket proxy's Engine HTTP API via reqwest, so
+# no bollard dependency is needed (and it would conflict with the tokio pin).
+rmcp = { version = "=2.2.0", features = ["schemars", "transport-streamable-http-server"] }
 livepeer-core = { path = "crates/core" }
 
 [profile.release]

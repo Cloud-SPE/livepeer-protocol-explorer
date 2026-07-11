@@ -91,6 +91,16 @@ services:
         condition: service_healthy
       livepeer-migrate:
         condition: service_completed_successfully
+    # /health returns 503 when any supervised loop's heartbeat is stale or the
+    # loop has been escalated (task_up=0). With restart: unless-stopped this
+    # turns a wedged/broken loop into a container restart. Generous start_period
+    # + retries ride out transient RPC brownouts (see http.rs thresholds).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9107/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
     # ports:
     #   - "9107:9107"
 
@@ -277,6 +287,72 @@ services:
         condition: service_healthy
       livepeer-migrate:
         condition: service_completed_successfully
+
+  # ── Read-only production diagnostics (MCP server) ──────────────────
+  # A read-only debugging surface: an operator connects Claude to it and asks
+  # "why is indexing stalled / pricing slow / reports late". It reads the DB
+  # (SELECT-only diag_ro role), scrapes the workers' /metrics, and reads
+  # container state + logs through the GET-only docker-socket-proxy below.
+  #
+  # SECURITY:
+  # - Never mount the raw docker socket here — go through docker-proxy.
+  # - Port is bound to host loopback only; reach it from a laptop via an SSH
+  #   tunnel:  ssh -L 9200:127.0.0.1:9200 <host>  then point the MCP client at
+  #   http://127.0.0.1:9200/mcp with the bearer token.
+  # - Provision the diag_ro role once (see scripts/diag_ro_role.sql).
+
+  # GET-only Docker Engine API proxy. CONTAINERS=1 exposes /containers/json and
+  # /containers/{id}/logs; POST/EXEC stay 0 so create/kill/exec are refused at
+  # the proxy regardless of what the diag server requests.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    restart: unless-stopped
+    hostname: docker-proxy
+    container_name: docker-proxy
+    environment:
+      CONTAINERS: 1
+      POST: 0
+      EXEC: 0
+      IMAGES: 0
+      NETWORKS: 0
+      VOLUMES: 0
+      INFO: 0
+      PING: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  livepeer-mcp-diag:
+    image: tztcloud/livepeer-protocol-explorer:latest
+    command:
+      - livepeer-mcp-diag
+      - --env-config
+      - config/env/prod.yaml
+      - --transport
+      - http
+    restart: unless-stopped
+    hostname: livepeer-mcp-diag
+    container_name: livepeer-mcp-diag
+    environment:
+      # Dedicated read-only role — NOT the workers' read-write DATABASE_URL.
+      DIAG_DATABASE_URL: ${DIAG_DATABASE_URL}
+      DIAG_BEARER_TOKEN: ${DIAG_BEARER_TOKEN}
+      DOCKER_HOST: tcp://docker-proxy:2375
+      DIAG_METRICS_ENDPOINTS: ${DIAG_METRICS_ENDPOINTS:-http://livepeer-daemon:9107/metrics,http://livepeer-enricher:9112/metrics,http://livepeer-api:8080/metrics}
+      # Required when reached through a reverse proxy / Cloudflare tunnel: the
+      # public Host header must be allowlisted (or set to `*`) or /mcp returns
+      # 403 (rmcp DNS-rebinding protection). Harmless for loopback/SSH access.
+      DIAG_ALLOWED_HOSTS: ${DIAG_ALLOWED_HOSTS:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      # Host loopback only — reach via SSH tunnel, never publish publicly.
+      - "127.0.0.1:9200:9200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      livepeer-migrate:
+        condition: service_completed_successfully
+      docker-proxy:
+        condition: service_started
 
   # ── Optional: Telegram alerting (enable with --profile ops) ────────
   # livepeer-alert-bot:

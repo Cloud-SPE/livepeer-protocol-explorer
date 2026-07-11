@@ -36,6 +36,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 livepeer
 
@@ -51,6 +52,7 @@ COPY --from=rust-builder /build/target/release/livepeer-seed-migrator      /usr/
 COPY --from=rust-builder /build/target/release/livepeer-orchestrator       /usr/local/bin/
 COPY --from=rust-builder /build/target/release/livepeer-daemon             /usr/local/bin/
 COPY --from=rust-builder /build/target/release/livepeer-alert-bot          /usr/local/bin/
+COPY --from=rust-builder /build/target/release/livepeer-mcp-diag           /usr/local/bin/
 
 COPY --chown=livepeer:livepeer abi/        /opt/livepeer/abi/
 COPY --chown=livepeer:livepeer config/     /opt/livepeer/config/

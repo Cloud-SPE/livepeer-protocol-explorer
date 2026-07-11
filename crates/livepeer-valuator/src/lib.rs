@@ -1,5 +1,6 @@
 pub mod backfill_eth_prices;
 pub mod bulk;
+pub mod cursor;
 pub mod multi_asset;
 pub mod onchain;
 pub mod persist;

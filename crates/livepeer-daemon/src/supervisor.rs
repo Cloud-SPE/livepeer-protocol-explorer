@@ -9,17 +9,127 @@ use livepeer_reorg_watcher::runner as reorg_runner;
 use livepeer_staker::runner as staker_runner;
 use livepeer_valuator::runner as valuator_runner;
 use sqlx::PgPool;
+use std::future::Future;
 use std::sync::Arc;
-use tokio::sync::Notify;
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
-use tracing::info;
+use tracing::{error, info, warn};
+
+/// All supervised task names (labels for metrics + `/health`).
+pub const SUPERVISED_TASKS: [&str; 6] =
+    ["indexer", "finality", "reorg", "valuator", "staker", "matview"];
+
+/// Restart behavior for a supervised loop.
+#[derive(Clone, Copy, Debug)]
+pub struct RestartPolicy {
+    pub base_backoff: Duration,
+    pub max_backoff: Duration,
+    /// Consecutive deaths-without-progress before a loop is marked `task_up=0`.
+    pub max_consecutive: u32,
+}
+
+impl Default for RestartPolicy {
+    fn default() -> Self {
+        Self {
+            base_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(60),
+            max_consecutive: 10,
+        }
+    }
+}
+
+/// Keep one loop alive: (re)spawn it, catch errors *and* panics, back off, and
+/// escalate (mark `task_up=0`) after repeated deaths-without-progress — but
+/// never crash the process for a single broken loop (the `/health` probe turns
+/// a persistently-down/wedged task into a whole-container restart). Returns
+/// only when `shutdown` is observed. Must stay panic-free: a supervisor panic
+/// is treated as fatal by `run_follow`.
+async fn supervise<F, Fut>(
+    task: &'static str,
+    metrics: Arc<Metrics>,
+    mut shutdown: watch::Receiver<bool>,
+    policy: RestartPolicy,
+    mut make_fut: F,
+) where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    let mut consecutive: u32 = 0;
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+
+        let hb_before = metrics.heartbeat(task);
+        let outcome = tokio::spawn(make_fut()).await;
+
+        // Any exit during/after shutdown is a clean stop, not a restart.
+        if *shutdown.borrow() {
+            break;
+        }
+
+        let reason = match outcome {
+            Ok(Ok(())) => {
+                // A loop only returns Ok on shutdown; reaching here without
+                // shutdown is anomalous — restart it.
+                warn!(task, "supervised loop returned unexpectedly; will restart");
+                "error"
+            }
+            Ok(Err(e)) => {
+                warn!(task, error = %e, "supervised loop errored; will restart");
+                "error"
+            }
+            Err(join_err) => {
+                if join_err.is_cancelled() {
+                    // Nothing aborts the inner handle here; a cancel means the
+                    // runtime is tearing down. Stop without restarting.
+                    break;
+                }
+                error!(task, "supervised loop panicked; will restart");
+                "panic"
+            }
+        };
+        metrics.record_restart(task, reason);
+
+        // Progress-based reset: if the loop completed >=1 iteration its
+        // heartbeat advanced, so it made progress — reset the death counter.
+        if metrics.heartbeat(task) > hb_before {
+            consecutive = 0;
+        } else {
+            consecutive = consecutive.saturating_add(1);
+        }
+
+        if consecutive > policy.max_consecutive {
+            error!(
+                task,
+                consecutive, "supervised loop exceeded restart budget; marking task down"
+            );
+            metrics.set_task_up(task, false);
+        } else {
+            metrics.set_task_up(task, true);
+        }
+
+        // Exponential backoff (base * 2^(n-1), capped), interruptible by shutdown.
+        let shift = consecutive.saturating_sub(1).min(6);
+        let backoff = policy
+            .base_backoff
+            .saturating_mul(1u32 << shift)
+            .min(policy.max_backoff);
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            _ = sleep(backoff) => {}
+        }
+    }
+    info!(task, "supervisor stopped (shutdown)");
+}
 
 const INDEXER_INTERVAL_SECS: u64 = 12;
 const REORG_INTERVAL_SECS: u64 = 60;
 const FINALITY_INTERVAL_SECS: u64 = 60;
 const VALUATOR_INTERVAL_SECS: u64 = 60;
 const STAKER_INTERVAL_SECS: u64 = 300;
-const MATVIEW_REFRESH_INTERVAL_SECS: u64 = 30;
 const INDEXER_HEAD_DEPTH_BLOCKS: u64 = 10;
 const INDEXER_PER_TICK_BLOCKS: u64 = 1_000;
 
@@ -28,6 +138,9 @@ pub struct FollowConfig {
     pub max_start_lag_blocks: u64,
     pub valuation_version: String,
     pub include_tentative: bool,
+    /// Materialized-view refresh cadence in seconds (tunable to trade profile
+    /// freshness for DB load).
+    pub matview_refresh_secs: u64,
 }
 
 pub async fn run_follow(
@@ -60,71 +173,118 @@ pub async fn run_follow(
         "follow-mode startup gate passed"
     );
 
-    let shutdown = Arc::new(Notify::new());
+    // Latched shutdown: `watch` (not `Notify`) so a signal delivered during a
+    // supervisor's backoff/respawn gap is not lost. Both SIGINT and SIGTERM
+    // (docker stop / compose) set it.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     tokio::spawn({
-        let shutdown = shutdown.clone();
+        let tx = shutdown_tx.clone();
         async move {
-            let _ = tokio::signal::ctrl_c().await;
-            shutdown.notify_waiters();
+            let mut term = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!(error = %e, "failed to install SIGTERM handler; SIGINT only");
+                    let _ = tokio::signal::ctrl_c().await;
+                    let _ = tx.send(true);
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("received SIGINT; shutting down"),
+                _ = term.recv() => info!("received SIGTERM; shutting down"),
+            }
+            let _ = tx.send(true);
         }
     });
 
+    // Initialize per-task liveness so `/health` has a fresh baseline before the
+    // first iteration completes, and every task starts "up".
+    for task in SUPERVISED_TASKS {
+        metrics.beat(task);
+        metrics.set_task_up(task, true);
+    }
+
     let pg = pg.clone();
+    let policy = RestartPolicy::default();
+    let mut set: JoinSet<()> = JoinSet::new();
 
-    let indexer_task = tokio::spawn(indexer_loop(
-        pg.clone(),
-        cfg.clone(),
-        rpc.archive.clone(),
-        metrics.clone(),
-        shutdown.clone(),
-    ));
-    let finality_task = tokio::spawn(finality_loop(
-        pg.clone(),
-        rpc.l1.clone(),
-        metrics.clone(),
-        shutdown.clone(),
-    ));
-    let reorg_task = tokio::spawn(reorg_loop(
-        pg.clone(),
-        rpc.secondary.clone(),
-        metrics.clone(),
-        shutdown.clone(),
-    ));
-    let valuator_task = tokio::spawn(valuator_loop(
-        pg.clone(),
-        cfg.clone(),
-        rpc.archive.clone(),
-        metrics.clone(),
-        shutdown.clone(),
-        follow.clone(),
-    ));
-    let staker_task = tokio::spawn(staker_loop(
-        pg.clone(),
-        cfg.clone(),
-        rpc.archive.clone(),
-        metrics.clone(),
-        shutdown.clone(),
-        follow.include_tentative,
-    ));
-    let matview_task = tokio::spawn(matview_refresh_loop(
-        pg.clone(),
-        metrics.clone(),
-        shutdown.clone(),
-    ));
+    set.spawn(supervise("indexer", metrics.clone(), shutdown_rx.clone(), policy, {
+        let pg = pg.clone();
+        let cfg = cfg.clone();
+        let archive = rpc.archive.clone();
+        let metrics = metrics.clone();
+        let sd = shutdown_rx.clone();
+        move || indexer_loop(pg.clone(), cfg.clone(), archive.clone(), metrics.clone(), sd.clone())
+    }));
+    set.spawn(supervise("finality", metrics.clone(), shutdown_rx.clone(), policy, {
+        let pg = pg.clone();
+        let l1 = rpc.l1.clone();
+        let metrics = metrics.clone();
+        let sd = shutdown_rx.clone();
+        move || finality_loop(pg.clone(), l1.clone(), metrics.clone(), sd.clone())
+    }));
+    set.spawn(supervise("reorg", metrics.clone(), shutdown_rx.clone(), policy, {
+        let pg = pg.clone();
+        let secondary = rpc.secondary.clone();
+        let metrics = metrics.clone();
+        let sd = shutdown_rx.clone();
+        move || reorg_loop(pg.clone(), secondary.clone(), metrics.clone(), sd.clone())
+    }));
+    set.spawn(supervise("valuator", metrics.clone(), shutdown_rx.clone(), policy, {
+        let pg = pg.clone();
+        let cfg = cfg.clone();
+        let archive = rpc.archive.clone();
+        let metrics = metrics.clone();
+        let follow = follow.clone();
+        let sd = shutdown_rx.clone();
+        move || {
+            valuator_loop(
+                pg.clone(),
+                cfg.clone(),
+                archive.clone(),
+                metrics.clone(),
+                sd.clone(),
+                follow.clone(),
+            )
+        }
+    }));
+    set.spawn(supervise("staker", metrics.clone(), shutdown_rx.clone(), policy, {
+        let pg = pg.clone();
+        let cfg = cfg.clone();
+        let archive = rpc.archive.clone();
+        let metrics = metrics.clone();
+        let include_tentative = follow.include_tentative;
+        let sd = shutdown_rx.clone();
+        move || {
+            staker_loop(
+                pg.clone(),
+                cfg.clone(),
+                archive.clone(),
+                metrics.clone(),
+                sd.clone(),
+                include_tentative,
+            )
+        }
+    }));
+    set.spawn(supervise("matview", metrics.clone(), shutdown_rx.clone(), policy, {
+        let pg = pg.clone();
+        let metrics = metrics.clone();
+        let sd = shutdown_rx.clone();
+        let interval = follow.matview_refresh_secs;
+        move || matview_refresh_loop(pg.clone(), metrics.clone(), sd.clone(), interval)
+    }));
 
-    let (a, b, c, d, e, f) = tokio::join!(
-        indexer_task,
-        finality_task,
-        reorg_task,
-        valuator_task,
-        staker_task,
-        matview_task
-    );
-    for r in [a, b, c, d, e, f] {
-        match r {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(e) => return Err(e.into()),
+    // Supervisors only return on shutdown. A supervisor *panic* means a loop is
+    // now unsupervised — treat it as fatal so the process exits and Docker
+    // restarts the container.
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(()) => {}
+            Err(join_err) if join_err.is_panic() => {
+                let _ = shutdown_tx.send(true);
+                return Err(anyhow::anyhow!("supervisor task panicked: {join_err}"));
+            }
+            Err(_) => {}
         }
     }
     Ok(())
@@ -138,16 +298,20 @@ pub async fn run_follow(
 async fn matview_refresh_loop(
     pg: PgPool,
     metrics: Arc<Metrics>,
-    shutdown: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
+    interval_secs: u64,
 ) -> Result<()> {
     /// (matview name, source table) — source name is informational only,
     /// used for log/metric labels and to keep this list grep-able.
     const VIEWS: &[&str] = &["broadcaster_profile", "orchestrator_profile"];
 
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         tokio::select! {
-            _ = shutdown.notified() => break,
-            _ = sleep(Duration::from_secs(MATVIEW_REFRESH_INTERVAL_SECS)) => {}
+            _ = shutdown.changed() => break,
+            _ = sleep(Duration::from_secs(interval_secs)) => {}
         }
         for view in VIEWS {
             let started = std::time::Instant::now();
@@ -173,11 +337,14 @@ async fn indexer_loop(
     cfg: Config,
     archive: Arc<livepeer_core::rpc::Provider>,
     metrics: Arc<Metrics>,
-    shutdown: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         tokio::select! {
-            _ = shutdown.notified() => break,
+            _ = shutdown.changed() => break,
             _ = sleep(Duration::from_secs(INDEXER_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
@@ -255,11 +422,14 @@ async fn finality_loop(
     pg: PgPool,
     l1: Arc<livepeer_core::rpc::Provider>,
     metrics: Arc<Metrics>,
-    shutdown: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         tokio::select! {
-            _ = shutdown.notified() => break,
+            _ = shutdown.changed() => break,
             _ = sleep(Duration::from_secs(FINALITY_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
@@ -287,11 +457,14 @@ async fn reorg_loop(
     pg: PgPool,
     secondary: Arc<livepeer_core::rpc::Provider>,
     metrics: Arc<Metrics>,
-    shutdown: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         tokio::select! {
-            _ = shutdown.notified() => break,
+            _ = shutdown.changed() => break,
             _ = sleep(Duration::from_secs(REORG_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
@@ -324,12 +497,15 @@ async fn valuator_loop(
     cfg: Config,
     archive: Arc<livepeer_core::rpc::Provider>,
     metrics: Arc<Metrics>,
-    shutdown: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
     follow: FollowConfig,
 ) -> Result<()> {
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         tokio::select! {
-            _ = shutdown.notified() => break,
+            _ = shutdown.changed() => break,
             _ = sleep(Duration::from_secs(VALUATOR_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
@@ -412,12 +588,15 @@ async fn staker_loop(
     cfg: Config,
     archive: Arc<livepeer_core::rpc::Provider>,
     metrics: Arc<Metrics>,
-    shutdown: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
     include_tentative: bool,
 ) -> Result<()> {
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         tokio::select! {
-            _ = shutdown.notified() => break,
+            _ = shutdown.changed() => break,
             _ = sleep(Duration::from_secs(STAKER_INTERVAL_SECS)) => {}
         }
         let started = std::time::Instant::now();
@@ -514,4 +693,141 @@ async fn current_indexer_lag(pg: &PgPool, head: u64) -> Result<u64> {
         return Ok(u64::MAX / 2);
     };
     Ok(head.saturating_sub(cp as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics::Metrics;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    type BoxFut = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+
+    fn fast_policy(max_consecutive: u32) -> RestartPolicy {
+        RestartPolicy {
+            base_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(5),
+            max_consecutive,
+        }
+    }
+
+    /// An inner "loop" that beats then waits for shutdown, mirroring the real
+    /// loops (it returns Ok only when shutdown is observed).
+    fn running_loop(
+        metrics: Arc<Metrics>,
+        task: &'static str,
+        mut sd: watch::Receiver<bool>,
+    ) -> BoxFut {
+        Box::pin(async move {
+            loop {
+                if *sd.borrow() {
+                    return Ok(());
+                }
+                metrics.beat(task);
+                tokio::select! {
+                    _ = sd.changed() => return Ok(()),
+                    _ = sleep(Duration::from_millis(1)) => {}
+                }
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn restarts_on_error_and_does_not_escalate_after_progress() {
+        let metrics = Arc::new(Metrics::new());
+        let (tx, rx) = watch::channel(false);
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let sup = tokio::spawn(supervise("indexer", metrics.clone(), rx.clone(), fast_policy(10), {
+            let metrics = metrics.clone();
+            let attempts = attempts.clone();
+            let rx = rx.clone();
+            move || -> BoxFut {
+                let n = attempts.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    Box::pin(async { Err(anyhow::anyhow!("boom")) })
+                } else {
+                    running_loop(metrics.clone(), "indexer", rx.clone())
+                }
+            }
+        }));
+
+        sleep(Duration::from_millis(200)).await;
+        assert!(
+            metrics
+                .task_restarts_total
+                .with_label_values(&["indexer", "error"])
+                .get()
+                >= 2
+        );
+        assert!(metrics.heartbeat("indexer") > 0, "running loop should beat");
+        assert_eq!(metrics.task_up_value("indexer"), 1, "should not have escalated");
+
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), sup)
+            .await
+            .expect("supervise should stop on shutdown")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn panics_are_caught_and_escalate() {
+        let metrics = Arc::new(Metrics::new());
+        let (tx, rx) = watch::channel(false);
+
+        let sup = tokio::spawn(supervise(
+            "reorg",
+            metrics.clone(),
+            rx.clone(),
+            fast_policy(3),
+            move || -> BoxFut { Box::pin(async { panic!("kaboom") }) },
+        ));
+
+        sleep(Duration::from_millis(200)).await;
+        assert!(
+            metrics
+                .task_restarts_total
+                .with_label_values(&["reorg", "panic"])
+                .get()
+                >= 3
+        );
+        assert_eq!(
+            metrics.task_up_value("reorg"),
+            0,
+            "should escalate after exceeding the restart budget"
+        );
+
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), sup)
+            .await
+            .expect("supervise should stop on shutdown")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stops_on_shutdown_without_restart() {
+        let metrics = Arc::new(Metrics::new());
+        let (tx, rx) = watch::channel(false);
+        let sup = tokio::spawn(supervise("staker", metrics.clone(), rx.clone(), fast_policy(10), {
+            let metrics = metrics.clone();
+            let rx = rx.clone();
+            move || running_loop(metrics.clone(), "staker", rx.clone())
+        }));
+
+        sleep(Duration::from_millis(50)).await;
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), sup)
+            .await
+            .expect("supervise should stop")
+            .unwrap();
+        assert_eq!(
+            metrics
+                .task_restarts_total
+                .with_label_values(&["staker", "error"])
+                .get(),
+            0,
+            "a cleanly-shutdown loop must not be counted as a restart"
+        );
+    }
 }

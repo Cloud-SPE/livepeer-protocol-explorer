@@ -7,8 +7,7 @@ use crate::tools;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    schemars, tool, tool_handler, tool_router,
-    ErrorData as McpError, ServerHandler,
+    schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -65,35 +64,55 @@ impl DiagServer {
         description = "Start here. Walks the indexer→finality→valuation→rollups pipeline and reports the FIRST stage that is stalled or backlogged — the root cause behind indexing stalls, slow pricing, or late reports."
     )]
     async fn dependency_chain(&self) -> Result<CallToolResult, McpError> {
-        json_ok(&tools::dependency_chain::run(&self.ctx).await.map_err(to_mcp_err)?)
+        json_ok(
+            &tools::dependency_chain::run(&self.ctx)
+                .await
+                .map_err(to_mcp_err)?,
+        )
     }
 
     #[tool(
         description = "Per-contract indexer checkpoint lag vs chain head and staleness (now - updated_at). A climbing age with a moving chain head means a wedged daemon task."
     )]
     async fn indexer_health(&self) -> Result<CallToolResult, McpError> {
-        json_ok(&tools::indexer_health::run(&self.ctx).await.map_err(to_mcp_err)?)
+        json_ok(
+            &tools::indexer_health::run(&self.ctx)
+                .await
+                .map_err(to_mcp_err)?,
+        )
     }
 
     #[tool(
         description = "Pricing/valuation backlog for the active version: not-yet-priced count, oldest unpriced event age, due retries, and terminal-failure breakdown by status."
     )]
     async fn pricing_backlog(&self) -> Result<CallToolResult, McpError> {
-        json_ok(&tools::pricing_backlog::run(&self.ctx).await.map_err(to_mcp_err)?)
+        json_ok(
+            &tools::pricing_backlog::run(&self.ctx)
+                .await
+                .map_err(to_mcp_err)?,
+        )
     }
 
     #[tool(
         description = "Daily rollup freshness (latest materialized day, checkpoint staleness, events behind priced frontier) and the upstream stage most likely blocking newer report days."
     )]
     async fn report_readiness(&self) -> Result<CallToolResult, McpError> {
-        json_ok(&tools::report_readiness::run(&self.ctx).await.map_err(to_mcp_err)?)
+        json_ok(
+            &tools::report_readiness::run(&self.ctx)
+                .await
+                .map_err(to_mcp_err)?,
+        )
     }
 
     #[tool(
         description = "Grouped error counts across decode dead-letters, reorgs, RPC cross-check divergences, and failed pricing attempts, with a small recent decode-failure sample."
     )]
     async fn recent_errors(&self) -> Result<CallToolResult, McpError> {
-        json_ok(&tools::recent_errors::run(&self.ctx).await.map_err(to_mcp_err)?)
+        json_ok(
+            &tools::recent_errors::run(&self.ctx)
+                .await
+                .map_err(to_mcp_err)?,
+        )
     }
 
     #[tool(
@@ -114,7 +133,11 @@ impl DiagServer {
         description = "Container liveness (docker ps equivalent) via the read-only proxy. Surfaces silently-crashed standalone workers (rollups, enricher, tx-receipts) as running:false."
     )]
     async fn container_state(&self) -> Result<CallToolResult, McpError> {
-        json_ok(&tools::container_state::run(&self.ctx).await.map_err(to_mcp_err)?)
+        json_ok(
+            &tools::container_state::run(&self.ctx)
+                .await
+                .map_err(to_mcp_err)?,
+        )
     }
 
     #[tool(

@@ -78,7 +78,9 @@ pub async fn advance(
     if include_tentative {
         return Ok(());
     }
-    let Some(frontier) = frontier else { return Ok(()) };
+    let Some(frontier) = frontier else {
+        return Ok(());
+    };
     let new_wm = next_watermark(min_unresolved, frontier);
     sqlx::query(
         "INSERT INTO valuator_cursors (pass_key, watermark, updated_at)
@@ -165,4 +167,3 @@ mod tests {
         assert_eq!(next_watermark(Some(ts(2000)), ts(1000)), ts(1000));
     }
 }
-

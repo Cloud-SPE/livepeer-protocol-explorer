@@ -92,6 +92,26 @@ fn health_status(metrics: &Metrics, now: i64, started_unix: i64) -> Result<Strin
     }
 }
 
+async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
+    let encoder = TextEncoder::new();
+    let mut buf = Vec::new();
+    let mut families = state.metrics.registry.gather();
+    families.extend(livepeer_core::rpc::metrics::gather());
+    families.extend(livepeer_staker::metrics::gather());
+    if encoder.encode(&families, &mut buf).is_err() {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "encode failed",
+        )
+            .into_response();
+    }
+    (
+        [(header::CONTENT_TYPE, encoder.format_type().to_string())],
+        String::from_utf8(buf).unwrap_or_default(),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,24 +171,4 @@ mod tests {
         // All stale, but within the grace window → still OK.
         assert!(health_status(&m, now, now - 10).is_ok());
     }
-}
-
-async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
-    let encoder = TextEncoder::new();
-    let mut buf = Vec::new();
-    let mut families = state.metrics.registry.gather();
-    families.extend(livepeer_core::rpc::metrics::gather());
-    families.extend(livepeer_staker::metrics::gather());
-    if encoder.encode(&families, &mut buf).is_err() {
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "encode failed",
-        )
-            .into_response();
-    }
-    (
-        [(header::CONTENT_TYPE, encoder.format_type().to_string())],
-        String::from_utf8(buf).unwrap_or_default(),
-    )
-        .into_response()
 }

@@ -134,6 +134,9 @@ fn init_tracing(to_stderr: bool) {
             .with(layer.with_writer(std::io::stderr))
             .init();
     } else {
-        tracing_subscriber::registry().with(filter).with(layer).init();
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(layer)
+            .init();
     }
 }

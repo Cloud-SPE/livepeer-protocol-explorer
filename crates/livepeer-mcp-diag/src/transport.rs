@@ -83,8 +83,13 @@ pub async fn serve_http(
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("binding diag MCP HTTP server on {bind}"))?;
-    info!(bind, "diag MCP streamable-http server starting (bearer-protected /mcp)");
-    axum::serve(listener, app).await.context("serving diag MCP HTTP")?;
+    info!(
+        bind,
+        "diag MCP streamable-http server starting (bearer-protected /mcp)"
+    );
+    axum::serve(listener, app)
+        .await
+        .context("serving diag MCP HTTP")?;
     Ok(())
 }
 

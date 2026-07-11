@@ -119,8 +119,7 @@ pub async fn run_onchain_pass_eth(
         include_tentative,
     )
     .await?;
-    let candidates =
-        fetch_eth_candidates(pg, valuation_version, include_tentative, floor).await?;
+    let candidates = fetch_eth_candidates(pg, valuation_version, include_tentative, floor).await?;
     info!(
         candidates = candidates.len(),
         valuation_version, include_tentative, "on-chain ETH pass starting"
@@ -698,8 +697,7 @@ pub async fn run_onchain_pass_lpt(
 
     // Walk all unvalued LPT events (TWAP version + degraded version both gated by
     // separate keys in event_valuations, so a degraded run later won't conflict).
-    let candidates =
-        fetch_lpt_candidates(pg, valuation_version, include_tentative, floor).await?;
+    let candidates = fetch_lpt_candidates(pg, valuation_version, include_tentative, floor).await?;
     summary.events_considered = candidates.len() as u64;
     info!(
         candidates = candidates.len(),

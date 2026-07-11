@@ -48,7 +48,8 @@ pub async fn run(ctx: &DiagContext) -> anyhow::Result<IndexerHealth> {
         let stale = r.age_secs > threshold;
         any_stale |= stale;
         max_age = max_age.max(r.age_secs);
-        min_block = Some(min_block.map_or(r.last_processed_block, |m| m.min(r.last_processed_block)));
+        min_block =
+            Some(min_block.map_or(r.last_processed_block, |m| m.min(r.last_processed_block)));
         let lag_blocks = chain_head.map(|h| h - r.last_processed_block);
         contracts.push(IndexerEntry {
             name: r.name,

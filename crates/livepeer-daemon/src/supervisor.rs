@@ -18,8 +18,9 @@ use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
 /// All supervised task names (labels for metrics + `/health`).
-pub const SUPERVISED_TASKS: [&str; 6] =
-    ["indexer", "finality", "reorg", "valuator", "staker", "matview"];
+pub const SUPERVISED_TASKS: [&str; 6] = [
+    "indexer", "finality", "reorg", "valuator", "staker", "matview",
+];
 
 /// Restart behavior for a supervised loop.
 #[derive(Clone, Copy, Debug)]
@@ -208,71 +209,115 @@ pub async fn run_follow(
     let policy = RestartPolicy::default();
     let mut set: JoinSet<()> = JoinSet::new();
 
-    set.spawn(supervise("indexer", metrics.clone(), shutdown_rx.clone(), policy, {
-        let pg = pg.clone();
-        let cfg = cfg.clone();
-        let archive = rpc.archive.clone();
-        let metrics = metrics.clone();
-        let sd = shutdown_rx.clone();
-        move || indexer_loop(pg.clone(), cfg.clone(), archive.clone(), metrics.clone(), sd.clone())
-    }));
-    set.spawn(supervise("finality", metrics.clone(), shutdown_rx.clone(), policy, {
-        let pg = pg.clone();
-        let l1 = rpc.l1.clone();
-        let metrics = metrics.clone();
-        let sd = shutdown_rx.clone();
-        move || finality_loop(pg.clone(), l1.clone(), metrics.clone(), sd.clone())
-    }));
-    set.spawn(supervise("reorg", metrics.clone(), shutdown_rx.clone(), policy, {
-        let pg = pg.clone();
-        let secondary = rpc.secondary.clone();
-        let metrics = metrics.clone();
-        let sd = shutdown_rx.clone();
-        move || reorg_loop(pg.clone(), secondary.clone(), metrics.clone(), sd.clone())
-    }));
-    set.spawn(supervise("valuator", metrics.clone(), shutdown_rx.clone(), policy, {
-        let pg = pg.clone();
-        let cfg = cfg.clone();
-        let archive = rpc.archive.clone();
-        let metrics = metrics.clone();
-        let follow = follow.clone();
-        let sd = shutdown_rx.clone();
-        move || {
-            valuator_loop(
-                pg.clone(),
-                cfg.clone(),
-                archive.clone(),
-                metrics.clone(),
-                sd.clone(),
-                follow.clone(),
-            )
-        }
-    }));
-    set.spawn(supervise("staker", metrics.clone(), shutdown_rx.clone(), policy, {
-        let pg = pg.clone();
-        let cfg = cfg.clone();
-        let archive = rpc.archive.clone();
-        let metrics = metrics.clone();
-        let include_tentative = follow.include_tentative;
-        let sd = shutdown_rx.clone();
-        move || {
-            staker_loop(
-                pg.clone(),
-                cfg.clone(),
-                archive.clone(),
-                metrics.clone(),
-                sd.clone(),
-                include_tentative,
-            )
-        }
-    }));
-    set.spawn(supervise("matview", metrics.clone(), shutdown_rx.clone(), policy, {
-        let pg = pg.clone();
-        let metrics = metrics.clone();
-        let sd = shutdown_rx.clone();
-        let interval = follow.matview_refresh_secs;
-        move || matview_refresh_loop(pg.clone(), metrics.clone(), sd.clone(), interval)
-    }));
+    set.spawn(supervise(
+        "indexer",
+        metrics.clone(),
+        shutdown_rx.clone(),
+        policy,
+        {
+            let pg = pg.clone();
+            let cfg = cfg.clone();
+            let archive = rpc.archive.clone();
+            let metrics = metrics.clone();
+            let sd = shutdown_rx.clone();
+            move || {
+                indexer_loop(
+                    pg.clone(),
+                    cfg.clone(),
+                    archive.clone(),
+                    metrics.clone(),
+                    sd.clone(),
+                )
+            }
+        },
+    ));
+    set.spawn(supervise(
+        "finality",
+        metrics.clone(),
+        shutdown_rx.clone(),
+        policy,
+        {
+            let pg = pg.clone();
+            let l1 = rpc.l1.clone();
+            let metrics = metrics.clone();
+            let sd = shutdown_rx.clone();
+            move || finality_loop(pg.clone(), l1.clone(), metrics.clone(), sd.clone())
+        },
+    ));
+    set.spawn(supervise(
+        "reorg",
+        metrics.clone(),
+        shutdown_rx.clone(),
+        policy,
+        {
+            let pg = pg.clone();
+            let secondary = rpc.secondary.clone();
+            let metrics = metrics.clone();
+            let sd = shutdown_rx.clone();
+            move || reorg_loop(pg.clone(), secondary.clone(), metrics.clone(), sd.clone())
+        },
+    ));
+    set.spawn(supervise(
+        "valuator",
+        metrics.clone(),
+        shutdown_rx.clone(),
+        policy,
+        {
+            let pg = pg.clone();
+            let cfg = cfg.clone();
+            let archive = rpc.archive.clone();
+            let metrics = metrics.clone();
+            let follow = follow.clone();
+            let sd = shutdown_rx.clone();
+            move || {
+                valuator_loop(
+                    pg.clone(),
+                    cfg.clone(),
+                    archive.clone(),
+                    metrics.clone(),
+                    sd.clone(),
+                    follow.clone(),
+                )
+            }
+        },
+    ));
+    set.spawn(supervise(
+        "staker",
+        metrics.clone(),
+        shutdown_rx.clone(),
+        policy,
+        {
+            let pg = pg.clone();
+            let cfg = cfg.clone();
+            let archive = rpc.archive.clone();
+            let metrics = metrics.clone();
+            let include_tentative = follow.include_tentative;
+            let sd = shutdown_rx.clone();
+            move || {
+                staker_loop(
+                    pg.clone(),
+                    cfg.clone(),
+                    archive.clone(),
+                    metrics.clone(),
+                    sd.clone(),
+                    include_tentative,
+                )
+            }
+        },
+    ));
+    set.spawn(supervise(
+        "matview",
+        metrics.clone(),
+        shutdown_rx.clone(),
+        policy,
+        {
+            let pg = pg.clone();
+            let metrics = metrics.clone();
+            let sd = shutdown_rx.clone();
+            let interval = follow.matview_refresh_secs;
+            move || matview_refresh_loop(pg.clone(), metrics.clone(), sd.clone(), interval)
+        },
+    ));
 
     // Supervisors only return on shutdown. A supervisor *panic* means a loop is
     // now unsupervised — treat it as fatal so the process exits and Docker
@@ -739,19 +784,25 @@ mod tests {
         let (tx, rx) = watch::channel(false);
         let attempts = Arc::new(AtomicUsize::new(0));
 
-        let sup = tokio::spawn(supervise("indexer", metrics.clone(), rx.clone(), fast_policy(10), {
-            let metrics = metrics.clone();
-            let attempts = attempts.clone();
-            let rx = rx.clone();
-            move || -> BoxFut {
-                let n = attempts.fetch_add(1, Ordering::SeqCst);
-                if n < 2 {
-                    Box::pin(async { Err(anyhow::anyhow!("boom")) })
-                } else {
-                    running_loop(metrics.clone(), "indexer", rx.clone())
+        let sup = tokio::spawn(supervise(
+            "indexer",
+            metrics.clone(),
+            rx.clone(),
+            fast_policy(10),
+            {
+                let metrics = metrics.clone();
+                let attempts = attempts.clone();
+                let rx = rx.clone();
+                move || -> BoxFut {
+                    let n = attempts.fetch_add(1, Ordering::SeqCst);
+                    if n < 2 {
+                        Box::pin(async { Err(anyhow::anyhow!("boom")) })
+                    } else {
+                        running_loop(metrics.clone(), "indexer", rx.clone())
+                    }
                 }
-            }
-        }));
+            },
+        ));
 
         sleep(Duration::from_millis(200)).await;
         assert!(
@@ -762,7 +813,11 @@ mod tests {
                 >= 2
         );
         assert!(metrics.heartbeat("indexer") > 0, "running loop should beat");
-        assert_eq!(metrics.task_up_value("indexer"), 1, "should not have escalated");
+        assert_eq!(
+            metrics.task_up_value("indexer"),
+            1,
+            "should not have escalated"
+        );
 
         tx.send(true).unwrap();
         tokio::time::timeout(Duration::from_secs(2), sup)
@@ -809,11 +864,17 @@ mod tests {
     async fn stops_on_shutdown_without_restart() {
         let metrics = Arc::new(Metrics::new());
         let (tx, rx) = watch::channel(false);
-        let sup = tokio::spawn(supervise("staker", metrics.clone(), rx.clone(), fast_policy(10), {
-            let metrics = metrics.clone();
-            let rx = rx.clone();
-            move || running_loop(metrics.clone(), "staker", rx.clone())
-        }));
+        let sup = tokio::spawn(supervise(
+            "staker",
+            metrics.clone(),
+            rx.clone(),
+            fast_policy(10),
+            {
+                let metrics = metrics.clone();
+                let rx = rx.clone();
+                move || running_loop(metrics.clone(), "staker", rx.clone())
+            },
+        ));
 
         sleep(Duration::from_millis(50)).await;
         tx.send(true).unwrap();

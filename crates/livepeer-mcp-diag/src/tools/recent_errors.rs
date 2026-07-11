@@ -25,11 +25,15 @@ pub struct RecentErrors {
 pub async fn run(ctx: &DiagContext) -> anyhow::Result<RecentErrors> {
     let pool = ctx.db.pool();
 
-    let count_rows: Vec<(String, i64)> = sqlx::query_as(queries::ERROR_COUNTS).fetch_all(pool).await?;
+    let count_rows: Vec<(String, i64)> = sqlx::query_as(queries::ERROR_COUNTS)
+        .fetch_all(pool)
+        .await?;
     let counts: BTreeMap<String, i64> = count_rows.into_iter().collect();
 
     let recent_decode_failures: Vec<DecodeFailureSample> =
-        sqlx::query_as(queries::RECENT_DECODE_FAILURES).fetch_all(pool).await?;
+        sqlx::query_as(queries::RECENT_DECODE_FAILURES)
+            .fetch_all(pool)
+            .await?;
 
     Ok(RecentErrors {
         counts,

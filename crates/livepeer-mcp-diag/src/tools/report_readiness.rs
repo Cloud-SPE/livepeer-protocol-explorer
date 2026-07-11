@@ -59,12 +59,14 @@ pub async fn run(ctx: &DiagContext) -> anyhow::Result<ReportReadiness> {
     let pool = ctx.db.pool();
     let today = Utc::now().date_naive();
 
-    let checkpoints: Vec<CheckpointRow> = sqlx::query_as(queries::CHECKPOINTS).fetch_all(pool).await?;
+    let checkpoints: Vec<CheckpointRow> =
+        sqlx::query_as(queries::CHECKPOINTS).fetch_all(pool).await?;
     let cp_by_name: HashMap<&str, &CheckpointRow> =
         checkpoints.iter().map(|c| (c.name.as_str(), c)).collect();
 
-    let max_days: Vec<(String, Option<NaiveDate>)> =
-        sqlx::query_as(queries::ROLLUP_MAX_DAYS).fetch_all(pool).await?;
+    let max_days: Vec<(String, Option<NaiveDate>)> = sqlx::query_as(queries::ROLLUP_MAX_DAYS)
+        .fetch_all(pool)
+        .await?;
     let max_day_by_table: HashMap<String, Option<NaiveDate>> = max_days.into_iter().collect();
 
     let max_priced_event_id: Option<i64> = sqlx::query_scalar(queries::MAX_PRICED_EVENT_ID)
@@ -73,14 +75,17 @@ pub async fn run(ctx: &DiagContext) -> anyhow::Result<ReportReadiness> {
         .fetch_one(pool)
         .await?;
 
-    let finality: FinalityRow = sqlx::query_as(queries::FINALITY_FRONTIER).fetch_one(pool).await?;
+    let finality: FinalityRow = sqlx::query_as(queries::FINALITY_FRONTIER)
+        .fetch_one(pool)
+        .await?;
 
     let backlog: i64 = {
-        let row: (i64, Option<DateTime<Utc>>, Option<i64>) = sqlx::query_as(queries::PRICING_BACKLOG)
-            .bind(&version)
-            .bind(queries::DEGRADED_VALUATION_VERSION)
-            .fetch_one(pool)
-            .await?;
+        let row: (i64, Option<DateTime<Utc>>, Option<i64>) =
+            sqlx::query_as(queries::PRICING_BACKLOG)
+                .bind(&version)
+                .bind(queries::DEGRADED_VALUATION_VERSION)
+                .fetch_one(pool)
+                .await?;
         row.0
     };
 
@@ -101,7 +106,9 @@ pub async fn run(ctx: &DiagContext) -> anyhow::Result<ReportReadiness> {
             max_day,
             days_behind: max_day.map(|d| (today - d).num_days()),
             checkpoint_age_secs,
-            stale: checkpoint_age_secs.map(|a| a > rollup_stale).unwrap_or(true),
+            stale: checkpoint_age_secs
+                .map(|a| a > rollup_stale)
+                .unwrap_or(true),
             max_source_event_id,
             events_behind_priced,
         });

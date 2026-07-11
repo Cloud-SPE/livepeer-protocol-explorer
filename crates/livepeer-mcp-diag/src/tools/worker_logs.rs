@@ -22,7 +22,10 @@ pub async fn run(
     since_secs: Option<i64>,
 ) -> anyhow::Result<WorkerLogs> {
     let want = lines.unwrap_or(output::DEFAULT_LOG_LINES);
-    let (lines, truncated) = ctx.docker.container_logs(container, want, since_secs).await?;
+    let (lines, truncated) = ctx
+        .docker
+        .container_logs(container, want, since_secs)
+        .await?;
     Ok(WorkerLogs {
         container: container.to_string(),
         line_count: lines.len(),

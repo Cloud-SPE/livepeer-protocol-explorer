@@ -21,7 +21,9 @@ pub struct RawSqlResult {
 pub async fn run(ctx: &DiagContext, sql: &str, limit: Option<i64>) -> anyhow::Result<RawSqlResult> {
     let stmt = sql_guard::validate(sql).map_err(|e| anyhow::anyhow!("rejected: {e}"))?;
 
-    let requested = limit.unwrap_or(output::MAX_RAW_ROWS).clamp(1, output::MAX_RAW_ROWS);
+    let requested = limit
+        .unwrap_or(output::MAX_RAW_ROWS)
+        .clamp(1, output::MAX_RAW_ROWS);
     // Fetch one extra row to detect truncation without a second query.
     let mut rows = ctx.db.raw_select(&stmt, requested + 1).await?;
     let truncated = rows.len() as i64 > requested;

@@ -75,7 +75,8 @@ pub async fn run(ctx: &DiagContext) -> anyhow::Result<DependencyChain> {
     let version = ctx.valuation_version().to_string();
     let th = &ctx.cfg.thresholds;
 
-    let checkpoints: Vec<CheckpointRow> = sqlx::query_as(queries::CHECKPOINTS).fetch_all(pool).await?;
+    let checkpoints: Vec<CheckpointRow> =
+        sqlx::query_as(queries::CHECKPOINTS).fetch_all(pool).await?;
     let chain_head = ctx.metrics.chain_head().await;
 
     // ── Stage 1: indexer ────────────────────────────────────────────────
@@ -92,7 +93,9 @@ pub async fn run(ctx: &DiagContext) -> anyhow::Result<DependencyChain> {
     let indexer_stalled = indexer_max_age > th.indexer_stale_secs;
 
     // ── Stage 2: finality ───────────────────────────────────────────────
-    let finality: FinalityRow = sqlx::query_as(queries::FINALITY_FRONTIER).fetch_one(pool).await?;
+    let finality: FinalityRow = sqlx::query_as(queries::FINALITY_FRONTIER)
+        .fetch_one(pool)
+        .await?;
     let finality_lagging = finality
         .age_secs
         .map(|a| a > th.finality_lag_secs)
@@ -154,7 +157,8 @@ pub async fn run(ctx: &DiagContext) -> anyhow::Result<DependencyChain> {
     } else if any_stale {
         (
             "rollup",
-            "a rollup checkpoint is stale — the standalone rollup container may be down".to_string(),
+            "a rollup checkpoint is stale — the standalone rollup container may be down"
+                .to_string(),
         )
     } else {
         ("ok", "all stages within thresholds".to_string())

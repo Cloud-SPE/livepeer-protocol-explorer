@@ -85,6 +85,22 @@ async fn has_seed_candidates(
     Ok(exists)
 }
 
+/// Upsert the seed change-detector marker (row count of seeded_event_prices)
+/// so the next cycle can skip the expensive candidate scan when unchanged.
+async fn record_seed_marker(pg: &PgPool, seed_key: &str, count: i64) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO valuator_cursors (pass_key, watermark, seed_max_id, updated_at)
+             VALUES ($1, now(), $2, now())
+         ON CONFLICT (pass_key)
+             DO UPDATE SET watermark = now(), seed_max_id = EXCLUDED.seed_max_id, updated_at = now()",
+    )
+    .bind(seed_key)
+    .bind(count)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// Walk all unvalued, valuable, canonical events at the given valuation_version
 /// and price each via seed lookup. Skips events without seed coverage and
 /// multi-asset events. Bulk SQL — single INSERT…SELECT for valuations, paired
@@ -139,6 +155,12 @@ pub async fn run_seed_pass(
     }
 
     if !has_seed_candidates(pg, valuation_version, include_tentative).await? {
+        // Record the marker here too: this is the steady-state exit (no
+        // candidates), so without it the change-detector marker would never be
+        // written and the expensive has_seed_candidates scan would run forever.
+        if !include_tentative {
+            record_seed_marker(pg, &seed_key, cur_seed_count).await?;
+        }
         let summary = SeedRunSummary::default();
         info!(?summary, "seed-pass skipped (no candidates)");
         return Ok(summary);
@@ -269,16 +291,7 @@ pub async fn run_seed_pass(
     // signal is how many rows we priced this run.
     // Record the seed change-detector marker for the next cycle.
     if !include_tentative {
-        sqlx::query(
-            "INSERT INTO valuator_cursors (pass_key, watermark, seed_max_id, updated_at)
-                 VALUES ($1, now(), $2, now())
-             ON CONFLICT (pass_key)
-                 DO UPDATE SET watermark = now(), seed_max_id = EXCLUDED.seed_max_id, updated_at = now()",
-        )
-        .bind(&seed_key)
-        .bind(cur_seed_count)
-        .execute(pg)
-        .await?;
+        record_seed_marker(pg, &seed_key, cur_seed_count).await?;
     }
 
     let summary = SeedRunSummary {

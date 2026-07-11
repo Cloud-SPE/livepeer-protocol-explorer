@@ -430,12 +430,14 @@ async fn fetch_candidates(
                )
              ORDER BY r.block_number, r.log_index"#
     );
-    let rows = sqlx::query(&sql)
+    let mut q = sqlx::query(&sql)
         .bind(ARBITRUM_CHAIN_ID)
         .bind(valuation_version)
-        .bind(&degraded)
-        .fetch_all(pg)
-        .await?;
+        .bind(&degraded);
+    if !include_tentative {
+        q = q.bind(floor);
+    }
+    let rows = q.fetch_all(pg).await?;
     Ok(rows
         .into_iter()
         .map(|r| MultiAssetCandidate {
@@ -445,6 +447,7 @@ async fn fetch_candidates(
             block_timestamp: r.get(3),
             rewards_wei: r.try_get(4).unwrap_or_else(|_| "0".to_string()),
             fees_wei: r.try_get(5).unwrap_or_else(|_| "0".to_string()),
+            finalized_at: r.get(6),
         })
         .collect())
 }

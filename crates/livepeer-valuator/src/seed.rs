@@ -104,6 +104,39 @@ pub async fn run_seed_pass(
         include_tentative, "seed-pass starting (bulk)"
     );
 
+    // Change-detector gate. Seed candidacy only changes when new seeds are
+    // imported (seeds are historical; live events are never seeded), so skip
+    // the expensive candidate scan when max(seeded_event_prices.id) is unchanged
+    // since the last seed run. Bypassed when cold (no valuations for this
+    // version — post-truncate/replay) or include_tentative. Break-glass: delete
+    // the SEED cursor row (or `--reset-seed-cursor`) to force a full re-scan.
+    let seed_key = crate::cursor::pass_key(valuation_version, "SEED");
+    let cur_max_seed: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(id) FROM seeded_event_prices",
+    )
+    .fetch_one(pg)
+    .await?;
+    if !include_tentative {
+        let stored: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT seed_max_id FROM valuator_cursors WHERE pass_key = $1",
+        )
+        .bind(&seed_key)
+        .fetch_optional(pg)
+        .await?
+        .flatten();
+        let has_valuations: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM event_valuations WHERE valuation_version = $1)",
+        )
+        .bind(valuation_version)
+        .fetch_one(pg)
+        .await?;
+        if has_valuations && stored.is_some() && stored == cur_max_seed {
+            let summary = SeedRunSummary::default();
+            info!(?summary, "seed-pass skipped (no new seeds imported)");
+            return Ok(summary);
+        }
+    }
+
     if !has_seed_candidates(pg, valuation_version, include_tentative).await? {
         let summary = SeedRunSummary::default();
         info!(?summary, "seed-pass skipped (no candidates)");
@@ -233,6 +266,20 @@ pub async fn run_seed_pass(
     // On full-history datasets the upfront summary query was taking tens of
     // seconds before the pass did any real work. The operationally useful
     // signal is how many rows we priced this run.
+    // Record the seed change-detector marker for the next cycle.
+    if !include_tentative {
+        sqlx::query(
+            "INSERT INTO valuator_cursors (pass_key, watermark, seed_max_id, updated_at)
+                 VALUES ($1, now(), $2, now())
+             ON CONFLICT (pass_key)
+                 DO UPDATE SET watermark = now(), seed_max_id = EXCLUDED.seed_max_id, updated_at = now()",
+        )
+        .bind(&seed_key)
+        .bind(cur_max_seed)
+        .execute(pg)
+        .await?;
+    }
+
     let summary = SeedRunSummary {
         events_considered: 0,
         seed_hits: 0,

@@ -27,7 +27,8 @@ Authoritative spec: [docs/product-specs/v1-livepeer-indexer.md](docs/product-spe
 │   ├── livepeer-orchestrator/      bin — one-shot CLI (migrate-only / replay / bootstrap / backfill-cuts)
 │   ├── livepeer-api/               bin — Axum HTTP API + serves the SPA bundle
 │   ├── livepeer-alert-bot/         bin — Telegram + Discord alerting on indexer-health metrics
-│   └── livepeer-seed-migrator/     bin — one-shot SQLite → seeded_event_prices import
+│   ├── livepeer-seed-migrator/     bin — one-shot SQLite → seeded_event_prices import
+│   └── livepeer-mcp-diag/          bin — read-only production diagnostics MCP server (SELECT-only diag_ro role + GET-only docker proxy)
 ├── abi/                            vendored ABI JSON. Hashes verified at boot (SPEC §5.5).
 ├── config/
 │   ├── arbitrum.yaml               static config — addresses, pricing, retry policy
@@ -50,7 +51,7 @@ Authoritative spec: [docs/product-specs/v1-livepeer-indexer.md](docs/product-spe
 ├── ops/                            Prometheus + Alertmanager configs
 ├── scripts/                        operator scripts (resume-catchup-all, stop-all, ...)
 ├── .github/workflows/              ci.yml (auto) + determinism.yml (workflow_dispatch only)
-├── Dockerfile                      multi-stage; one image, all 12 binaries
+├── Dockerfile                      multi-stage; one image, all 13 binaries
 ├── docker-compose.yml              SPEC §15.2 single-host deployment (dev)
 ├── docker-compose.prod.yml         production compose pulling tztcloud/livepeer-protocol-explorer
 └── rust-toolchain.toml             pinned to 1.94.1

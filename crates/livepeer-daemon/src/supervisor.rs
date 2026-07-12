@@ -338,7 +338,7 @@ pub async fn run_follow(
 /// TD-025/TD-026: refresh derived materialized views on a tight cadence
 /// so API reads against `broadcaster_profile` and `orchestrator_profile`
 /// track upstream writes to their source tables within
-/// ~`MATVIEW_REFRESH_INTERVAL_SECS`. CONCURRENTLY uses the unique index
+/// ~`DAEMON_MATVIEW_REFRESH_SECS`. CONCURRENTLY uses the unique index
 /// on (chain_id, address) and does not block readers.
 async fn matview_refresh_loop(
     pg: PgPool,

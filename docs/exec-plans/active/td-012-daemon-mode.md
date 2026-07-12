@@ -1,9 +1,11 @@
 # TD-012: Daemon mode — keep the pipeline at chain head
 
-**Status:** In progress — Phase 1 done, Phase 2 implemented, Phase 3 hardening underway.
+**Status:** In progress — Phase 1 done, Phase 2 shipped (all six loops
+supervised in-process with restart-with-backoff), Phase 3a metrics + `/health`
+shipped; alerting (3b) still underway.
 **Severity:** Medium — v1 ships as one-shot CLIs that must be re-invoked to keep
 moving forward; production use needs a long-running supervised daemon.
-**Last touched:** 2026-05-04.
+**Last touched:** 2026-07-12.
 
 ## Problem statement
 
@@ -412,7 +414,7 @@ The daemon will call those same library functions repeatedly under a scheduler.
 The daemon wraps each library function inside its own
 `tokio::spawn(async move { loop { ... } })` task.
 
-The first daemon scope should be intentionally narrow:
+The first daemon scope was intentionally narrow:
 
 - Required in daemon v1: indexer, finality watcher, valuator
 - Defer or keep separate initially: reorg watcher, staker
@@ -420,6 +422,14 @@ The first daemon scope should be intentionally narrow:
 Reasoning: keeping the initial daemon focused on ingestion + finalization +
 valuation minimizes failure-surface while solving the highest-value
 steady-state problem first.
+
+> **Superseded (as shipped).** The narrow cut is history. The daemon now
+> supervises **all six loops in-process** — `SUPERVISED_TASKS = [indexer,
+> finality, reorg, valuator, staker, matview]` — each under its own
+> `supervise()` restart-with-backoff wrapper. Folding reorg and staker in
+> became safe once per-task supervision meant a flapping loop restarts itself
+> instead of taking the daemon down, so the "keep them standalone" hedge is no
+> longer needed.
 
 #### First daemon PR slice
 
@@ -441,6 +451,12 @@ The first Phase 2 PR should also stay narrow:
      conservative cadence with no mutation-policy changes
    - staker standalone until the follow loop is proven stable
 
+> **Done / superseded.** Both `reorg` and `staker` now run as first-class
+> supervised loops inside the daemon (reorg every 60s, staker every 300s) — see
+> the *Async task topology* and *Supervision + graceful shutdown* sections. The
+> standalone binaries are still shipped for cold-start/decomposed operation but
+> are no longer the steady-state path.
+
 Acceptance for the first daemon PR slice:
 
 - daemon refuses to start when lag is above threshold
@@ -451,28 +467,46 @@ Acceptance for the first daemon PR slice:
 
 #### Async task topology
 
+> **As shipped:** six loops, each wrapped in its own `supervise()` combinator
+> (see *Graceful shutdown* below). The list, order, and cadences are the
+> `SUPERVISED_TASKS` constant in `crates/livepeer-daemon/src/supervisor.rs`.
+
 ```
                      ┌──────────────────────┐
                      │  Arc<Provider>       │  shared rate limiter
                      │  (rpc pool, N=24)    │  + cross-task semaphore
                      └────────┬─────────────┘
                               │
-   ┌──────────┬───────────────┼────────────┬──────────────┐
-   │          │               │            │              │
-┌──┴──────┐ ┌─┴─────────┐ ┌───┴───────┐ ┌──┴──────────┐ ┌─┴───────────┐
-│indexer  │ │reorg-wat. │ │valuator   │ │staker       │ │finality-wat.│
-│ every   │ │ every 60s │ │ every 60s │ │ every 300s  │ │ every 60s   │
-│  12s    │ │           │ │           │ │             │ │             │
-└─────────┘ └───────────┘ └───────────┘ └─────────────┘ └─────────────┘
-       │           │            │              │             │
-       └───────────┴────────────┴──────────────┴─────────────┘
+   ┌──────────┬───────────────┼────────────┬──────────────┬────────────┐
+   │          │               │            │              │            │
+┌──┴──────┐ ┌─┴─────────┐ ┌───┴───────┐ ┌──┴──────────┐ ┌─┴───────────┐ ┌┴─────────┐
+│indexer  │ │reorg      │ │valuator   │ │staker       │ │finality     │ │matview   │
+│ every   │ │ every 60s │ │ every 60s │ │ every 300s  │ │ every 60s   │ │ every 30s│
+│  12s    │ │           │ │           │ │             │ │             │ │ (default)│
+└─────────┘ └───────────┘ └───────────┘ └─────────────┘ └─────────────┘ └──────────┘
+   each loop is wrapped in supervise(): catch Err+panic → back off → respawn
+       │           │            │              │             │           │
+       └───────────┴────────────┴──────────────┴─────────────┴───────────┘
                               │
                      ┌────────┴─────────────┐
-                     │ shutdown_signal      │  tokio::sync::Notify
-                     │ (one for the whole   │  fired by Ctrl-C
-                     │  daemon)             │  / SIGTERM
+                     │ shutdown             │  watch::Receiver<bool>
+                     │ (latched; one for    │  set by SIGINT (ctrl_c)
+                     │  the whole daemon)   │  *and* SIGTERM
                      └──────────────────────┘
 ```
+
+The `matview` loop (6th task) refreshes the `orchestrator_profile` /
+`broadcaster_profile` materialized views `CONCURRENTLY` every
+`DAEMON_MATVIEW_REFRESH_SECS` (default 30s). It is a full supervised loop like
+the others but is intentionally **excluded from `/health` gating** — a stale
+profile view is cosmetic and must not restart the whole container.
+
+A latched `watch::channel(false)` (not a `tokio::sync::Notify`) is used so a
+signal delivered during a supervisor's backoff/respawn gap is not lost — a
+`Notify` only wakes current waiters, so a signal arriving while a loop is
+sleeping between restarts could be missed. Both SIGINT (`ctrl_c()`) and SIGTERM
+(`signal(SignalKind::terminate())`, the signal `docker stop` / compose sends)
+set the latch.
 
 #### Shared RPC manager
 
@@ -490,53 +524,118 @@ Acceptance for the first daemon PR slice:
   manager, not in daemon task code. Tasks should depend on a stable handle and
   remain unaware of connection-pool refreshes.
 
-#### Graceful shutdown
+#### Supervision + graceful shutdown
+
+> **As shipped** — the original design (below the fold in git history) had each
+> task call `shutdown.notify_waiters(); break;` on its *first* fatal error,
+> which tore down the whole daemon whenever any one loop hit an unrecoverable
+> error. That was replaced by a per-task `supervise()` combinator: a broken
+> loop restarts itself with backoff instead of killing its siblings, and only a
+> *supervisor* panic (or a failed `/health` probe → container restart) is fatal.
+
+Each loop is spawned inside a `supervise()` combinator that owns the
+restart-with-backoff policy. `supervise()`:
 
 ```rust
-let shutdown = Arc::new(Notify::new());
+// One supervisor per loop. Never breaks except on shutdown.
+async fn supervise(task, metrics, mut shutdown: watch::Receiver<bool>, policy, mut make_fut) {
+    let mut consecutive = 0u32;
+    loop {
+        if *shutdown.borrow() { break; }
 
-// signal handler
-tokio::spawn({
-    let shutdown = shutdown.clone();
-    async move {
-        tokio::signal::ctrl_c().await.ok();
-        shutdown.notify_waiters();
-    }
-});
+        let hb_before = metrics.heartbeat(task);
+        // Run the loop on its own task so a panic is *caught*, not fatal.
+        let outcome = tokio::spawn(make_fut()).await;
+        if *shutdown.borrow() { break; }   // clean stop, not a restart
 
-// each task loop
-loop {
-    tokio::select! {
-        _ = shutdown.notified() => break,
-        _ = tokio::time::sleep(interval) => {}
-    }
-    let result = run_one_iteration(...).await;
-    match result {
-        Ok(_) => {},
-        Err(e) if e.is_recoverable() => warn!(err=%e, "iteration failed; retrying next tick"),
-        Err(e) => {
-            error!(err=%e, "fatal iteration failure; daemon shutting down");
-            shutdown.notify_waiters();
-            break;
+        let reason = match outcome {
+            Ok(Ok(()))   => "error",   // a loop only returns Ok on shutdown; anomalous → restart
+            Ok(Err(_))   => "error",
+            Err(j) if j.is_cancelled() => break,  // runtime tearing down
+            Err(_)       => "panic",
+        };
+        metrics.record_restart(task, reason);        // livepeer_task_restarts_total{task,reason}
+
+        // Progress-based reset: heartbeat advanced ⇒ the loop made progress.
+        if metrics.heartbeat(task) > hb_before { consecutive = 0; }
+        else { consecutive += 1; }
+
+        // Escalate after repeated deaths-without-progress → /health turns it into a restart.
+        metrics.set_task_up(task, consecutive <= policy.max_consecutive);  // livepeer_task_up{task}
+
+        // Exponential backoff (1s base × 2^(n-1), capped at 60s), interruptible by shutdown.
+        tokio::select! {
+            _ = shutdown.changed() => break,
+            _ = sleep(backoff) => {}
         }
     }
 }
 ```
 
-Each task must process **small resumable bounded units** and return an
-`IterSummary`. The daemon should not hide long opaque loops inside worker
-tasks; scheduling and cancellation belong at the supervisor layer.
+The shutdown latch and signal handler:
+
+```rust
+// Latched: a signal during a backoff/respawn gap is not lost (unlike Notify).
+let (shutdown_tx, shutdown_rx) = watch::channel(false);
+tokio::spawn(async move {
+    let mut term = signal(SignalKind::terminate())?;      // SIGTERM (docker stop / compose)
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},                // SIGINT
+        _ = term.recv() => {},
+    }
+    let _ = shutdown_tx.send(true);
+});
+
+// Supervisors only return on shutdown. A supervisor *panic* leaves a loop
+// unsupervised → treat as fatal so the process exits and Docker restarts it.
+while let Some(res) = set.join_next().await {
+    if let Err(j) = res {
+        if j.is_panic() { return Err(anyhow!("supervisor task panicked: {j}")); }
+    }
+}
+```
+
+Each inner loop still processes **small resumable bounded units** and beats its
+liveness heartbeat (`livepeer_task_last_success_timestamp{task}`) after each
+successful iteration; scheduling, restart, and cancellation belong at the
+supervisor layer.
 
 Key invariants:
-- An iteration **never spans a shutdown** — `run_one_iteration` runs to
-  completion (it's bounded; e.g. one indexer chunk = ≤1000 blocks ≈ 5–15s).
-- On shutdown, the supervisor `JoinHandle::await`s each task; SIGTERM
-  grace period (systemd `TimeoutStopSec=60s`) is sized to fit the longest
+- **A single broken loop never kills the daemon.** `supervise()` catches the
+  loop's `Err` *and* any panic, backs off, and respawns just that loop. Only a
+  supervisor-level panic is fatal (it exits the process → Docker restarts the
+  container), and a persistently-wedged/escalated loop is caught by the
+  `/health` probe (below), which is what turns a stuck task into a restart.
+- An iteration **never spans a shutdown** — each loop `select!`s the shutdown
+  latch against its cadence sleep and returns `Ok(())` when the latch is set;
+  bounded iterations (e.g. one indexer chunk = ≤1000 blocks) run to completion.
+- On shutdown, the supervisor `JoinSet::join_next()`s each supervisor to
+  completion; the Docker `stop_grace_period` is sized to fit the longest
   iteration plus a safety margin.
 - Database commits already happen per chunk / per event, so an interrupted
   iteration leaves the cursor advanced for the work it actually finished.
 
-#### Config schema (`/etc/livepeer/daemon.yaml`)
+#### Config schema — proposed `/etc/livepeer/daemon.yaml` vs what shipped
+
+> **What shipped is NOT a `daemon.yaml`.** There is no dedicated daemon config
+> file. The daemon reuses the same config surface as every other binary — the
+> static + env YAML pair (`--static-config`/`STATIC_CONFIG`, default
+> `config/arbitrum.yaml`; `--env-config`/`ENV_CONFIG`, default
+> `config/env/dev.yaml`) — plus a handful of CLI flags / env vars on
+> `livepeer-daemon follow`:
+>
+> - `--max-start-lag-blocks` (default `50_000`) — startup lag gate
+> - `--version` — valuation version (defaults to the static config's
+>   `pricing.default_valuation_version`)
+> - `--include-tentative` (default `false`)
+> - `--matview-refresh-secs` / `DAEMON_MATVIEW_REFRESH_SECS` (default `30`)
+> - `--metrics-bind` / `DAEMON_METRICS_BIND` (default **`0.0.0.0:9107`**, not
+>   `127.0.0.1:9090`) — serves both `/metrics` and `/health`
+>
+> Per-task cadences, head depth, per-chunk size, and RPC caps are compile-time
+> constants in `supervisor.rs` / `core::rpc`, not YAML keys. The block below is
+> the **original proposal**, kept for design context — it is not the shipped
+> schema.
 
 ```yaml
 chain_id: 42161
@@ -574,8 +673,13 @@ tasks:
   finality_watcher:
     enabled: true
     interval_seconds: 60
+  matview:                         # SHIPPED as the 6th supervised loop
+    enabled: true
+    interval_seconds: 30           # DAEMON_MATVIEW_REFRESH_SECS
+    views: [orchestrator_profile, broadcaster_profile]
+    health_gated: false            # stale profile view must not restart the daemon
 metrics:
-  bind: "127.0.0.1:9090"           # Prometheus scrape target
+  bind: "127.0.0.1:9090"           # SHIPPED default is 0.0.0.0:9107 (DAEMON_METRICS_BIND)
 alerting:
   telegram:                        # Phase 3 wiring
     enabled: false
@@ -597,37 +701,96 @@ alerting:
 
 #### 3a — Prometheus metrics (per SPEC §17.2)
 
-Catalog (final names TBD; prefix `livepeer_`):
+> **As shipped.** The early catalog below the fold used per-worker metric names
+> (`livepeer_indexer_lag_blocks`, …) and richer labels than landed. The shipped
+> daemon (`crates/livepeer-daemon/src/metrics.rs`) instead uses a **generic
+> `{task}` label** across all per-loop metrics, so one metric covers all six
+> supervised loops. The reconciled catalog is below; everything is prefixed
+> `livepeer_` and served on `/metrics` (`DAEMON_METRICS_BIND`, default
+> `0.0.0.0:9107`).
 
-**Counters**
-- `livepeer_iterations_total{task}` — successful iterations
-- `livepeer_iteration_failures_total{task,error_kind}` — split by error
-  classification (rpc_http, rpc_divergence, db, decoder, internal)
+**Per-task loop metrics (label: `{task}` ∈ indexer|finality|reorg|valuator|staker|matview)**
+- `livepeer_iterations_total{task}` — successful iterations (counter)
+- `livepeer_iteration_failures_total{task,error_kind}` — `error_kind` ∈
+  `{rpc, db, internal}` (from `classify_error`; counter)
+- `livepeer_iteration_duration_seconds{task}` — histogram
+- `livepeer_task_last_success_timestamp{task}` — **liveness heartbeat**, unix
+  seconds of the last successful iteration; advances every healthy cadence,
+  stalls when a loop is wedged/erroring. Read by `supervise()` (progress-based
+  backoff reset) and by `/health` (gauge)
+- `livepeer_task_restarts_total{task,reason}` — `reason` ∈ `{error, panic}`;
+  incremented by `supervise()` on each restart (counter)
+- `livepeer_task_up{task}` — 1 healthy, 0 after a loop exceeds its restart
+  budget (escalated); fed into the `/health` decision (gauge)
+- `livepeer_task_lag_blocks{task}` — per-task lag in blocks (gauge; today only
+  `indexer` is populated)
+- `livepeer_task_checkpoint_block{task}` — latest checkpoint-like block per task
+  (gauge; today only `indexer`)
+- `livepeer_task_rpc_limit{task}` / `livepeer_task_rpc_in_flight{task}` —
+  per-task soft RPC concurrency cap and current in-flight permits (gauges)
+
+**Ingestion / valuation / reorg counters**
 - `livepeer_events_indexed_total{contract}` — rows committed to
   `raw_protocol_events`
-- `livepeer_events_valued_total{asset,version,status}` — by
-  `event_valuations.status` (priced / failed_*)
-- `livepeer_rpc_calls_total{provider,method,result}` — provider-level
-- `livepeer_rpc_cache_hits_total{method}` — cache effectiveness
-- `livepeer_rpc_divergence_total{method}` — TD-011-related; should stay 0
+- `livepeer_decode_failures_total{contract}` — decode failures written
+- `livepeer_events_valued_total{status}` — valuation outcomes by status;
+  `status` ∈ `{priced, failed_missing_oracle, failed_sequencer_outage,
+  failed_missing_pool, failed_other}` (note: **only a `status` label** — the
+  earlier `{asset,version,status}` shape was not shipped)
+- `livepeer_reorgs_detected_total{severity}` — reorg divergences detected
 
-**Gauges**
-- `livepeer_chain_head_block` — most recent `eth_blockNumber` we observed
-- `livepeer_indexer_checkpoint_block` — latest committed indexer cursor
-- `livepeer_indexer_lag_blocks` = head − checkpoint
-- `livepeer_valuator_lag_blocks` — head − latest valued block per asset
-- `livepeer_finality_pending_count{kind}` — rows still tentative/l1_posted
-- `livepeer_rpc_pool_in_flight` — semaphore acquired count
-- `livepeer_db_pool_in_flight`
+**Matview refresh metrics (label: `{view}`)**
+- `livepeer_matview_refresh_total{view,result}` — refresh attempts; `result` ∈
+  `{success, error}` (counter)
+- `livepeer_matview_refresh_seconds{view}` — wall-clock seconds of the most
+  recent refresh (gauge, last-sample)
 
-**Histograms**
-- `livepeer_iteration_duration_seconds{task}`
-- `livepeer_rpc_call_duration_seconds{provider,method}` — from
-  `core::rpc::Provider`
-- `livepeer_indexer_chunk_size_blocks`
+**Process-wide gauge**
+- `livepeer_chain_head_block` — most recent `eth_blockNumber` observed
+
+Provider-level metrics (`rpc_calls_total`, `rpc_call_duration_seconds`,
+divergence counters, etc.) are **not** owned by `metrics.rs`; `/metrics` also
+folds in `livepeer_core::rpc::metrics::gather()` and
+`livepeer_staker::metrics::gather()` at scrape time.
 
 The metric set is **observability surface, not the alert surface** —
 alerts are derived from these via Prometheus rules.
+
+#### 3a′ — `/health` staleness contract (shipped)
+
+> This resolved open question 5 below: `/health` is served by the daemon itself
+> (not proxied through the API) on `DAEMON_METRICS_BIND` and is the Docker
+> healthcheck target.
+
+`/health` reads the in-process heartbeat/up gauges (no DB query) and returns:
+
+- **`200 OK`** when every *gated* task is fresh and up.
+- **`503 Service Unavailable`** when any gated task's heartbeat age exceeds its
+  threshold **or** its `livepeer_task_up == 0` (escalated). A 503 drives a
+  whole-container restart, turning a wedged/permanently-broken loop into a
+  restart instead of a silent partial stall.
+
+Per-task staleness thresholds (`HEALTH_THRESHOLDS` in `http.rs`), roughly
+`k × cadence` so fast loops surface a stall in minutes while the slow staker
+keeps margin:
+
+| task | threshold |
+|---|---|
+| indexer | 300s |
+| finality | 300s |
+| reorg | 300s |
+| valuator | 300s |
+| staker | 900s |
+| **matview** | **excluded — not health-gated** |
+
+- **Startup grace:** `HEALTH_START_GRACE_SECS = 120` — `/health` always
+  reports OK for the first 120s after boot so a slow first iteration (or the
+  Docker `start_period`) doesn't trigger a restart loop before the loops have
+  run once.
+- **matview is intentionally excluded** from gating — a stale profile matview
+  is cosmetic and must not restart the daemon. It is still a fully supervised
+  loop (restarts/backoff, `task_up`, matview metrics) — it just doesn't feed
+  the health decision.
 
 #### 3b — Alerting (Telegram, per SPEC §13.5)
 
@@ -744,6 +907,12 @@ Lives at `docs/RUNBOOK.md`. Sections:
    Today `/backfills/status` exists for this purpose (TD-010 item 4 —
    it's slow because of `COUNT(*)`). Consider rebuilding it from
    daemon's gauge values once Phase 3 metrics ship.
+
+   > **Partially resolved.** The daemon now serves its own `/health` and
+   > `/metrics` directly on `DAEMON_METRICS_BIND` (default `0.0.0.0:9107`); the
+   > `/health` staleness contract is specified in §3a′ above and is the Docker
+   > healthcheck target. Whether the API server also proxies it as
+   > `/operational/daemon-health` is still open.
 
 ## Acceptance for closing TD-012
 

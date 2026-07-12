@@ -129,6 +129,7 @@ Pinned in `rust-toolchain.toml` to **Rust 1.94.1**. CI matches via `dtolnay/rust
 | `livepeer-seed-migrator` | One-time SQLite → `seeded_event_prices` import. |
 | `livepeer-api` | Axum HTTP server. Serves `/api/v1/*`, operational endpoints, and the SPA. |
 | `livepeer-alert-bot` | Telegram + Discord alerting on indexer-health metrics. |
+| `livepeer-mcp-diag` | Read-only production diagnostics MCP server (SELECT-only `diag_ro` role + GET-only docker-socket proxy). See `crates/livepeer-mcp-diag/README.md`. |
 
 ### API surface
 
@@ -196,7 +197,7 @@ cargo test --workspace -- --include-ignored
 
 ```
 .
-├── crates/                         13 Cargo workspace members (see AGENTS.md)
+├── crates/                         14 Cargo workspace members (see AGENTS.md)
 ├── abi/                            vendored Livepeer ABI JSON (hash-verified at boot)
 ├── config/                         static + env-overlay YAML config
 ├── migrations/                     sqlx-cli forward-only migrations

@@ -1,12 +1,20 @@
 # Livepeer Protocol Event Indexing & Exact Historical Valuation System
 
-## Technical Specification v1.9
+## Technical Specification v1.10
 
 **Status:** Living spec for the implemented v1 system
 **Target chain:** Arbitrum One (chain_id 42161)
 **Primary asset:** Livepeer Token (LPT)
 **Secondary asset:** Ethereum (ETH)
-**Document version:** 1.9
+**Document version:** 1.10
+
+### Changes since v1.9 (2026-07-12)
+
+Documentation-alignment pass — no behavioral changes; the spec is brought back in line with already-shipped code and migrations.
+
+- §8.5 / §8.7 (Q-OD-1) — clarified the seed-hit pricing model: only `asset_usd_price` is taken from the SQLite seed; `amount_usd` is recomputed as `amount_native × asset_usd_price` (the seed's own `amount_usd` is retained only as an audit field). Corrected the on-chain `source` per asset in the §8.5 pseudocode: `chainlink_dual_rpc` for ETH, `uniswap_v3_dual_rpc` for LPT.
+- §8.5 / §10.4 — documented incremental valuator candidate detection: each on-chain pass now scans only events with `finalized_at >= (per-pass watermark − lookback)` via the `valuator_cursors` high-water mark (migration 047), with the `NOT EXISTS` anti-join as the correctness backstop and a full-history scan on cold start. Documented the SEED change-detector (seed pass skipped when `seeded_event_prices` row count is unchanged). Corrected the "run everything" valuator command to `backfill-all`.
+- §11 — schema section reconciled with the shipped migrations (022–047). Softened the "all migrations reproduce these tables exactly" claim (the authoritative schema is the sum of all `migrations/*.up.sql`), added §11.19–§11.34 for the 16 tables introduced after migration 017 (including `valuator_cursors`), documented `orchestrator_profile` / `broadcaster_profile` as materialized views (migrations 042/044/045), and enumerated the indexes added by later migrations.
 
 ### Changes since v1.8 (2026-05-05)
 
@@ -635,14 +643,23 @@ The full SQLite row is preserved in the `raw` JSONB column for audit.
 
 The SQLite is a **price overlay**, not an event mirror. The indexer fetches canonical events from RPC for the entire history (including the seeded range) — this gives us canonical `(chain_id, tx_hash, log_index)`, `block_hash`, all event types, and reorg-resistance.
 
-The valuator's pricing logic checks `seeded_event_prices` **before** doing on-chain pricing:
+The valuator's pricing logic checks `seeded_event_prices` **before** doing on-chain pricing. The on-chain fallback stamps a per-asset source: the ETH path (Chainlink ETH/USD) stamps `source='chainlink_dual_rpc'`; the LPT path (Uniswap V3 TWAP × Chainlink) stamps `source='uniswap_v3_dual_rpc'`.
 
 ```
-For each unvalued (event_id, version, asset) tuple:
+For each unvalued (event_id, version, asset) candidate:
   1. Look up seeded_event_prices by (chain_id, tx_hash, asset).
-  2. If hit: use seeded price, stamp source='trusted_historical_seed_v1', insert valuation.
-  3. Else: do on-chain TWAP/Chainlink read, stamp source='uniswap_v3_dual_rpc', insert valuation.
+  2. If hit: take only asset_usd_price from the seed, recompute
+     amount_usd = amount_native × asset_usd_price (§8.7),
+     stamp source='trusted_historical_seed_v1', insert valuation.
+  3. Else, on-chain read:
+       - ETH-valued: Chainlink ETH/USD, stamp source='chainlink_dual_rpc'.
+       - LPT-valued: Uniswap V3 TWAP × Chainlink, stamp source='uniswap_v3_dual_rpc'.
+     Insert valuation.
 ```
+
+**Candidate detection is incremental (migration 047 + `crates/livepeer-valuator/src/cursor.rs`).** The valuator no longer re-scans the whole finalized history every cycle. Each pass (`ETH`, `LPT`, `MULTI`) scans only events with `finalized_at >= (per-pass watermark − lookback)` (default lookback 600s), using the `valuator_cursors` high-water mark (§11.34) and the `finalized_at` partial indexes (§11.4). The `NOT EXISTS` anti-join against `event_valuations` remains the correctness backstop, so the cursor only bounds the scan — it can never cause an event to be skipped. **Cold start scans all history:** when there is no cursor row, no `event_valuations` exist for the version (post-truncate/replay), or `include_tentative` is set, the scan floor is the Unix epoch.
+
+**The SEED pass has its own change-detector (`crates/livepeer-valuator/src/seed.rs`).** Seed candidacy only changes when new seeds are imported (live events are never seeded), so the seed pass is skipped when the row count of `seeded_event_prices` is unchanged since the last run — the count is stored under the `SEED` key in `valuator_cursors` (`seed_max_id`, §11.34). This gate is bypassed on cold start (no valuations for the version) and under `include_tentative`. Break-glass: delete the `SEED` cursor row to force a full re-scan.
 
 ### 8.6 Migration utility behavior
 
@@ -662,7 +679,7 @@ Migration is idempotent: re-running on the same input is safe (`ON CONFLICT DO N
 
 Before final implementation:
 
-- `Q-OD-1` — NUMBER precision spot-check. Compare `reward.total_tokens` for a known reward against the on-chain `Reward` event amount. If lossy (SQLite REAL is 53-bit mantissa), `amount_native` is re-derived from RPC at valuation time and only `*_usd_price` and `*_usd` fields are taken from SQLite.
+- `Q-OD-1` — NUMBER precision spot-check. Compare `reward.total_tokens` for a known reward against the on-chain `Reward` event amount. Because SQLite REAL is a 53-bit mantissa and can be lossy, the seed-hit path (`crates/livepeer-valuator/src/seed.rs`) takes **only** the `*_usd_price` field (`asset_usd_price`) from the seed. `amount_native` is the chain-derived `amount_normalized`, and `amount_usd` is **recomputed** as `amount_native × asset_usd_price` — the seed's own `amount_usd` is retained only as an audit field (preserved in the `raw`/`pricing_chain` provenance), never used as the emitted valuation.
 - `Q-OD-2` — `transaction_id` uniqueness. Verify no transactions exist with multiple rewards or multiple payouts. If they do, the migrator needs `log_index` from RPC to disambiguate.
 - `Q-OD-3` — `events.payload` structure. Inspection of sample rows determines whether and how to use this table.
 - `Q-OD-4` — `block_cursors` contents. The actual per-event-type bounds.
@@ -830,10 +847,10 @@ Retries are deterministic: timing is derived from event block timestamp + attemp
 Three operator commands must always be safe to re-run:
 
 1. `livepeer-indexer backfill --from-block N --to-block M` — re-fetches and re-inserts events; no duplicates created.
-2. `livepeer-valuator backfill --version v1` — values all unvalued events at the given version; already-valued are skipped.
+2. `livepeer-valuator backfill-all --version v1` — runs seed → ETH on-chain → LPT on-chain → multi-asset in sequence, valuing every unvalued event at the given version; already-valued are skipped. (`--version` is a **global** flag, not a subcommand argument. The individual passes are also exposed as their own subcommands: `backfill-from-seed`, `backfill-eth-onchain`, `backfill-lpt-onchain`, `backfill-multi-asset`, plus the one-off `backfill-eth-prices`. `backfill-all` is the "run everything" command.)
 3. `livepeer-staker backfill --from-block N --to-block M` — refreshes stake balances; conflicts no-op.
 
-Each is essentially a `WHERE NOT EXISTS`-driven worker. No `--force` flag in v1.
+Each is essentially a `WHERE NOT EXISTS`-driven worker. No `--force` flag in v1. The valuator's `WHERE NOT EXISTS` anti-join is the correctness backstop, but its candidate *scan* is now incremental: each on-chain pass reads only the recently-finalized tail via the `finalized_at` watermark in `valuator_cursors` (§8.5, §11.34), and the seed pass is gated by a row-count change-detector. Cold start (no cursor, no `event_valuations` for the version, or `--include-tentative`) scans all history, preserving the "value all unvalued events" guarantee for a fresh backfill or replay.
 
 ### 10.5 Determinism violations
 
@@ -876,7 +893,7 @@ This is the determinism guard. In a correctly-functioning system, this should ne
 
 ## 11. Database Schema (Consolidated DDL)
 
-This section is the canonical schema for v1. All migrations starting from migration `001` reproduce these tables exactly.
+This section documents the **core v1 tables** (migrations `001`–`017`). It is **not** the complete live schema. The authoritative source for the full live schema is the sum of all `migrations/*.up.sql` files applied in order — currently ~30 tables and materialized views plus ~50 indexes. Later migrations add additional tables (gateway/TicketBroker state, ENS/profile projections, daily rollups, tx receipts, the valuator cursor), promote two profile tables to materialized views, and add many indexes on top of the core tables. The subsections below reproduce the core tables verbatim, document the later tables (§11.19+), and list the later indexes added to each core table inline.
 
 ### 11.1 Migration tooling and discipline
 
@@ -999,6 +1016,20 @@ CREATE INDEX idx_events_block_timestamp ON raw_protocol_events (block_timestamp)
 
 The partial index `idx_events_valuable_finality` is the hot path for the valuator's "find unvalued events" query.
 
+**Indexes (added by later migrations):**
+
+- `idx_events_finality_pending` — partial `(chain_id, block_timestamp)` over un-finalized canonical rows, for the finality-watcher's promotion UPDATEs (015).
+- `idx_events_valuable_asset_finalized_order` — partial `(chain_id, asset, block_number, log_index)` over valuable/canonical/finalized rows with `asset IS NOT NULL`; the valuator's asset-scoped candidate scan (016).
+- `idx_events_earnings_claimed_candidates` — partial `(chain_id, block_number, log_index)` over finalized `EarningsClaimed` rows with `asset IS NULL`; the multi-asset candidate scan (016).
+- `idx_events_api_agg_event_time` — `(chain_id, event_name, block_timestamp) INCLUDE (id, asset)`, partial on valuable/canonical; API aggregation reads (019).
+- `idx_events_transcoder_topic_block` — expression index on `(chain_id, event_name, (raw_event->'topics'->>1), block_number DESC, log_index DESC)`, partial on canonical `TranscoderUpdate`/`TranscoderActivated`/`TranscoderDeactivated`; transcoder context endpoints (021).
+- `idx_events_governor_created_proposal`, `idx_events_governor_executed_proposal`, `idx_events_governor_votecast_proposal` — expression indexes on `(raw_event->'decoded'->>'proposalId')` for the governance proposal joins (026).
+- `idx_events_transcoder_cover_rollup` — partial covering index on `(chain_id, contract_name, event_name, to_address, block_number DESC, log_index DESC)` over `BondingManager` `TranscoderUpdate` rows; point-in-time fee-share lookups for the payout rollup (034).
+- `idx_events_transcoder_update_by_to_address` — partial `(chain_id, to_address, block_number DESC, log_index DESC)` over `TranscoderUpdate`; the rollup lateral fee_share/reward_cut lookup by `to_address` (037).
+- `idx_events_winning_ticket_to_addr_time` — partial `(to_address, block_timestamp DESC) INCLUDE (from_address)` over finalized `WinningTicketRedeemed`; the `distinct_gateways` sub-query for `/payouts/leaderboard` (039).
+- `idx_events_valuable_finalized_at` — partial `(chain_id, asset, finalized_at, block_number, log_index)` over valuable/canonical/finalized rows with `asset IS NOT NULL`; the ETH/LPT incremental candidate tail-scan (§8.5, 047).
+- `idx_events_earnings_claimed_finalized_at` — partial `(chain_id, finalized_at, block_number, log_index)` over finalized `EarningsClaimed` rows with `asset IS NULL`; the multi-asset incremental tail-scan (047).
+
 ### 11.5 `seeded_event_prices`
 
 Trusted historical valuations imported from SQLite.
@@ -1095,6 +1126,15 @@ CREATE INDEX idx_valuations_version_block ON event_valuations (valuation_version
 CREATE INDEX idx_valuations_asset_block ON event_valuations (asset, block_number);
 ```
 
+Migration `017` (terminal failures, §11 changelog) drops the `NOT NULL` on `native_usd_price` / `amount_usd` and widens the `status` CHECK to include the three terminal-failure statuses; the DDL above already reflects the post-017 shape.
+
+**Indexes (added by later migrations):**
+
+- `idx_valuations_version_asset_event` — `(valuation_version, asset, event_id)`; the valuator's NOT-EXISTS anti-join against already-valued events (016).
+- `idx_valuations_version_amount_usd_event` — partial `(valuation_version, amount_usd DESC, event_id DESC)` where `amount_usd IS NOT NULL`; the `amount_usd_desc` API sort (018).
+- `idx_valuations_chain_block_event_asset` — `(chain_id, block_number, event_id, asset)`; API valuation joins by block (019).
+- `idx_valuations_api_event_version_asset_covering` — `(event_id, valuation_version, asset) INCLUDE (amount_native, amount_usd)`; covering index for the inline `with_valuations` API join (020).
+
 ### 11.8 `valuation_attempts`
 
 Audit trail of every pricing attempt.
@@ -1118,6 +1158,10 @@ CREATE TABLE valuation_attempts (
 CREATE INDEX idx_attempts_retry ON valuation_attempts (next_retry_at) WHERE next_retry_at IS NOT NULL;
 CREATE INDEX idx_attempts_event ON valuation_attempts (event_id, valuation_version, asset, attempt_number DESC);
 ```
+
+**Indexes (added by later migrations):**
+
+- `idx_attempts_failed_version_asset_event` — partial `(valuation_version, asset, event_id)` where `result_status LIKE 'failed_%'`; lets the valuator find prior terminal-failure attempts without scanning the full audit trail (016).
 
 ### 11.9 `decode_failures`
 
@@ -1176,6 +1220,11 @@ CREATE TABLE stake_balances_by_block (
 CREATE INDEX idx_stake_delegator_recent ON stake_balances_by_block (delegator_address, block_number DESC);
 CREATE INDEX idx_stake_delegate ON stake_balances_by_block (delegate_address, block_number DESC);
 ```
+
+**Indexes (added by later migrations):**
+
+- `idx_stake_latest_per_delegator_cover` — `(chain_id, delegator_address, block_number DESC)` covering (`INCLUDE` of delegate_address, block_timestamp, block_hash, bonded_principal, pending_stake, pending_fees, pending_round, source); index-only latest-per-delegator reads (021).
+- `idx_stake_delegate_block_delegator` — `(chain_id, delegate_address, block_number DESC, delegator_address)`; transcoder delegator-set snapshots at a block (027).
 
 ### 11.11 `delegator_registry`
 
@@ -1288,7 +1337,425 @@ CREATE TABLE reorg_mutations (
 
 ### 11.18 Foreign keys
 
-All cross-table references use FOREIGN KEY constraints. The slight write cost is justified by integrity guarantees.
+All cross-table references use FOREIGN KEY constraints. The slight write cost is justified by integrity guarantees. (Two later provenance columns — `gateway_balances_by_block.triggering_event_id` and `orch_stake_by_round.triggering_event_id` — are deliberately kept nullable and un-constrained so materialized-view refreshes and test fixtures need not seed `raw_protocol_events`; see §11.19 and §11.33.)
+
+### 11.19 `gateway_balances_by_block`
+
+Historical TicketBroker **sender** (gateway) balance snapshots, keyed by gateway address and block. Materialized by `livepeer-staker gateway-backfill` from `getSenderInfo()` reads. Added by migration `022`.
+
+```sql
+CREATE TABLE gateway_balances_by_block (
+  chain_id                           BIGINT NOT NULL,
+  gateway_address                    TEXT NOT NULL,
+  block_number                       BIGINT NOT NULL,
+  block_timestamp                    TIMESTAMPTZ NOT NULL,
+  block_hash                         TEXT NOT NULL,
+
+  deposit                            NUMERIC(38, 18) NOT NULL,
+  reserve_funds_remaining            NUMERIC(38, 18) NOT NULL,
+  reserve_claimed_in_current_round   NUMERIC(38, 18) NOT NULL,
+  withdraw_round                     BIGINT NOT NULL,
+  unlock_in_progress                 BOOLEAN NOT NULL,
+
+  source                             TEXT NOT NULL,   -- 'rpc_reconciled' | 'event_derived' | 'both'
+  raw_call                           JSONB,
+  triggering_event_id                BIGINT REFERENCES raw_protocol_events(id),
+  created_at                         TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (chain_id, gateway_address, block_number)
+);
+
+CREATE INDEX idx_gateway_balances_recent ON gateway_balances_by_block (gateway_address, block_number DESC);
+CREATE INDEX idx_gateway_balances_event ON gateway_balances_by_block (triggering_event_id) WHERE triggering_event_id IS NOT NULL;
+```
+
+This is the base table the `broadcaster_profile` matview (§11.25) projects from. `triggering_event_id` is nullable with no NOT NULL enforcement.
+
+### 11.20 `gateway_claimants_by_block`
+
+Claimant-level TicketBroker reserve state snapshots (which orchestrators can claim from a gateway's reserve, and how much they have claimed) at a block. Added by migration `023`.
+
+```sql
+CREATE TABLE gateway_claimants_by_block (
+  chain_id            BIGINT NOT NULL,
+  gateway_address     TEXT NOT NULL,
+  claimant_address    TEXT NOT NULL,
+  block_number        BIGINT NOT NULL,
+  block_timestamp     TIMESTAMPTZ NOT NULL,
+  block_hash          TEXT NOT NULL,
+
+  claimable_reserve   NUMERIC(38, 18) NOT NULL,
+  claimed_reserve     NUMERIC(38, 18) NOT NULL,
+
+  source              TEXT NOT NULL,   -- 'rpc_reconciled' | 'event_derived' | 'both'
+  raw_call            JSONB,
+  triggering_event_id BIGINT REFERENCES raw_protocol_events(id),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (chain_id, gateway_address, claimant_address, block_number)
+);
+
+CREATE INDEX idx_gateway_claimants_recent ON gateway_claimants_by_block (gateway_address, claimant_address, block_number DESC);
+CREATE INDEX idx_gateway_claimants_gateway ON gateway_claimants_by_block (gateway_address, block_number DESC);
+```
+
+**Indexes (added by later migrations):** `idx_gateway_claimants_chain_gateway_claimant` — `(chain_id, gateway_address, claimant_address, block_number DESC) INCLUDE (claimable_reserve, claimed_reserve, source)`; covering index for the `DISTINCT ON (claimant_address)` snapshot query behind `/gateways/{addr}/claimants/block/{b}` (040).
+
+### 11.21 `gateway_flows`
+
+Materialized funding/payout flow ledger — one row per (event, flow kind) — powering the gateway payout/recipient analytics endpoints. Added by migration `024`.
+
+```sql
+CREATE TABLE gateway_flows (
+  id                   BIGSERIAL PRIMARY KEY,
+  chain_id             BIGINT NOT NULL,
+  event_id             BIGINT NOT NULL REFERENCES raw_protocol_events(id),
+  gateway_address      TEXT NOT NULL,
+  claimant_address     TEXT,
+  counterparty_address TEXT,
+  block_number         BIGINT NOT NULL,
+  block_timestamp      TIMESTAMPTZ NOT NULL,
+  tx_hash              TEXT NOT NULL,
+  log_index            INTEGER NOT NULL,
+  event_name           TEXT NOT NULL,
+  flow_kind            TEXT NOT NULL,
+  asset                TEXT,
+  amount_native        NUMERIC(38, 18),
+  amount_usd           NUMERIC(38, 18),
+  valuation_version    TEXT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  UNIQUE (event_id, flow_kind)
+);
+
+CREATE INDEX idx_gateway_flows_gateway_recent ON gateway_flows (gateway_address, block_number DESC, log_index DESC);
+CREATE INDEX idx_gateway_flows_claimant_recent ON gateway_flows (claimant_address, block_number DESC, log_index DESC) WHERE claimant_address IS NOT NULL;
+CREATE INDEX idx_gateway_flows_kind_recent ON gateway_flows (flow_kind, block_number DESC, log_index DESC);
+```
+
+**Indexes (added by later migrations):** for recipient leaderboards / rolling analytics — `idx_gateway_flows_gateway_kind_time` `(gateway_address, flow_kind, block_timestamp DESC)`, `idx_gateway_flows_gateway_counterparty_time` (partial, `counterparty_address IS NOT NULL`), and `idx_gateway_flows_gateway_claimant_time` (partial, `claimant_address IS NOT NULL`) (025).
+
+### 11.22 `broadcaster_classifications`
+
+Operator-managed overlay classifying broadcaster/gateway addresses as `ai` or `transcoding` (TD-017 Phase 0), seeded from the legacy `livepeer-backend-rs` AI broadcaster list. Not part of the deterministic replay set. Added by migration `028`.
+
+```sql
+CREATE TABLE broadcaster_classifications (
+  chain_id    BIGINT NOT NULL,
+  address     TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('ai', 'transcoding')),
+  source      TEXT NOT NULL,
+  notes       TEXT,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (chain_id, address)
+);
+```
+
+The migration seeds ten known AI broadcaster addresses inline. This table backs the `job_type` (`ai`/`transcoding`) filter and the `broadcaster_kind` dimension on the daily rollups (§11.28, §11.30).
+
+### 11.23 `name_avatar_overrides`
+
+Operator-curated display-name / avatar overrides kept outside the deterministic replay boundary (TD-017 Phase 0). Added by migration `029`.
+
+```sql
+CREATE TABLE name_avatar_overrides (
+  chain_id                    BIGINT NOT NULL,
+  address                     TEXT NOT NULL,
+  display_name                TEXT,
+  avatar_url                  TEXT,
+  notes                       TEXT,
+  updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by                  TEXT,
+  ens_name_at_override_time   TEXT,
+
+  PRIMARY KEY (chain_id, address)
+);
+```
+
+### 11.24 `orchestrator_profile` (materialized view)
+
+**Now a materialized view, not a table.** Originally created as a table by migration `030`; migration `044` (with `045` re-creating it after an FK relaxation) drops the table and replaces it with a matview over `orch_stake_by_round` (§11.33). It projects the latest snapshot per orchestrator:
+
+```sql
+CREATE MATERIALIZED VIEW orchestrator_profile AS
+SELECT DISTINCT ON (chain_id, address)
+  chain_id,
+  address,
+  total_stake,
+  latest_fee_cut_percent,
+  latest_reward_cut_percent,
+  latest_fee_share_percent,
+  is_active,
+  last_lifecycle_event_at,
+  block_number        AS as_of_block,
+  round               AS as_of_round,
+  triggering_event_id AS last_event_id,
+  service_uri,
+  NOW()               AS updated_at
+FROM orch_stake_by_round
+ORDER BY chain_id, address, round DESC;
+
+-- Required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
+CREATE UNIQUE INDEX orchestrator_profile_pkey ON orchestrator_profile (chain_id, address);
+CREATE INDEX idx_orchestrator_profile_stake ON orchestrator_profile (total_stake DESC, address);
+```
+
+The unique index `orchestrator_profile_pkey` is mandatory for `REFRESH MATERIALIZED VIEW CONCURRENTLY`. The daemon's `matview` refresh loop (§3.1 supervisor; `matview_refresh_secs`, ~30s default) runs the concurrent refresh so API reads never block on it.
+
+### 11.25 `broadcaster_profile` (materialized view)
+
+**Now a materialized view, not a table.** Originally a table (migration `031`); migration `042` (TD-025) drops it and replaces it with a matview over `gateway_balances_by_block` (§11.19), projecting the latest snapshot per gateway (and surfacing two columns the old table discarded, `reserve_claimed_in_current_round` and `withdraw_round`):
+
+```sql
+CREATE MATERIALIZED VIEW broadcaster_profile AS
+SELECT DISTINCT ON (chain_id, gateway_address)
+  chain_id,
+  gateway_address         AS address,
+  deposit                 AS latest_deposit,
+  reserve_funds_remaining AS latest_reserve,
+  reserve_claimed_in_current_round,
+  withdraw_round,
+  unlock_in_progress,
+  block_number            AS as_of_block,
+  block_timestamp         AS as_of_timestamp,
+  triggering_event_id     AS last_event_id,
+  NOW()                   AS updated_at
+FROM gateway_balances_by_block
+ORDER BY chain_id, gateway_address, block_number DESC;
+
+-- Required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
+CREATE UNIQUE INDEX broadcaster_profile_pkey ON broadcaster_profile (chain_id, address);
+CREATE INDEX idx_broadcaster_profile_deposit ON broadcaster_profile (latest_deposit DESC, address);
+```
+
+As with `orchestrator_profile`, the unique index is required for concurrent refresh and the daemon's `matview` loop keeps it current.
+
+### 11.26 `orchestrator_ens`
+
+External ENS projection for orchestrator profiles (TD-017 Phase 1). Non-deterministic; populated by the enricher. Added by migration `032`; migration `046` adds the `ens_avatar_stored_ext` column for the local avatar-bytes cache (TD-033).
+
+```sql
+CREATE TABLE orchestrator_ens (
+  chain_id                BIGINT NOT NULL,
+  address                 TEXT NOT NULL,
+  ens_name                TEXT,
+  ens_avatar_url          TEXT,               -- raw, unresolved ENS avatar text record
+  ens_last_resolved_at    TIMESTAMPTZ,
+  ens_avatar_stored_ext   TEXT,               -- extension of locally-cached avatar file; NULL = none cached (added by 046)
+
+  PRIMARY KEY (chain_id, address)
+);
+```
+
+### 11.27 `broadcaster_ens`
+
+External ENS projection for broadcaster/gateway profiles (TD-017 Phase 1). Added by migration `033`. (No avatar-cache column; only `orchestrator_ens` got the `046` addition.)
+
+```sql
+CREATE TABLE broadcaster_ens (
+  chain_id                BIGINT NOT NULL,
+  address                 TEXT NOT NULL,
+  ens_name                TEXT,
+  ens_avatar_url          TEXT,
+  ens_last_resolved_at    TIMESTAMPTZ,
+
+  PRIMARY KEY (chain_id, address)
+);
+```
+
+### 11.28 `orch_payouts_daily`
+
+Daily per-orchestrator payout rollup (TD-017 Phase 2), bucketed by UTC day, valuation version, and `broadcaster_kind`. Deterministic projection of finalized `WinningTicketRedeemed` events joined to valuations. Added by migration `034`.
+
+```sql
+CREATE TABLE orch_payouts_daily (
+  chain_id                        BIGINT NOT NULL,
+  day_utc                         DATE NOT NULL,
+  orchestrator_address            TEXT NOT NULL,
+  valuation_version               TEXT NOT NULL,
+  broadcaster_kind                TEXT NOT NULL CHECK (broadcaster_kind IN ('ai', 'transcoding')),
+  ticket_count                    BIGINT NOT NULL,
+  sum_face_value_native           NUMERIC(38, 18) NOT NULL,
+  sum_face_value_usd              NUMERIC(38, 18) NOT NULL,
+  sum_commission_native           NUMERIC(38, 18) NOT NULL,
+  sum_commission_usd              NUMERIC(38, 18) NOT NULL,
+  sum_delegators_share_native     NUMERIC(38, 18) NOT NULL,
+  sum_delegators_share_usd        NUMERIC(38, 18) NOT NULL,
+  distinct_gateways               INT NOT NULL,
+  usd_rows_priced                 BIGINT NOT NULL,
+  source_max_event_id             BIGINT NOT NULL,   -- monotonic-upsert guard
+  updated_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (chain_id, day_utc, orchestrator_address, valuation_version, broadcaster_kind)
+);
+
+CREATE INDEX idx_orch_payouts_daily_orch_day ON orch_payouts_daily (orchestrator_address, day_utc DESC);
+CREATE INDEX idx_orch_payouts_daily_leaderboard ON orch_payouts_daily (day_utc DESC, sum_commission_usd DESC NULLS LAST);
+```
+
+(Migration `034` also adds `idx_events_transcoder_cover_rollup` on `raw_protocol_events`, listed in §11.4.)
+
+### 11.29 `orch_rewards_daily`
+
+Daily per-orchestrator reward rollup (TD-017 Phase 3), bucketed by UTC day and valuation version. Added by migration `035`.
+
+```sql
+CREATE TABLE orch_rewards_daily (
+  chain_id                     BIGINT NOT NULL,
+  day_utc                      DATE NOT NULL,
+  orchestrator_address         TEXT NOT NULL,
+  valuation_version            TEXT NOT NULL,
+  reward_event_count           BIGINT NOT NULL,
+  sum_total_tokens             NUMERIC(38, 18) NOT NULL,
+  sum_total_tokens_usd         NUMERIC(38, 18) NOT NULL,
+  sum_orch_tokens              NUMERIC(38, 18) NOT NULL,
+  sum_orch_tokens_usd          NUMERIC(38, 18) NOT NULL,
+  sum_delegators_tokens        NUMERIC(38, 18) NOT NULL,
+  sum_delegators_tokens_usd    NUMERIC(38, 18) NOT NULL,
+  usd_rows_priced              BIGINT NOT NULL,
+  source_max_event_id          BIGINT NOT NULL,
+  updated_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (chain_id, day_utc, orchestrator_address, valuation_version)
+);
+
+CREATE INDEX idx_orch_rewards_daily_orch_day ON orch_rewards_daily (orchestrator_address, day_utc DESC);
+CREATE INDEX idx_orch_rewards_daily_leaderboard ON orch_rewards_daily (day_utc DESC, sum_orch_tokens_usd DESC NULLS LAST);
+```
+
+### 11.30 `tickets_daily`
+
+Daily ticket-count timeseries (TD-017 Phase 3), bucketed by UTC day and `broadcaster_kind`. Added by migration `036`.
+
+```sql
+CREATE TABLE tickets_daily (
+  chain_id                  BIGINT NOT NULL,
+  day_utc                   DATE NOT NULL,
+  broadcaster_kind          TEXT NOT NULL CHECK (broadcaster_kind IN ('ai', 'transcoding')),
+  ticket_count              BIGINT NOT NULL,
+  distinct_orchestrators    INT NOT NULL,
+  distinct_gateways         INT NOT NULL,
+  source_max_event_id       BIGINT NOT NULL,
+  updated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (chain_id, day_utc, broadcaster_kind)
+);
+
+CREATE INDEX idx_tickets_daily_day ON tickets_daily (day_utc DESC, broadcaster_kind);
+```
+
+### 11.31 `event_metrics_daily`
+
+Daily-bucketed generic event-metrics rollup (TD-018 Phase 1) that backs `/aggregations/events` for broad time-window queries, letting the API skip `raw_protocol_events` scans. Deterministic projection of canonical/finalized/valuable events joined to valuations. Added by migration `038`.
+
+```sql
+CREATE TABLE event_metrics_daily (
+  chain_id              BIGINT NOT NULL,
+  day_utc               DATE NOT NULL,
+  contract_name         TEXT NOT NULL,
+  event_name            TEXT NOT NULL,
+  asset                 TEXT NOT NULL,       -- always present: only is_valuable events (which carry an asset) are ingested
+  valuation_version     TEXT NOT NULL,
+  event_count           BIGINT NOT NULL,
+  sum_amount_native     NUMERIC(38, 18),
+  sum_amount_usd        NUMERIC(38, 18),
+  usd_rows_priced       BIGINT NOT NULL DEFAULT 0,
+  last_event_id         BIGINT NOT NULL,     -- monotonic-upsert guard
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  PRIMARY KEY (chain_id, day_utc, contract_name, event_name, asset, valuation_version)
+);
+
+CREATE INDEX idx_event_metrics_daily_event_day ON event_metrics_daily (event_name, day_utc DESC);
+CREATE INDEX idx_event_metrics_daily_day_event ON event_metrics_daily (day_utc DESC, event_name);
+CREATE INDEX idx_event_metrics_daily_version_day ON event_metrics_daily (valuation_version, day_utc DESC);
+```
+
+### 11.32 `tx_receipts`
+
+First-class persistence of transaction receipts (TD-020 Phase A) so the `/reports/*.csv` routes and fee/gas analytics serve from Postgres instead of fan-out `eth_getTransactionReceipt`. Each row is a deterministic projection of a cached receipt in `rpc_call_cache`. Added by migration `041`.
+
+```sql
+CREATE TABLE tx_receipts (
+  chain_id              BIGINT       NOT NULL,
+  tx_hash               TEXT         NOT NULL,
+
+  block_number          BIGINT       NOT NULL,
+  block_timestamp       TIMESTAMPTZ  NOT NULL,
+
+  gas_used              NUMERIC(78,0)  NOT NULL,
+  effective_gas_price   NUMERIC(78,0)  NOT NULL,
+  tx_fee_wei            NUMERIC(78,0)  NOT NULL,   -- gas_used * effective_gas_price, precomputed
+  tx_fee_eth            NUMERIC(38,18) NOT NULL,   -- same value scaled to ETH for CSV export
+  status                SMALLINT       NOT NULL,   -- 0 = reverted (still carries valid gas charges)
+
+  from_address          TEXT         NOT NULL,
+  to_address            TEXT,                       -- NULL for contract creations
+
+  created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+  PRIMARY KEY (chain_id, tx_hash)
+);
+
+CREATE INDEX idx_tx_receipts_chain_block ON tx_receipts (chain_id, block_number);
+```
+
+The pipeline only writes finalized rows, so reorg-time mutation is a non-issue (finalized → reorged is structurally impossible per §9.1).
+
+### 11.33 `orch_stake_by_round`
+
+Per-round historical orchestrator snapshots (TD-026): every `(orch, round)` snapshot the staker's orch fan-out produces, from the `transcoderTotalStake` / `getServiceURI` reads at each `NewRound` block plus fee/lifecycle context joined from event tables. This is the base table the `orchestrator_profile` matview (§11.24) projects from. Added by migration `043`; migration `045` relaxes `triggering_event_id` to nullable and drops its FK (mirroring `gateway_balances_by_block`).
+
+```sql
+CREATE TABLE orch_stake_by_round (
+  chain_id                  BIGINT       NOT NULL,
+  address                   TEXT         NOT NULL,
+  round                     BIGINT       NOT NULL,
+  block_number              BIGINT       NOT NULL,
+  block_timestamp           TIMESTAMPTZ  NOT NULL,
+  block_hash                TEXT         NOT NULL,
+
+  total_stake               NUMERIC(38,18) NOT NULL,
+  service_uri               TEXT,
+
+  latest_fee_cut_percent    NUMERIC(10,4) NOT NULL,
+  latest_reward_cut_percent NUMERIC(10,4) NOT NULL,
+  latest_fee_share_percent  NUMERIC(10,4) NOT NULL,
+  is_active                 BOOLEAN       NOT NULL,
+  last_lifecycle_event_at   TIMESTAMPTZ,
+
+  triggering_event_id       BIGINT,       -- nullable, no FK after migration 045
+  raw_call                  JSONB,
+  created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  PRIMARY KEY (chain_id, address, round)
+);
+
+CREATE INDEX idx_orch_stake_address_round ON orch_stake_by_round (address, round DESC);
+CREATE INDEX idx_orch_stake_round ON orch_stake_by_round (chain_id, round);
+```
+
+### 11.34 `valuator_cursors`
+
+Per-pass incremental-candidate high-water marks for the valuator (§8.5, §10.4). Added by migration `047`. This is a **scan-reduction hint only** — the candidate anti-join predicates (`NOT EXISTS` against `event_valuations`) remain the correctness backstop, so a stale or wrong cursor degrades to "slower / stuck-low", never "skips work".
+
+```sql
+CREATE TABLE valuator_cursors (
+  pass_key      TEXT PRIMARY KEY,          -- 'valuator_<valuation_version>_<PASS>', PASS ∈ {ETH, LPT, MULTI, SEED}
+  watermark     TIMESTAMPTZ NOT NULL,      -- resolved-through finalized_at (low-water mark of unresolved work)
+  seed_max_id   BIGINT,                    -- SEED pass only: row COUNT of seeded_event_prices at last run (NOT a max id)
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+Notes:
+
+- **One row per (valuation_version, pass).** The four passes are `ETH`, `LPT`, `MULTI` (EarningsClaimed split), and `SEED` (the seed-hit change-detector).
+- **Keyed on `finalized_at`, not `block_number`.** The indexer can backfill *old* block ranges at any time; those rows carry small block numbers but a recent `finalized_at` (stamped once by the finality-watcher). A block/id watermark would skip them forever; a `finalized_at` watermark cannot. Each on-chain pass scans only events with `finalized_at >= (watermark − lookback)`, with a default lookback of 600s (`DEFAULT_LOOKBACK_SECS`) absorbing valuator/finality-watcher clock skew and concurrent finalization at the frontier.
+- **`seed_max_id` is misnamed for historical reasons.** It holds the *row count* of `seeded_event_prices` at the last seed run (the table is append-only with no serial id, so its count is a cheap monotonic change signal). The SEED pass skips its expensive candidate scan when this count is unchanged. `NULL` for the on-chain passes.
+- **Cold start / replay bypass.** When there is no cursor row, no `event_valuations` exist for the version (post-truncate/replay), or `include_tentative` is set, the pass scans all history (`scan_floor` returns the Unix epoch). The cursor's cold-start check reads `event_valuations` (truncatable state) rather than trusting a possibly-stale watermark.
+- **MUST be reset on replay.** Because it is a hint derived from wall-clock finalization, a replay from empty state must not carry a stale `valuator_cursors` row forward; deriving cold-start from truncatable state (above) makes truncating `event_valuations` sufficient, but the cursor table should be truncated alongside the derived tables to be safe. Break-glass: delete a pass's cursor row to force a full re-scan.
 
 ---
 

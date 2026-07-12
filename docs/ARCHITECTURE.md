@@ -61,6 +61,7 @@ flowchart TB
 
   subgraph SUPER["Supervision"]
     DAEMON["livepeer-daemon<br/>live-mode loop"]
+    MATVIEW["matview refresh<br/>orchestrator_profile<br/>+ broadcaster_profile"]
     ORCH["livepeer-orchestrator<br/>one-shot CLI"]
     ALERT["livepeer-alert-bot<br/>Telegram + Discord"]
   end
@@ -84,8 +85,11 @@ flowchart TB
 
   DAEMON -.supervises.-> INDEXER
   DAEMON -.supervises.-> FINALITY
+  DAEMON -.supervises.-> REORG
   DAEMON -.supervises.-> VAL
   DAEMON -.supervises.-> STAKER
+  DAEMON -.supervises.-> MATVIEW
+  MATVIEW -.refreshes.-> PG
 
   ORCH -.invokes.-> INDEXER
   ORCH -.invokes.-> VAL
@@ -168,12 +172,13 @@ sequenceDiagram
   participant Sup as livepeer-daemon
   participant Idx as indexer worker
   participant Fin as finality-watcher
+  participant Reo as reorg-watcher
   participant Val as valuator
   participant Stk as staker
   participant Mv  as matview-refresh
   participant DB  as Postgres
 
-  Note over Sup: STAKER_INTERVAL_SECS=300, INDEXER=12, FINALITY=60, VALUATOR=60, MATVIEW=30
+  Note over Sup: STAKER_INTERVAL_SECS=300, INDEXER=12, FINALITY=60, REORG=60, VALUATOR=60, MATVIEW=30
 
   loop every 12s
     Sup->>Idx: run_backfill (next chunk)
@@ -184,6 +189,11 @@ sequenceDiagram
   loop every 60s
     Sup->>Fin: advance finality
     Fin->>DB: UPDATE raw_protocol_events.finality
+  end
+
+  loop every 60s
+    Sup->>Reo: run_once (parent-hash continuity)
+    Reo->>DB: audited reorg_events / reorg_mutations on divergence
   end
 
   loop every 60s
@@ -202,6 +212,8 @@ sequenceDiagram
     Mv->>DB: SELECT * FROM ...
   end
 ```
+
+Each of the six loops (indexer, finality, reorg, valuator, staker, matview) runs under a `supervise()` combinator that catches the loop's `Err` *and* any panic, backs off exponentially (1 s base, capped at 60 s), and restarts that single loop; a loop dying never tears down its siblings. Only a supervisor-level panic is fatal — it exits the process so Docker restarts the container. Shutdown is a latched `watch::channel(false)` set by either SIGINT or SIGTERM, so a signal delivered during a backoff/respawn gap is not lost. The daemon exposes `/metrics` and `/health` on `DAEMON_METRICS_BIND` (default `0.0.0.0:9107`); `/health` returns 503 when any gated task's `livepeer_task_last_success_timestamp` heartbeat is stale or `livepeer_task_up==0`, driving a whole-container restart. Restarts are counted in `livepeer_task_restarts_total{task,reason}`. The `matview` loop is deliberately excluded from `/health` gating — a stale profile view is cosmetic and must not restart the daemon.
 
 In practice the standalone follow-mode binaries (rollups, profile-follow, tx-receipts-follow, the gateway loop wrapper) run alongside the daemon — they have their own cadence loops for the same reason. The split mirrors SPEC §15.2.
 
@@ -474,7 +486,7 @@ erDiagram
   gateway_balances_by_block ||..|| broadcaster_profile : "feeds"
 ```
 
-Refreshed `CONCURRENTLY` every 30 s by the daemon (`MATVIEW_REFRESH_INTERVAL_SECS`).
+Refreshed `CONCURRENTLY` every 30 s by the daemon (`DAEMON_MATVIEW_REFRESH_SECS`).
 
 ### Rollups
 

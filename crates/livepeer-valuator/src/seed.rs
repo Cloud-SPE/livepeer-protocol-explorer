@@ -122,10 +122,10 @@ pub async fn run_seed_pass(
 
     // Change-detector gate. Seed candidacy only changes when new seeds are
     // imported (seeds are historical; live events are never seeded), so skip
-    // the expensive candidate scan when max(seeded_event_prices.id) is unchanged
-    // since the last seed run. Bypassed when cold (no valuations for this
-    // version — post-truncate/replay) or include_tentative. Break-glass: delete
-    // the SEED cursor row (or `--reset-seed-cursor`) to force a full re-scan.
+    // the expensive candidate scan when the row count of seeded_event_prices is
+    // unchanged since the last seed run. Bypassed when cold (no valuations for
+    // this version — post-truncate/replay) or include_tentative. Break-glass:
+    // delete the SEED cursor row to force a full re-scan.
     // seeded_event_prices is append-only (ON CONFLICT DO NOTHING) and has no
     // serial id, so its row count is a cheap, monotonic change signal: it rises
     // exactly when new seeds are imported.

@@ -142,7 +142,7 @@ the same bounded work functions used by batch mode.
 ### Task graph
 
 ```text
-indexer -> finality -> valuator -> staker
+indexer -> finality -> valuator -> staker -> matview
      \         |
       \        v
        \-> reorg/audit
@@ -155,6 +155,7 @@ Interpretation:
 - **Valuator** consumes finalized valuable events without terminal outcomes.
 - **Staker** consumes stake-touching events and exact-state/pending refresh work.
 - **Reorg** monitors canonical continuity and forces downstream reprocessing when needed.
+- **Matview** refreshes the derived profile materialized views (`orchestrator_profile`, `broadcaster_profile`) on a tight cadence so API reads track upstream writes.
 
 ### Scheduler responsibilities
 

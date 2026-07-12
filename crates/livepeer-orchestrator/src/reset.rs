@@ -31,6 +31,13 @@ const REBUILDABLE_DERIVED_TABLES: &[&str] = &[
     "event_valuations",
     "valuation_attempts",
     "token_prices_by_block",
+    // Valuator incremental-scan cursors (migration 047). MUST be reset on
+    // replay: it's a per-pass finalized_at high-water mark. A stale watermark
+    // would make the ETH/LPT/MULTI passes scan only the recent tail and skip
+    // rebuilding historical valuations. The seed pass runs first and repopulates
+    // event_valuations, so scan_floor's version-wide cold-start guard can't
+    // catch this on its own — the cursor row itself has to go.
+    "valuator_cursors",
     // Staker output (per-delegator)
     "stake_balances_by_block",
     "delegator_registry",

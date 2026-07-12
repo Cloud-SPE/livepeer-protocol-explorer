@@ -46,6 +46,19 @@ Replay currently reconstructs:
 - `tx_receipts` — deterministic projection of cached
   `eth_getTransactionReceipt` responses (TD-020)
 
+The valuator's incremental-scan cursors are **cleared** on replay (they are a
+scan-reduction hint, not hashed output):
+- `valuator_cursors` — per-pass `finalized_at` high-water marks + the SEED
+  change-detector marker (migration 047). `livepeer-orchestrator` truncates this
+  alongside the other derived tables (`reset.rs`) so every pass cold-starts and
+  re-scans full history. It **must** be cleared: a stale watermark left from a
+  prior live run would make the ETH/LPT/MULTI passes scan only the recently
+  finalized tail and silently skip rebuilding historical valuations — and the
+  valuator's own cold-start guard (which keys off `event_valuations` being
+  empty for the version) cannot catch this on its own, because the seed pass
+  runs first and repopulates `event_valuations` before those passes read the
+  cursor.
+
 Materialized views (deterministic projections of the above; require an
 explicit `REFRESH MATERIALIZED VIEW` before their content is observable
 post-replay):

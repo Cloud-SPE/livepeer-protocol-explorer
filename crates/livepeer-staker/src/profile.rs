@@ -315,7 +315,11 @@ async fn load_known_orchestrators_before(
     pg: &PgPool,
     resume_from_block: Option<i64>,
 ) -> Result<HashSet<String>> {
+    let mut known: HashSet<String> = HashSet::new();
+
     if let Some(block) = resume_from_block {
+        // Profile-derived addresses include TransferBond-resolved delegates,
+        // whose discovery cost an RPC call the event scan below can't repeat.
         let rows = sqlx::query_scalar::<_, String>(
             r#"SELECT address
                  FROM orchestrator_profile
@@ -326,16 +330,21 @@ async fn load_known_orchestrators_before(
         .bind(block)
         .fetch_all(pg)
         .await?;
-        if !rows.is_empty() {
-            return Ok(rows.into_iter().collect());
-        }
+        known.extend(rows);
     }
 
+    // The lifecycle-event scan must ALWAYS run, not just on a cold start:
+    // discovery is otherwise in-memory only, so an orchestrator whose
+    // activation event was consumed in an earlier iteration that ended before
+    // the next NewRound is in neither `orch_stake_by_round` nor the matview,
+    // and the profile-derived set alone would exclude it from every future
+    // NewRound fanout permanently (API 404 for a live orch).
     let sql = r#"SELECT DISTINCT to_address
                    FROM raw_protocol_events
                   WHERE chain_id = $1
                     AND is_canonical = TRUE
                     AND to_address IS NOT NULL
+                    AND contract_name = 'BondingManager'
                     AND event_name IN (
                         'Bond',
                         'Unbond',
@@ -352,7 +361,8 @@ async fn load_known_orchestrators_before(
         .bind(resume_from_block)
         .fetch_all(pg)
         .await?;
-    Ok(rows.into_iter().collect())
+    known.extend(rows);
+    Ok(known)
 }
 
 async fn load_current_round_before(

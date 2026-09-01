@@ -175,11 +175,14 @@ async fn main() -> Result<()> {
             let archive = Provider::new("chainstack", archive_url)?;
             info!(cadence_secs, "staker profile follow loop starting");
             loop {
-                // Skip the cadence sleep while there's still work to do
-                // (events_seen > 0 means we processed a non-empty batch and
-                // there are likely more candidates waiting). The sleep is
-                // only needed once we're caught up. On error we sleep so a
-                // failing iteration doesn't tight-loop against the RPC.
+                // Skip the cadence sleep only while a full batch came back
+                // (there's likely more backlog waiting). `orch_events_seen > 0`
+                // is NOT a usable signal here: the candidate fetch is inclusive
+                // at the checkpoint block, so at the chain tip the last event
+                // is refetched every iteration and events_seen never hits 0 —
+                // the old check made this loop spin ~3 iterations/sec forever.
+                // On error we sleep so a failing iteration doesn't tight-loop
+                // against the RPC.
                 let mut should_sleep = true;
                 match runner::run_profile_backfill(&pg, &archive, &cfg, cli.include_tentative).await
                 {
@@ -188,9 +191,10 @@ async fn main() -> Result<()> {
                             orch_events_seen = summary.orch_events_seen,
                             orch_rows_written = summary.orch_rows_written,
                             orchestrators_touched = summary.orchestrators_touched,
+                            caught_up = summary.caught_up,
                             "staker profile follow iteration summary"
                         );
-                        if summary.orch_events_seen > 0 {
+                        if !summary.caught_up {
                             should_sleep = false;
                         }
                     }

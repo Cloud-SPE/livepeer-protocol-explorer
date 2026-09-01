@@ -75,6 +75,13 @@ pub struct ProfileBackfillSummary {
     pub orch_rows_written: u64,
     pub orchestrators_touched: u64,
     pub orch_checkpoint_block: Option<i64>,
+    /// True when the batch came back below `ORCH_PROFILE_BATCH_LIMIT`, i.e.
+    /// the walk has reached the chain tip. The follow loop must sleep on this
+    /// rather than on `orch_events_seen == 0`: the candidate fetch is
+    /// inclusive at the checkpoint block (so a batch-boundary block is never
+    /// half-skipped), which means the last event is refetched every iteration
+    /// and `orch_events_seen` never reaches 0 at the tip.
+    pub caught_up: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +148,7 @@ pub async fn run_profile_backfill(
     let mut summary = ProfileBackfillSummary {
         orch_events_seen: orch_candidates.len() as u64,
         orch_checkpoint_block: orch_checkpoint,
+        caught_up: (orch_candidates.len() as i64) < ORCH_PROFILE_BATCH_LIMIT,
         ..Default::default()
     };
     info!(
